@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- M3 — Session lifecycle (sessions, messages, POST /sessions, GET /messages):
+  - knex migrations `0003_create_sessions` (`token CHAR(64)` UNIQUE, FK to `websites` CASCADE, `summary` column reserved for M9, composite index `(website_id, last_active_at)`) and `0004_create_messages` (FK to `sessions` CASCADE, role ENUM, composite index `(session_id, created_at)`).
+  - `src/services/sessions.ts` — `createSession` (32-byte hex token), `findSessionByToken`, `listMessages`, `appendMessage` (atomic insert + `last_active_at` bump).
+  - `src/server.ts` rewritten as async `buildServer({ db, logger })`. New routes: `POST /sessions` (verifies request `Origin` against `website_origins`, returns `{ session_token, welcome_message }`; 400 / 403 / 503 stubbed where the design calls for them) and `GET /messages` (bearer-token auth, returns ordered message list).
+  - 12 new tests across `src/server.test.ts` (route behaviour via `fastify.inject`) and `src/services/sessions.test.ts` (service-layer roundtrips, token format, transactional `last_active_at` bump). 18 tests pass in total.
+  - Default welcome message `"Hi! How can I help?"` when `websites.welcome_message` is NULL.
 - M2 — Tenant model (websites + origin allowlist):
   - knex migrations `0001_create_websites` and `0002_create_website_origins` per `dev-notes/02-data-model.md`. `websites` includes the M5-reserved columns (`model_slug`, `model_parameters`, `model_context_window`) so the schema doesn't churn later.
   - `src/services/websites.ts` — service layer (`createWebsite`, `getWebsiteById`, `getWebsiteBySlug`, `addOrigin`, `findWebsiteByOrigin`) with origin normalisation (lowercase host, strip trailing slash, reject non-http(s)/paths/queries) and slug pattern validation.

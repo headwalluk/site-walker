@@ -1,6 +1,7 @@
 import { buildServer } from './server.js';
+import { db } from './db/index.js';
 
-const fastify = buildServer();
+const fastify = await buildServer({ db });
 
 const port = Number(process.env.PORT ?? 47830);
 const host = process.env.HOST ?? '127.0.0.1';

@@ -2,8 +2,8 @@
 
 **Last Updated:** 16 May 2026
 **Current Version:** 0.2.0
-**Current Phase:** Milestone 3 (Session lifecycle) — not started
-**Overall Progress:** ~14% — M1 and M2 complete (2 of 14)
+**Current Phase:** Milestone 4 (System-blocks loader) — not started
+**Overall Progress:** ~21% — M1, M2, M3 complete (3 of 14)
 
 Vision and phasing live in [`../README.md`](../README.md). Stack and architecture decisions live in [`../CLAUDE.md`](../CLAUDE.md). Auth/session and data-model design live in companion docs in this directory. This file tracks the work.
 
@@ -54,8 +54,8 @@ knex migrations for `websites` and `website_origins` tables per [`02-data-model.
 
 ### Milestone 3: Session lifecycle (POST /sessions, GET /messages)
 
-**Target Completion:** TBD
-**Status:** 🔴 Not started
+**Target Completion:** 16 May 2026
+**Status:** ✅ Complete (16 May 2026)
 **Priority:** High — defines the auth model for browser traffic
 
 knex migrations for `sessions` and `messages` tables (also in [`02-data-model.md`](02-data-model.md)). Implement the session-creation and history-rehydrate endpoints per [`01-auth-and-session-flow.md`](01-auth-and-session-flow.md):
@@ -63,6 +63,16 @@ knex migrations for `sessions` and `messages` tables (also in [`02-data-model.md
 - `GET /messages` — bearer-token auth, returns full conversation for the bound session (used by client for initial-load rehydrate).
 
 Welcome message stored as a column on `websites`. Capacity check (503) is a stub in Phase 1 — wiring exists, returns 201 unconditionally until M11.
+
+**Shipped:**
+- `migrations/0003_create_sessions.js` — `sessions` table (BIGINT PK, `website_id` FK CASCADE, unique `token CHAR(64)`, nullable `summary` reserved for M9, `created_at`/`last_active_at`, composite index on `(website_id, last_active_at)`).
+- `migrations/0004_create_messages.js` — `messages` table (BIGINT PK, `session_id` FK CASCADE, `role` ENUM('user','assistant'), `content` TEXT, composite index on `(session_id, created_at)`).
+- `src/services/sessions.ts` — `createSession` (generates 32-byte hex token), `findSessionByToken`, `listMessages` (ordered ascending), `appendMessage` (transactional: insert + bump `last_active_at`).
+- `src/server.ts` rewritten as async `buildServer({ db, logger })`. Routes: existing `GET /`, plus `POST /sessions` (Origin → website resolve → capacity stub → token mint → `{ session_token, welcome_message }`) and `GET /messages` (bearer auth → message list). Default welcome message `"Hi! How can I help?"` when `websites.welcome_message` is NULL.
+- `src/index.ts` updated to await the async builder with the singleton db.
+- 8 new tests in `src/server.test.ts` (routes via `fastify.inject`) plus 4 in `src/services/sessions.test.ts`. 18 tests total across the suite, all passing.
+
+**Deferred to M6 (chat endpoint):** CORS wire-up. Phase 1 still verifies Origin in the route handler; `fastify.inject` tests and `./bin/chat` server-side calls don't need preflight. Browser-side widget integration brings the CORS layer in.
 
 ### Milestone 4: System-blocks loader (per-website)
 
