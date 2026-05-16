@@ -7,8 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-05-16
+
 ### Added
-- `dev-notes/04-system-blocks.md` — design for the per-website system-blocks loader. Flat `data/websites/<slug>/*.md` layout (no prefix-ordering tricks), app-injected opening persona line (sourced from a new `websites.bot_persona` column) + a constant handling rule, operator blocks wrapped as `<block name="…">…</block>` so the model treats them as reference data. No frontmatter, no caching, no closing reinforcement in v1 — all documented as deliberately deferred (safety/guardrail hardening picked up in M12).
+- M4 — System-blocks loader (per-website):
+  - knex migration `0005_add_websites_persona` — `persona TEXT NULL` on `websites`.
+  - `templates/` directory (new top-level) with `templates/PERSONA.md` — website-agnostic default persona seed copied into `websites.persona` at `sw website create` time. Directory is intentionally open-ended for future template kinds (TOML defaults, etc.).
+  - `src/utils/tokens.ts` — `estimateTokens(text)` returning `Math.ceil(text.length / 3)`. Shared with M5/M6/M10.
+  - `src/utils/templates.ts` — `readPersonaTemplate(templatesDir?)`. Loud failure if the template file is missing.
+  - `src/services/system-blocks.ts` — `loadDiskBlocks(slug, baseDir?)` discovers `.md` files under `data/websites/<slug>/`, returns them in filename order, skips empties, ignores non-`.md`, treats a missing directory as empty, and **skips a stray `PERSONA.md` on disk with `console.error("PERSONA block already added, skipping PERSONA.md")`**. `assemblePrompt({ persona, diskBlocks })` returns `{ prompt, estimatedTokens, perBlockTokens }`; constant `HANDLING_RULE` exported (no per-website substitution).
+  - `src/services/websites.ts` — `Website.persona` field, optional `persona` on `createWebsite` input, new `setPersona(db, slug, text)`.
+  - CLI: `sw website create` now seeds `persona` from `templates/PERSONA.md`; `sw website set-persona <slug> <text>` (new); `sw blocks list <slug>` (new) showing per-block (incl. PERSONA) and total token estimates.
+  - 19 new tests across `src/services/system-blocks.test.ts`, `src/utils/tokens.test.ts`, `src/utils/templates.test.ts`, plus `setPersona` and `createWebsite` persona coverage in `src/services/websites.test.ts`. 37 tests total across the suite.
+- `dev-notes/04-system-blocks.md` — design doc for the per-website system-blocks loader. Flat `data/websites/<slug>/*.md` layout (no prefix-ordering tricks), persona stored in `websites.persona` and emitted by the loader as the first `<block name="PERSONA">`, constant app-managed handling rule with no per-website substitution, operator blocks wrapped as `<block name="…">…</block>` so the model treats them as reference data. `PERSONA.md` filename on disk is reserved (skipped with a warning). No frontmatter, no template/moustache substitution, no caching, no closing reinforcement in v1 — all documented as deliberately deferred (safety/guardrail hardening picked up in M12).
 - M3 — Session lifecycle (sessions, messages, POST /sessions, GET /messages):
   - knex migrations `0003_create_sessions` (`token CHAR(64)` UNIQUE, FK to `websites` CASCADE, `summary` column reserved for M9, composite index `(website_id, last_active_at)`) and `0004_create_messages` (FK to `sessions` CASCADE, role ENUM, composite index `(session_id, created_at)`).
   - `src/services/sessions.ts` — `createSession` (32-byte hex token), `findSessionByToken`, `listMessages`, `appendMessage` (atomic insert + `last_active_at` bump).
@@ -24,15 +35,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `npm run dev` script — concurrently runs `tsc --watch` + `node --watch dist/index.js`. `concurrently` added as a dev dep.
 - ESLint config now declares Node globals via the `globals` package (added as a dev dep) so `process`/etc. don't trip `no-undef` in plain JS files like `knexfile.js`.
 - `src/server.test.ts` — example node:test exercising the Fastify hello-world via `fastify.inject()`. Verifies the M1 test-harness wiring end-to-end.
-- CLAUDE.md convention: never default to common ports (3000/8080/etc.); use obscure defaults because the dev host runs many services.
-
-### Added
 - `dev-notes/publishing-to-public-repo.md` — pre-publish checklist (credential sweep, dead-credential handling, README/LICENSE/CI checks) plus the record of known historical leaks. Commit `532acf8` is on the list as a dead-credential row (DB_PASSWORD value rotated immediately on detection).
+- CLAUDE.md convention: never default to common ports (3000/8080/etc.); use obscure defaults because the dev host runs many services.
 
 ### Changed
 - Refactor: `buildServer()` extracted to `src/server.ts`; `src/index.ts` is now a thin entry point that just calls `listen()`. Enables testing without binding a real port.
 - Default `PORT` changed from `3000` to `47830` in both `.env.example` and `src/index.ts` fallback. `PORT+1` reserved for any port-bound test server.
 - M1 (Project Scaffolding) marked complete in the project tracker; resolved decisions captured in-place.
+- README open question "format and source-of-truth for system blocks" removed — settled in M4.
+- Project version bumped to `0.3.0`. CLI version string in `src/cli/sw.ts` follows.
 
 ### Fixed
 - `.env.example` `DB_PASSWORD` reset to the empty placeholder. A real value was accidentally committed in `532acf8`; the credential was rotated and is now dead.

@@ -9,6 +9,7 @@ import {
   findWebsiteByOrigin,
   getWebsiteBySlug,
   normaliseOrigin,
+  setPersona,
 } from './websites.js';
 
 function makeTestDb(): Knex {
@@ -41,6 +42,7 @@ test('createWebsite + getWebsiteBySlug roundtrip', async (t) => {
   assert.equal(created.slug, slug);
   assert.equal(created.name, 'Test Site');
   assert.equal(created.welcome_message, null);
+  assert.equal(created.persona, null);
   assert.equal(created.model_slug, null);
 
   const fetched = await getWebsiteBySlug(db, slug);
@@ -108,6 +110,53 @@ test('addOrigin rejects when website slug does not exist', async (t) => {
 
   await assert.rejects(
     () => addOrigin(db, 'no-such-website-xyz', 'https://example.com'),
+    /Website not found/,
+  );
+});
+
+test('createWebsite persists supplied persona', async (t) => {
+  const db = makeTestDb();
+  const slug = uniqueSlug();
+  t.after(async () => {
+    await db('websites').where({ slug }).del();
+    await db.destroy();
+  });
+
+  const created = await createWebsite(db, {
+    slug,
+    name: 'Persona Site',
+    persona: 'be friendly and concise',
+  });
+  assert.equal(created.persona, 'be friendly and concise');
+
+  const fetched = await getWebsiteBySlug(db, slug);
+  assert.equal(fetched?.persona, 'be friendly and concise');
+});
+
+test('setPersona updates the persona column', async (t) => {
+  const db = makeTestDb();
+  const slug = uniqueSlug();
+  t.after(async () => {
+    await db('websites').where({ slug }).del();
+    await db.destroy();
+  });
+
+  await createWebsite(db, { slug, name: 'Persona Site', persona: 'first' });
+  const updated = await setPersona(db, slug, 'second');
+  assert.equal(updated.persona, 'second');
+
+  const fetched = await getWebsiteBySlug(db, slug);
+  assert.equal(fetched?.persona, 'second');
+});
+
+test('setPersona throws when website slug does not exist', async (t) => {
+  const db = makeTestDb();
+  t.after(async () => {
+    await db.destroy();
+  });
+
+  await assert.rejects(
+    () => setPersona(db, 'no-such-website-xyz', 'whatever'),
     /Website not found/,
   );
 });

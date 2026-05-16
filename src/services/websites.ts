@@ -12,6 +12,7 @@ export interface Website {
   slug: string;
   name: string;
   welcome_message: string | null;
+  persona: string | null;
   model_slug: string | null;
   model_parameters: ModelParameters | null;
   model_context_window: number | null;
@@ -65,18 +66,32 @@ export function normaliseOrigin(input: string): string {
 
 export async function createWebsite(
   db: Knex,
-  input: { slug: string; name: string },
+  input: { slug: string; name: string; persona?: string | null },
 ): Promise<Website> {
   assertSlug(input.slug);
   const [id] = await db('websites').insert({
     slug: input.slug,
     name: input.name,
+    persona: input.persona ?? null,
   });
   const row = await getWebsiteById(db, id);
   if (!row) {
     throw new Error(`createWebsite: insert succeeded but read-back failed for id=${id}`);
   }
   return row;
+}
+
+export async function setPersona(db: Knex, slug: string, persona: string): Promise<Website> {
+  const website = await getWebsiteBySlug(db, slug);
+  if (!website) {
+    throw new Error(`Website not found: slug="${slug}"`);
+  }
+  await db('websites').where({ id: website.id }).update({ persona });
+  const updated = await getWebsiteById(db, website.id);
+  if (!updated) {
+    throw new Error(`setPersona: update succeeded but read-back failed for id=${website.id}`);
+  }
+  return updated;
 }
 
 export async function getWebsiteById(db: Knex, id: number): Promise<Website | null> {

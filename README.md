@@ -69,7 +69,6 @@ Add the things a real public endpoint needs:
 
 ## Open questions to settle in Phase 1
 
-- Format and source-of-truth for the system blocks (per-website layout).
 - History-trimming strategy (shapes session storage schema; settled in Phase 2 but
   schema should accommodate the chosen approach).
 - Where the bot should say "I don't know, contact us" rather than guess.

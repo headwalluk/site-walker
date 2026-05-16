@@ -1,9 +1,9 @@
 # site-walker — Project Tracker
 
 **Last Updated:** 16 May 2026
-**Current Version:** 0.2.0
-**Current Phase:** Milestone 4 (System-blocks loader) — not started
-**Overall Progress:** ~21% — M1, M2, M3 complete (3 of 14)
+**Current Version:** 0.3.0
+**Current Phase:** Milestone 5 (LLM provider abstraction) — not started
+**Overall Progress:** ~29% — M1, M2, M3, M4 complete (4 of 14)
 
 Vision and phasing live in [`../README.md`](../README.md). Stack and architecture decisions live in [`../CLAUDE.md`](../CLAUDE.md). Auth/session and data-model design live in companion docs in this directory. This file tracks the work.
 
@@ -76,13 +76,28 @@ Welcome message stored as a column on `websites`. Capacity check (503) is a stub
 
 ### Milestone 4: System-blocks loader (per-website)
 
-**Target Completion:** TBD
-**Status:** 🔴 Not started
+**Target Completion:** 16 May 2026
+**Status:** ✅ Complete (16 May 2026)
 **Priority:** High — settles an open question from README
 
-Define the on-disk layout for per-website system blocks (likely `data/websites/<slug>/<something>`). Decide block format: single file, directory of files, frontmatter-tagged sections. Loader reads the current request's website blocks, concatenates them into a system prompt. Ship hand-written stub blocks for one test website so the chat loop has something to read.
+Design settled in [`04-system-blocks.md`](04-system-blocks.md): flat `data/websites/<slug>/*.md` layout (no prefix-ordering tricks), a constant app-managed handling rule (no per-website substitution), persona stored in `websites.persona` and emitted by the loader as the first `<block name="PERSONA">`, operator blocks wrapped as `<block name="…">…</block>`. `templates/PERSONA.md` shipped in-repo as the seed used at website-creation time. No frontmatter, no caching, no closing reinforcement in v1 — all documented as deliberately deferred (safety/guardrail hardening picked up in M12).
 
-**Open question to resolve here:** per-website system-block format.
+**Shipped:**
+- `migrations/0005_add_websites_persona.js` — `persona TEXT NULL` on `websites`. Applied as batch 3.
+- `templates/PERSONA.md` — website-agnostic default persona seed, checked in. `templates/` directory is intentionally open-ended (TOML configs and other defaults can land here later).
+- `src/utils/tokens.ts` — `estimateTokens(text)` returning `Math.ceil(text.length / 3)`. Shared with M5/M6/M10.
+- `src/utils/templates.ts` — `readPersonaTemplate(templatesDir?)`. Loud failure if missing.
+- `src/services/system-blocks.ts` — `loadDiskBlocks(slug, baseDir?)` (alphabetical order, skips empties, ignores non-`.md`, missing dir → empty array, **`PERSONA.md` on disk logs `console.error("PERSONA block already added, skipping PERSONA.md")` and is skipped**); `assemblePrompt({ persona, diskBlocks })` returning `{ prompt, estimatedTokens, perBlockTokens }`. Constant `HANDLING_RULE` exported.
+- `src/services/websites.ts` — added `Website.persona`, optional `persona` on `createWebsite` input, new `setPersona(db, slug, text)`.
+- `src/cli/sw.ts` — `sw website create` seeds `persona` from `templates/PERSONA.md`; new `sw website set-persona <slug> <text>`; new `sw blocks list <slug>` showing per-block (incl. PERSONA) and total token estimates.
+- 19 new tests (37 total across the suite). All passing. Lint clean, format clean.
+
+**Resolved decisions** (recorded in [`04-system-blocks.md`](04-system-blocks.md)):
+- Flat directory of `.md` files per website. No subdirectories, no frontmatter, no template/moustache substitution in v1.
+- Persona lives in the DB (`websites.persona`), not on disk. Loader emits it as the first `<block name="PERSONA">`. `PERSONA.md` filename on disk is reserved — skipped with a warning.
+- Filename order (lexicographic ASCII ascending) determines disk-block order; PERSONA always first.
+- Per-request reread of disk + DB. No caching layer in v1. M11 (Redis) is the natural place to add one if profiling shows it's hot.
+- Loader returns token estimate but does **not** enforce a budget — enforcement lives in M5 (admin-set), M6 (request), M10 (rebuild).
 
 ### Milestone 5: LLM provider abstraction
 
@@ -208,8 +223,8 @@ Process management (PM2 or systemd — decide), reverse-proxy config, health che
 
 Tracked here alongside the milestone that resolves them, so they're visible in context.
 
-- **M1 lib choices** — test framework (Jest vs node:test), CLI lib (commander.js vs alternative), `bin/chat` language (bash vs tiny Node). Resolve when starting M1.
-- **Per-website system-block format** — M4. Single file vs directory of files vs frontmatter-tagged sections.
+- **M1 lib choices** — test framework (Jest vs node:test), CLI lib (commander.js vs alternative), `bin/chat` language (bash vs tiny Node). Resolved in M1.
+- **Per-website system-block format** — resolved in M4. Flat directory of `.md` files; persona in DB; constant handling rule; XML-tagged block wrappers. Full design in [`04-system-blocks.md`](04-system-blocks.md).
 - **History trimming strategy** — M9. Sliding window vs summarisation. Shapes session schema.
 - **"I don't know, contact us" boundaries** — M12. What topics force the bail-out path?
 
