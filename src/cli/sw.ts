@@ -2,11 +2,13 @@ import { Command } from 'commander';
 import { db } from '../db/index.js';
 import { addOrigin, createWebsite, getWebsiteBySlug, setPersona } from '../services/websites.js';
 import { assemblePrompt, loadDiskBlocks } from '../services/system-blocks.js';
+import { resolveModel, setContextWindow, setModel, setParameters } from '../services/models.js';
+import { loadConfig } from '../config/site-walker-config.js';
 import { readPersonaTemplate } from '../utils/templates.js';
 
 const program = new Command();
 
-program.name('sw').description('site-walker admin CLI').version('0.3.0');
+program.name('sw').description('site-walker admin CLI').version('0.4.0');
 
 const website = program.command('website').description('manage websites');
 
@@ -63,6 +65,107 @@ website
     try {
       const row = await setPersona(db, slug, personaText);
       console.log(`Updated persona for slug="${row.slug}" (${personaText.length} chars).`);
+    } finally {
+      await db.destroy();
+    }
+  });
+
+website
+  .command('set-model')
+  .argument('<slug>', 'website slug')
+  .argument('<model-slug>', 'provider/model, e.g. pi/qwen2:1.5b')
+  .action(async (slug: string, modelSlug: string) => {
+    try {
+      const registry = await loadConfig();
+      const row = await setModel(db, slug, modelSlug, registry);
+      console.log(`Set model_slug="${row.model_slug}" for website slug="${row.slug}".`);
+    } finally {
+      await db.destroy();
+    }
+  });
+
+website
+  .command('set-parameters')
+  .argument('<slug>', 'website slug')
+  .argument('<json>', 'JSON object of normalised parameters, e.g. \'{"temperature":0.7}\'')
+  .action(async (slug: string, json: string) => {
+    try {
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(json);
+      } catch (err) {
+        throw new Error(`<json> is not valid JSON: ${(err as Error).message}`, { cause: err });
+      }
+      const row = await setParameters(db, slug, parsed);
+      console.log(
+        `Set model_parameters for website slug="${row.slug}": ${JSON.stringify(row.model_parameters)}`,
+      );
+    } finally {
+      await db.destroy();
+    }
+  });
+
+website
+  .command('set-context-window')
+  .argument('<slug>', 'website slug')
+  .argument('<tokens>', 'declared context window, in tokens')
+  .action(async (slug: string, tokens: string) => {
+    try {
+      const n = Number(tokens);
+      const row = await setContextWindow(db, slug, n);
+      console.log(`Set model_context_window=${row.model_context_window} for slug="${row.slug}".`);
+    } finally {
+      await db.destroy();
+    }
+  });
+
+website
+  .command('show-model')
+  .argument('<slug>', 'website slug')
+  .action(async (slug: string) => {
+    try {
+      const row = await getWebsiteBySlug(db, slug);
+      if (!row) {
+        console.error(`Website not found: slug="${slug}"`);
+        process.exitCode = 1;
+        return;
+      }
+      if (!row.model_slug) {
+        console.log(`Website "${slug}" has no model_slug set.`);
+        return;
+      }
+      const registry = await loadConfig();
+      const resolved = resolveModel(row, registry);
+      console.log(`Website: ${resolved.websiteSlug}`);
+      console.log(`  model_slug:           ${resolved.modelSlug}`);
+      console.log(
+        `  provider:             ${resolved.provider.name} (${resolved.provider.protocol})`,
+      );
+      console.log(`  model:                ${resolved.model}`);
+      console.log(`  parameters:           ${JSON.stringify(resolved.parameters)}`);
+      console.log(`  model_context_window: ${resolved.contextWindow ?? '(unset)'}`);
+    } finally {
+      await db.destroy();
+    }
+  });
+
+const provider = program.command('provider').description('inspect the provider registry (TOML)');
+
+provider
+  .command('list')
+  .description('list providers defined in site-walker.toml (api_keys are never printed)')
+  .action(async () => {
+    try {
+      const registry = await loadConfig();
+      console.log(`Provider registry (${registry.configPath}):`);
+      if (registry.providers.size === 0) {
+        console.log('  (no providers defined)');
+        return;
+      }
+      for (const entry of registry.providers.values()) {
+        const tail = entry.base_url ? ` base_url=${entry.base_url}` : '';
+        console.log(`  ${entry.name.padEnd(20)} protocol=${entry.protocol}${tail}`);
+      }
     } finally {
       await db.destroy();
     }

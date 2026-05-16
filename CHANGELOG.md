@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-05-16
+
+### Added
+- M5 — LLM provider abstraction:
+  - `config/site-walker.toml.example` — checked-in operator template documenting the four search paths (`./data/`, `$HOME/.site-walker/`, `$HOME/.config/site-walker/`, `/etc/`), the `SW_CONFIG` env override, the `0600` permission gate, and one `ollama-native` example. Other protocols (`anthropic`, `openrouter`, `openai-compatible`) commented out for M8.
+  - `src/config/site-walker-config.ts` — TOML loader via `smol-toml`. Search-path precedence with `SW_CONFIG` env override (the override is also subject to the `0600` gate — secrets file is secrets file regardless of where it lives). Permission gate refuses to start on group/world-readable modes and prints the exact `chmod` fix. Unknown protocols and malformed `[providers.*]` tables fail loud with the file path in the message.
+  - `src/providers/types.ts` — `ProtocolAdapter` interface (`chat(req): Promise<ChatResponse>`), `ChatMessage`, `ChatRequest`, `ChatResponse`, slug parser `parseModelSlug` (splits on first `/`), strict Zod `NormalisedParametersSchema` (`temperature ∈ [0,2]`, `top_p ∈ [0,1]`, `max_tokens` positive int, `stop` string[]). Unknown keys rejected at admin-set time.
+  - `src/providers/ollama-native.ts` — `POST {base_url}/api/chat` adapter. Parameter translation per design table (`max_tokens` → `options.num_predict`, etc.). `tokensUsed` populated from `prompt_eval_count` + `eval_count` when the upstream returns them.
+  - `src/providers/index.ts` — `buildAdapter(entry)` factory. `anthropic` / `openrouter` / `openai-compatible` throw "lands in M8".
+  - `src/services/models.ts` — `setModel` (validates provider exists in registry), `setParameters` (Zod, rejects unknown / out-of-range), `setContextWindow` (positive int), `resolveModel` (returns provider entry + model string + parsed parameters + context window), `validateContextBudget` (12.5%-of-context-window headroom, 512-token floor, error shape from the design doc), `validateRegistryAgainstWebsites` (startup hook — every website with a non-NULL `model_slug` must reference a registered provider).
+  - `src/services/websites.ts` — read-side fix in `getWebsiteById` / `getWebsiteBySlug`: parse `model_parameters` from MariaDB's JSON-as-text into the declared `ModelParameters | null` shape so callers stop tripping on string-vs-object surprises.
+  - CLI: `sw website set-model <slug> <model-slug>`, `sw website set-parameters <slug> <json>` (JSON-string arg), `sw website set-context-window <slug> <tokens>`, `sw website show-model <slug>`, `sw provider list` (names + protocol + `base_url`; **api_keys are never printed**).
+  - 34 new tests (71 total): loader (search paths, override + gate, unknown protocol, malformed TOML, empty registry), slug parser, Zod schema, `ollama-native` adapter against a real `http.createServer` bound to port 0 (request shape, response parsing, error paths, trailing-slash normalisation), model service (provider validation, parameter validation, persistence), context-budget validation against the design-doc error shape, startup-validation hook.
+- `dev-notes/03-llm-providers.md` — fixed the false claim that `config/site-walker.toml.example` was checked in at M1 scaffolding (it wasn't); now correctly attributed to M5.
+- Deps: `smol-toml` ^1.6, `zod` ^4.
+
+### Changed
+- Project version bumped to `0.4.0`. CLI version string in `src/cli/sw.ts` follows.
+
 ## [0.3.0] - 2026-05-16
 
 ### Added

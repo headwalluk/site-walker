@@ -94,14 +94,24 @@ export async function setPersona(db: Knex, slug: string, persona: string): Promi
   return updated;
 }
 
+function normaliseWebsiteRow(row: Website | undefined): Website | null {
+  if (!row) return null;
+  // MariaDB's JSON column comes back as a string through mysql2; parse it
+  // here so callers can rely on the declared `ModelParameters | null` shape.
+  if (typeof row.model_parameters === 'string') {
+    row.model_parameters = JSON.parse(row.model_parameters) as ModelParameters;
+  }
+  return row;
+}
+
 export async function getWebsiteById(db: Knex, id: number): Promise<Website | null> {
   const row = await db<Website>('websites').where({ id }).first();
-  return row ?? null;
+  return normaliseWebsiteRow(row);
 }
 
 export async function getWebsiteBySlug(db: Knex, slug: string): Promise<Website | null> {
   const row = await db<Website>('websites').where({ slug }).first();
-  return row ?? null;
+  return normaliseWebsiteRow(row);
 }
 
 export async function addOrigin(

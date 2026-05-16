@@ -1,9 +1,9 @@
 # site-walker — Project Tracker
 
 **Last Updated:** 16 May 2026
-**Current Version:** 0.3.0
-**Current Phase:** Milestone 5 (LLM provider abstraction) — not started
-**Overall Progress:** ~29% — M1, M2, M3, M4 complete (4 of 14)
+**Current Version:** 0.4.0
+**Current Phase:** Milestone 6 (Chat endpoint + ./bin/chat) — not started
+**Overall Progress:** ~36% — M1, M2, M3, M4, M5 complete (5 of 14)
 
 Vision and phasing live in [`../README.md`](../README.md). Stack and architecture decisions live in [`../CLAUDE.md`](../CLAUDE.md). Auth/session and data-model design live in companion docs in this directory. This file tracks the work.
 
@@ -101,24 +101,27 @@ Design settled in [`04-system-blocks.md`](04-system-blocks.md): flat `data/websi
 
 ### Milestone 5: LLM provider abstraction
 
-**Target Completion:** TBD
-**Status:** 🔴 Not started
+**Target Completion:** 16 May 2026
+**Status:** ✅ Complete (16 May 2026)
 **Priority:** High — shape locks in every future provider/model addition
 
-Full design in [`03-llm-providers.md`](03-llm-providers.md). Scope:
+Full design in [`03-llm-providers.md`](03-llm-providers.md). The host-side TOML registry, `0600` permission gate, slug parser, adapter interface, normalised parameter schema, and the `ollama-native` adapter all land in this milestone, plus the admin CLI surfaces for per-website model selection.
 
-- TOML config loader with search-path precedence (`./data/`, `$HOME/.site-walker/`, `$HOME/.config/site-walker/`, `/etc/`) and `SW_CONFIG` env override.
-- **Permission gate: refuse to start unless the resolved config file is mode `0600`.** Error names the file and the fix command.
-- Startup validation: unknown protocols, websites referencing missing providers → fail loud.
-- Protocol adapter interface (`chat(req): Promise<ChatResponse>`, streaming hooked but unused).
-- **One adapter built in Phase 1: `ollama-native`.** The rest (`openrouter`, `anthropic`, `openai-compatible`) come in Phase 2 — `openrouter` is the priority follow-up.
-- Slug parser: split on first `/` only. Provider portion → TOML lookup; remainder → opaque model string passed to adapter.
-- Normalised parameter schema (`temperature`, `top_p`, `max_tokens`, `stop`) with per-adapter translation. Unknown keys and unsupported keys both error at admin-set time.
-- Per-website context window validation at admin-set time, M10 rebuild time, and request time. Token estimate = `ceil(chars / 3)` in Phase 1. Useful error messages on overflow.
+**Shipped:**
+- `config/site-walker.toml.example` — checked-in operator template with documented search paths, override semantics, permission gate reminder, and one ollama-native example.
+- `src/config/site-walker-config.ts` — search path resolution (`./data/`, `$HOME/.site-walker/`, `$HOME/.config/site-walker/`, `/etc/`) with `SW_CONFIG` env override (override also subject to the gate), `0600` permission gate that names the file and the fix command, smol-toml parsing, protocol enum validation. Returns a typed `ProviderRegistry` (`Map<string, ProviderEntry>`).
+- `src/providers/types.ts` — `ProtocolAdapter` interface (`chat(req): Promise<ChatResponse>`), `ChatMessage`/`ChatRequest`/`ChatResponse`, slug parser (`parseModelSlug` — splits on first `/`), Zod `NormalisedParametersSchema` (strict, `temperature [0,2]`, `top_p [0,1]`, `max_tokens` positive int, `stop` string[]).
+- `src/providers/ollama-native.ts` — `POST {base_url}/api/chat` adapter with parameter translation (`max_tokens` → `options.num_predict`, etc.). Captures `tokensUsed` from Ollama's `prompt_eval_count` + `eval_count`.
+- `src/providers/index.ts` — `buildAdapter(entry)` factory. Other protocols throw with "lands in M8".
+- `src/services/models.ts` — `setModel`, `setParameters`, `setContextWindow`, `resolveModel`, `validateContextBudget` (12.5%-of-context-window headroom with 512 floor), `validateRegistryAgainstWebsites` (startup hook).
+- `src/services/websites.ts` — read-side fix: parse `model_parameters` from JSON-string to object in `getWebsiteById` / `getWebsiteBySlug`, so callers see the declared `ModelParameters | null` shape.
+- CLI: `sw website set-model`, `sw website set-parameters` (JSON arg), `sw website set-context-window`, `sw website show-model`, `sw provider list` (names + protocol + base_url; never api_keys).
+- 34 new tests (71 total across the suite). Lint clean, format clean.
+- Deps: `smol-toml`, `zod`.
 
-The per-website columns (`model_slug`, `model_parameters`, `model_context_window`) are added to the `websites` table in M2 (so we don't churn the schema later); M5 is what gives them meaning.
+The per-website columns (`model_slug`, `model_parameters`, `model_context_window`) were added in M2; M5 gives them meaning.
 
-Ollama is the lowest common denominator — design system blocks against the Pi's tight context. Larger-context providers unlock larger blocks per-website, but we never assume a fat context globally.
+Ollama remains the lowest common denominator — design system blocks against the Pi's tight context. Larger-context providers unlock larger blocks per-website, but we never assume a fat context globally.
 
 ### Milestone 6: Chat endpoint + `./bin/chat` test harness
 
