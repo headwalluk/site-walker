@@ -2,7 +2,7 @@
 #
 # Copy this file to one of the four search paths and chmod 0600 it:
 #
-#   ./data/site-walker.toml                          (development)
+#   ./site-walker.toml                               (project root, development)
 #   ~/.site-walker/site-walker.toml                  (per-user)
 #   ~/.config/site-walker/site-walker.toml           (XDG)
 #   /etc/site-walker.toml                            (system-wide)

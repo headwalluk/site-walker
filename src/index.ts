@@ -1,5 +1,8 @@
 import { buildServer } from './server.js';
 import { db } from './db/index.js';
+import { assertEnvFilePermissions } from './utils/env.js';
+
+assertEnvFilePermissions();
 
 const fastify = await buildServer({ db });
 

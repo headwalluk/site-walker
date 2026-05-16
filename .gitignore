@@ -12,9 +12,13 @@ build/
 .env.local
 .env.*.local
 
-# Runtime data — operator TOML if placed locally, per-website regenerated
-# blocks, anything that's host/instance-specific. Config *examples* live
-# under config/ and ARE version controlled.
+# Operator-edited provider registry (mode 0600). Lives at the project root
+# in development; templates/site-walker.toml.example is the checked-in seed.
+/site-walker.toml
+
+# Runtime data — per-website regenerated system blocks, anything that's
+# host/instance-specific. Operator-edited templates live under templates/
+# and ARE version controlled.
 data/
 
 # Editor / OS

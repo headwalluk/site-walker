@@ -1,9 +1,9 @@
 # site-walker — Project Tracker
 
 **Last Updated:** 16 May 2026
-**Current Version:** 0.4.0
+**Current Version:** 0.5.0
 **Current Phase:** Milestone 6 (Chat endpoint + ./bin/chat) — not started
-**Overall Progress:** ~36% — M1, M2, M3, M4, M5 complete (5 of 14)
+**Overall Progress:** ~36% — M1, M2, M3, M4, M5 complete (5 of 14). 0.5.0 was a between-milestone cleanup: TOML moves out of `data/` to the project root, `config/` retires into `templates/`, `.env` gets the same `0600` gate as `site-walker.toml`.
 
 Vision and phasing live in [`../README.md`](../README.md). Stack and architecture decisions live in [`../CLAUDE.md`](../CLAUDE.md). Auth/session and data-model design live in companion docs in this directory. This file tracks the work.
 

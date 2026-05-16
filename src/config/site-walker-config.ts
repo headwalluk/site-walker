@@ -34,7 +34,7 @@ export function searchPaths(): string[] {
   const home = os.homedir();
   const xdg = process.env.XDG_CONFIG_HOME || path.join(home, '.config');
   return [
-    path.join(process.cwd(), 'data', CONFIG_FILENAME),
+    path.join(process.cwd(), CONFIG_FILENAME),
     path.join(home, '.site-walker', CONFIG_FILENAME),
     path.join(xdg, 'site-walker', CONFIG_FILENAME),
     path.join('/etc', CONFIG_FILENAME),

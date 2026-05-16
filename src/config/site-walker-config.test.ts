@@ -23,7 +23,8 @@ test('searchPaths returns four absolute paths in documented order', () => {
     assert.ok(path.isAbsolute(p), `expected absolute: ${p}`);
     assert.ok(p.endsWith(CONFIG_FILENAME), `expected to end with ${CONFIG_FILENAME}: ${p}`);
   }
-  assert.match(paths[0], /\/data\//);
+  // first path is the project root (cwd) — second segment is the filename
+  assert.equal(path.dirname(paths[0]), process.cwd());
   assert.match(paths[1], /\.site-walker/);
   assert.match(paths[2], /(\.config\/site-walker|XDG)/);
   assert.match(paths[3], /^\/etc\//);

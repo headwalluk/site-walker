@@ -28,7 +28,7 @@ This separation means:
 
 At startup, the loader looks for `site-walker.toml` in this order. **First match wins:**
 
-1. `./data/site-walker.toml`
+1. `./site-walker.toml` (project root, for development)
 2. `$HOME/.site-walker/site-walker.toml`
 3. `$HOME/.config/site-walker/site-walker.toml` (honour `$XDG_CONFIG_HOME` if set)
 4. `/etc/site-walker.toml`
@@ -74,7 +74,7 @@ api_key = "sk-or-v1-..."
 
 ### Example file
 
-A documented example is checked in at `config/site-walker.toml.example` (shipped in M5). Operators copy this, edit it, and place it at one of the four search paths above with mode `0600`.
+A documented example is checked in at `templates/site-walker.toml.example` (shipped in M5; moved out of `config/` in 0.5.0 alongside the search-path simplification). Operators copy this, edit it, and place it at one of the four search paths above with mode `0600`.
 
 ### Startup validation
 

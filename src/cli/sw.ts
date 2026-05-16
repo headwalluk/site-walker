@@ -1,5 +1,8 @@
 import { Command } from 'commander';
+import { assertEnvFilePermissions } from '../utils/env.js';
 import { db } from '../db/index.js';
+
+assertEnvFilePermissions();
 import { addOrigin, createWebsite, getWebsiteBySlug, setPersona } from '../services/websites.js';
 import { assemblePrompt, loadDiskBlocks } from '../services/system-blocks.js';
 import { resolveModel, setContextWindow, setModel, setParameters } from '../services/models.js';
@@ -8,7 +11,7 @@ import { readPersonaTemplate } from '../utils/templates.js';
 
 const program = new Command();
 
-program.name('sw').description('site-walker admin CLI').version('0.4.0');
+program.name('sw').description('site-walker admin CLI').version('0.5.0');
 
 const website = program.command('website').description('manage websites');
 

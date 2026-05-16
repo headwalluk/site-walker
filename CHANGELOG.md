@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-05-16
+
+### Changed
+- **Config layout cleanup.**
+  - Provider-registry search path simplified. First path is now `./site-walker.toml` (project root) instead of `./data/site-walker.toml`. The other three paths (`$HOME/.site-walker/`, XDG, `/etc/`) are unchanged. `SW_CONFIG` override still wins. The motivation: `data/` is for runtime artefacts (per-website regenerated blocks under `data/websites/<slug>/`); the operator-edited registry never belonged in there.
+  - `config/` retired. The example file moves from `config/site-walker.toml.example` → `templates/site-walker.toml.example`, joining the existing `templates/PERSONA.md`. The `templates/` directory holds checked-in seed/example content used by `sw website create` and operator setup; `data/` holds gitignored runtime artefacts. Clean separation, no more `config/` vs `data/` vs `templates/` triangle.
+- `.gitignore` updated: `/site-walker.toml` (root-level, gitignored) added explicitly; old `config/` mention dropped.
+- `dev-notes/03-llm-providers.md`, `templates/site-walker.toml.example`, and `CLAUDE.md` updated to reflect the new layout.
+- Project version bumped to `0.5.0`. CLI version string in `src/cli/sw.ts` follows.
+
+### Added
+- **`.env` `0600` permission gate.** `DB_PASSWORD` is a secret too; if `.env` exists it must be mode `0600`, same threat model as `site-walker.toml`. New `src/utils/env.ts` with `assertEnvFilePermissions()` called from `src/index.ts`, `src/cli/sw.ts`, and `src/cli/chat.ts`. Inlined at the top of `knexfile.js` (knex CLI consumes this file without a build step, so duplication beats a build dependency). Error message names the file and the exact `chmod 0600` fix. Tests cover the no-op (missing file), 0600 pass, 0644 fail, and 0660 fail cases.
+
 ## [0.4.0] - 2026-05-16
 
 ### Added

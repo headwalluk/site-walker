@@ -45,6 +45,7 @@ Listed in README. The important ones to internalise: no widget/browser code (sep
 - Don't introduce Redis until there's a concrete real-time need (rate limiting is the expected first use, Phase 2).
 - Every new table/feature must have `website_id` scoping unless there's a documented reason it's tenant-global (e.g. system-wide config).
 - Secrets (LLM API keys etc.) live in `site-walker.toml` on the host with mode `0600`. The app refuses to start if permissions are looser. Never store provider secrets in the DB.
-- `data/` is for runtime artefacts (operator's TOML if placed locally, per-website regenerated blocks) and is fully gitignored. Configuration *examples* live under `config/` and are checked in.
+- Same `0600` gate applies to `.env` (DB_PASSWORD lives there). Enforced in `src/utils/env.ts` and inlined in `knexfile.js` so migrations are gated too.
+- `data/` is for runtime artefacts (per-website regenerated blocks under `data/websites/<slug>/`) and is fully gitignored. Operator-edited config templates live under `templates/` and are checked in (`templates/PERSONA.md` seed, `templates/site-walker.toml.example`). The live `site-walker.toml` is searched in this order (first match wins): `./site-walker.toml`, `$HOME/.site-walker/site-walker.toml`, `$HOME/.config/site-walker/site-walker.toml`, `/etc/site-walker.toml`. `SW_CONFIG=/path` overrides the search and is also subject to the `0600` gate.
 - `dev-notes/` is internal planning for the people building this. `docs/` is for operators and self-hosters. Don't cross the streams.
 - Open design questions are tracked in [`dev-notes/00-project-tracker.md`](./dev-notes/00-project-tracker.md) next to the milestone that resolves them.
