@@ -32,15 +32,19 @@ of it.
 
 ### Phase 1 — Simple test project
 Smallest thing that proves the loop end-to-end:
-- HTTP endpoint that accepts an API key + message + session ID.
-- API key resolves to a website; loads that website's system blocks.
+- `POST /sessions` mints a session token after verifying the request `Origin`
+  against the calling website's allowlist. Returns a welcome message.
+- `POST /chat` accepts the session token (as a bearer) plus a message,
+  appends to history, runs the LLM with that website's system blocks
+  prepended, returns the new reply.
+- `GET /messages` re-hydrates the conversation on page reload.
 - Per-session conversation history in MariaDB, scoped by `website_id`.
 - Single model backend (Ollama on the Pi) behind a thin interface.
-- `./bin/sw` admin CLI — enough to create a website, mint an API key, and
-  back up/restore the database.
+- `./bin/sw` admin CLI — enough to register a website, manage its origin
+  allowlist and welcome message, and back up/restore the database.
 - `./bin/chat` test helper — small interactive script (bash or tiny Node)
-  that reads the project `.env` for host/port + API key and runs a chat
-  session from the terminal. Replaces a browser UI in development.
+  that reads the project `.env` for host/port and exercises the loop from
+  the terminal. Replaces a browser UI in development.
 
 Goal: validate that the Pi + system-blocks approach gives useful answers at
 acceptable latency, and surface whatever context-window pain points exist.
