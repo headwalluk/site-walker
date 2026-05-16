@@ -1,0 +1,15 @@
+{
+  "name": "site-walker",
+  "version": "0.1.0",
+  "description": "A self-hosted, multi-tenant pre-sales chatbot API.",
+  "private": true,
+  "license": "AGPL-3.0-only",
+  "author": "Paul <paul@headwall-hosting.com>",
+  "repository": {
+    "type": "git",
+    "url": "ssh://git@headgit.net:7652/headwall/site-walker.git"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

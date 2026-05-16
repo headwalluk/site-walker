@@ -15,12 +15,16 @@ One row per registered website (tenant).
 | `id`              | `INT UNSIGNED`      | PK, AUTO_INCREMENT                   |                                                                       |
 | `slug`            | `VARCHAR(64)`       | NOT NULL, UNIQUE                     | URL-safe identifier, e.g. `acme-corp`. Used in CLI and on-disk paths. |
 | `name`            | `VARCHAR(255)`      | NOT NULL                             | Human-readable.                                                       |
-| `welcome_message` | `TEXT`              | NULL                                 | Returned by `POST /sessions`. NULL → app-default fallback.            |
-| `model_backend`   | `VARCHAR(32)`       | NULL                                 | Per-website override of global backend (M8 forward). NULL = default.  |
-| `created_at`      | `DATETIME`          | NOT NULL, DEFAULT CURRENT_TIMESTAMP  |                                                                       |
-| `updated_at`      | `DATETIME`          | NOT NULL, ON UPDATE CURRENT_TIMESTAMP|                                                                       |
+| `welcome_message`        | `TEXT`         | NULL                                 | Returned by `POST /sessions`. NULL → app-default fallback.       |
+| `model_slug`             | `VARCHAR(128)` | NULL                                 | E.g. `local1/qwen2:1.5b`. See [`03-llm-providers.md`](03-llm-providers.md). NULL until set by admin. |
+| `model_parameters`       | `JSON`         | NULL                                 | Normalised parameter object (`temperature`, `top_p`, `max_tokens`, `stop`). NULL = adapter defaults. |
+| `model_context_window`   | `INT UNSIGNED` | NULL                                 | Operator-declared total context tokens for the chosen model. Drives context-fit validation. |
+| `created_at`             | `DATETIME`     | NOT NULL, DEFAULT CURRENT_TIMESTAMP  |                                                                  |
+| `updated_at`             | `DATETIME`     | NOT NULL, ON UPDATE CURRENT_TIMESTAMP|                                                                  |
 
 Indexes: `slug` UNIQUE (declared above).
+
+**Why three columns and not one JSON blob:** `model_slug` and `model_context_window` are looked up on every request and need to be queryable (CLI listings, validation). `model_parameters` is opaque to MariaDB — its shape lives in the adapter layer — so JSON is the right type. Keeping the slug and context window as scalar columns also lets us index/filter by them later if needed.
 
 ---
 
@@ -103,6 +107,7 @@ Every Phase 1 hot path is index-covered. No table scans expected.
 - **M11 rate limiting.** Counters live in Redis, not MariaDB.
 - **M13 retention.** Adds a config value (probably in `.env`) for "delete sessions inactive for N days." Driven by the `last_active_at` index already in place.
 - **API keys (Phase 2).** New `api_keys` table when a server-to-server caller appears. Out of scope here.
+- **Provider registry is NOT a table.** The list of LLM providers lives in a host-side TOML file with mode `0600`, not in MariaDB — secrets stay on the host. See [`03-llm-providers.md`](03-llm-providers.md).
 
 ---
 

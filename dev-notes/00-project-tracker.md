@@ -1,7 +1,7 @@
 # site-walker — Project Tracker
 
-**Last Updated:** 15 May 2026
-**Current Version:** pre-0.1.0
+**Last Updated:** 16 May 2026
+**Current Version:** 0.1.0 — in development, no milestones shipped yet
 **Current Phase:** Milestone 1 (Project Scaffolding) — not started
 **Overall Progress:** 0% — greenfield
 
@@ -10,6 +10,7 @@ Vision and phasing live in [`../README.md`](../README.md). Stack and architectur
 Companion planning docs:
 - [`01-auth-and-session-flow.md`](01-auth-and-session-flow.md) — origin allowlist, session-token lifecycle, endpoint shapes
 - [`02-data-model.md`](02-data-model.md) — schema sketch for `websites`, `website_origins`, `sessions`, `messages`
+- [`03-llm-providers.md`](03-llm-providers.md) — TOML provider registry, per-website model selection, protocol adapters, normalised parameters, context-window handling
 
 ---
 
@@ -60,13 +61,26 @@ Define the on-disk layout for per-website system blocks (likely `data/websites/<
 
 **Open question to resolve here:** per-website system-block format.
 
-### Milestone 5: Model backend interface
+### Milestone 5: LLM provider abstraction
 
 **Target Completion:** TBD
 **Status:** 🔴 Not started
-**Priority:** High — interface shape locks in Phase 2 backend swap
+**Priority:** High — shape locks in every future provider/model addition
 
-Pluggable `ModelBackend` interface (chat-completion shape; streaming TBD). One implementation only in Phase 1: Ollama running on the Pi. Config-driven selection from the start, even though there's only one choice — keeps the Phase 2 Haiku swap a config change, not a refactor.
+Full design in [`03-llm-providers.md`](03-llm-providers.md). Scope:
+
+- TOML config loader with search-path precedence (`./data/`, `$HOME/.site-walker/`, `$HOME/.config/site-walker/`, `/etc/`) and `SW_CONFIG` env override.
+- **Permission gate: refuse to start unless the resolved config file is mode `0600`.** Error names the file and the fix command.
+- Startup validation: unknown protocols, websites referencing missing providers → fail loud.
+- Protocol adapter interface (`chat(req): Promise<ChatResponse>`, streaming hooked but unused).
+- **One adapter built in Phase 1: `ollama-native`.** The rest (`openrouter`, `anthropic`, `openai-compatible`) come in Phase 2 — `openrouter` is the priority follow-up.
+- Slug parser: split on first `/` only. Provider portion → TOML lookup; remainder → opaque model string passed to adapter.
+- Normalised parameter schema (`temperature`, `top_p`, `max_tokens`, `stop`) with per-adapter translation. Unknown keys and unsupported keys both error at admin-set time.
+- Per-website context window validation at admin-set time, M10 rebuild time, and request time. Token estimate = `ceil(chars / 3)` in Phase 1. Useful error messages on overflow.
+
+The per-website columns (`model_slug`, `model_parameters`, `model_context_window`) are added to the `websites` table in M2 (so we don't churn the schema later); M5 is what gives them meaning.
+
+Ollama is the lowest common denominator — design system blocks against the Pi's tight context. Larger-context providers unlock larger blocks per-website, but we never assume a fat context globally.
 
 ### Milestone 6: Chat endpoint + `./bin/chat` test harness
 
@@ -98,13 +112,20 @@ Expand the M2/M3 stub CLI into a full admin surface. Subcommands (working names)
 
 Goal: a publicly-exposed pre-sales bot that's safe to point real visitor traffic at. Pluggable backends, abuse protection, automated regeneration of system blocks, retention policy, deployable.
 
-### Milestone 8: Anthropic Haiku backend
+### Milestone 8: Additional protocol adapters (`openrouter`, `anthropic`)
 
 **Target Completion:** TBD
 **Status:** 🔴 Not started
-**Priority:** High — production fallback per README
+**Priority:** High — unlocks production-grade models per README hardware strategy
 
-Second implementation of the `ModelBackend` interface. Driven by config — same `.env` switch flips between Ollama and Haiku. API key handling, error mapping, retry/backoff. Per-website override possible if some sites need a different backend than the global default (decide if worth building).
+Add two protocol adapters to the M5 abstraction:
+
+- **`openrouter`** (priority) — OpenAI-compatible wire format, OpenRouter's base URL and model-name convention. Highest priority because it gives access to many models behind one provider entry.
+- **`anthropic`** — direct Anthropic Messages API. Production fallback for the larger-context use case.
+
+Per-adapter parameter translation per [`03-llm-providers.md`](03-llm-providers.md). Error mapping (auth failures, rate limits, context overflows from the provider side) normalised to common shapes. Retry/backoff on transient failures.
+
+May also introduce `openai-compatible` if a third use case appears that's not OpenRouter-specific.
 
 ### Milestone 9: History-trimming strategy
 
@@ -174,7 +195,9 @@ Tracked here alongside the milestone that resolves them, so they're visible in c
 ## Notes for Development
 
 - Stack and tenant-model decisions are in [`../CLAUDE.md`](../CLAUDE.md). If something here contradicts CLAUDE.md, CLAUDE.md wins — fix this file.
-- Phase 1 is the validation phase. If Pi + Ollama can't carry the context window, Phase 2 may pull M8 (Haiku) forward.
+- Phase 1 is the validation phase. If Pi + Ollama can't carry the context window, Phase 2 may pull M8 (additional adapters) forward.
 - Resist adding Redis before M11. MariaDB carries everything until then.
 - This repo is API-only. The WordPress plugin lives elsewhere — anything resembling browser/widget code is out of scope.
 - API-key auth is **not** Phase 1. Browser traffic auths via `Origin` allowlist + session token; admin work goes through the local CLI against the local DB. API keys arrive in Phase 2 only if/when a server-to-server HTTP caller appears.
+- LLM provider config lives in a host-side TOML file (`site-walker.toml`, mode `0600`) — not in the DB. Per-website model selection lives in the DB. Full design in [`03-llm-providers.md`](03-llm-providers.md).
+- `ollama-native` is the lowest-common-denominator target. Design system blocks against the Pi's tight context first; larger models unlock larger per-website blocks but we never assume a fat context globally.
