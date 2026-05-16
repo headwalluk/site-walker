@@ -2,8 +2,8 @@
 
 **Last Updated:** 16 May 2026
 **Current Version:** 0.2.0
-**Current Phase:** Milestone 2 (Tenant model) — not started
-**Overall Progress:** ~7% — M1 complete (1 of 14)
+**Current Phase:** Milestone 3 (Session lifecycle) — not started
+**Overall Progress:** ~14% — M1 and M2 complete (2 of 14)
 
 Vision and phasing live in [`../README.md`](../README.md). Stack and architecture decisions live in [`../CLAUDE.md`](../CLAUDE.md). Auth/session and data-model design live in companion docs in this directory. This file tracks the work.
 
@@ -37,11 +37,20 @@ npm init, TypeScript config, Fastify server with a hello-world route, knex insta
 
 ### Milestone 2: Tenant model (websites + origin allowlist)
 
-**Target Completion:** TBD
-**Status:** 🔴 Not started
+**Target Completion:** 16 May 2026
+**Status:** ✅ Complete (16 May 2026)
 **Priority:** High — every other Phase 1 milestone depends on this
 
 knex migrations for `websites` and `website_origins` tables per [`02-data-model.md`](02-data-model.md). Service layer for CRUD. Minimal CLI commands to make this testable: `sw website create <slug>` and `sw website add-origin <slug> <origin>`. No HTTP auth wired yet — that lands in M3 with session lifecycle. Broader CLI surface (list/show/remove) is M7.
+
+**Shipped:**
+- `knexfile.js` at repo root (ESM, env-driven connection), plus `migrate` / `migrate:rollback` / `migrate:status` / `migrate:make` npm scripts wrapped through `node --env-file-if-exists=.env`.
+- `migrations/0001_create_websites.js` — `websites` table with `id`, `slug`, `name`, `welcome_message`, `model_slug`, `model_parameters` (JSON), `model_context_window`, `created_at`, `updated_at` (with `ON UPDATE CURRENT_TIMESTAMP`).
+- `migrations/0002_create_website_origins.js` — FK → `websites.id` (CASCADE), unique `origin`, index on `website_id`.
+- `src/services/websites.ts` — `createWebsite`, `getWebsiteById`, `getWebsiteBySlug`, `addOrigin`, `findWebsiteByOrigin`, plus exported `normaliseOrigin` (lowercases host, strips trailing slash, rejects non-http(s) / paths / queries) and a slug pattern check.
+- CLI commands wired in `src/cli/sw.ts`: `sw website create <slug> [--name]`, `sw website show <slug>`, `sw website add-origin <slug> <origin>`. Pool is destroyed in each action's `finally` so the process exits cleanly.
+- `src/services/websites.test.ts` — 6 integration tests against the real MariaDB (roundtrip, slug validation, origin add/find, normalisation of host case + trailing slash, missing-website rejection, pure-function `normaliseOrigin` cases). All passing.
+- `npm run dev` script added (concurrently runs `tsc --watch` + `node --watch dist/index.js`).
 
 ### Milestone 3: Session lifecycle (POST /sessions, GET /messages)
 

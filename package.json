@@ -16,15 +16,22 @@
   "scripts": {
     "build": "tsc",
     "start": "node --env-file-if-exists=.env dist/index.js",
+    "dev": "concurrently --names tsc,node --kill-others-on-fail 'tsc --watch --preserveWatchOutput' 'node --env-file-if-exists=.env --watch dist/index.js'",
     "test": "npm run build && node --env-file-if-exists=.env --test 'dist/**/*.test.js'",
     "format": "prettier --write .",
-    "lint": "eslint ."
+    "lint": "eslint .",
+    "migrate": "node --env-file-if-exists=.env ./node_modules/knex/bin/cli.js migrate:latest",
+    "migrate:rollback": "node --env-file-if-exists=.env ./node_modules/knex/bin/cli.js migrate:rollback",
+    "migrate:status": "node --env-file-if-exists=.env ./node_modules/knex/bin/cli.js migrate:status",
+    "migrate:make": "node --env-file-if-exists=.env ./node_modules/knex/bin/cli.js migrate:make"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
     "@types/node": "^25.8.0",
+    "concurrently": "^9.2.1",
     "eslint": "^10.4.0",
     "eslint-config-prettier": "^10.1.8",
+    "globals": "^17.6.0",
     "prettier": "^3.8.3",
     "typescript": "^6.0.3",
     "typescript-eslint": "^8.59.3"
