@@ -5,7 +5,7 @@ const fastify = Fastify({
 });
 
 fastify.get('/', async () => {
-  return { ok: true, service: 'site-walker', version: '0.1.0' };
+  return { ok: true, service: 'site-walker', version: '0.2.0' };
 });
 
 const port = Number(process.env.PORT ?? 3000);

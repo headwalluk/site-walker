@@ -1,4 +1,9 @@
 #!/usr/bin/env node
+try {
+  process.loadEnvFile('.env');
+} catch {
+  /* .env optional */
+}
 import('../dist/cli/chat.js').catch((err) => {
   console.error(err);
   process.exit(1);

@@ -38,6 +38,7 @@ Listed in README. The important ones to internalise: no widget/browser code (sep
 
 ## Conventions
 
+- **Before any `git commit` or `git push`, run `npm run format && npm run lint` and clear all errors.** Don't stage code on a tree that fails either. Format is `prettier --write .`; lint is `eslint .` (flat config). Both are non-negotiable.
 - Prefer the boring, mature, proven library over the newer/cleverer one unless there's a project-specific reason to reach for the new thing.
 - Migrations go through knex — no ad-hoc schema changes.
 - Don't introduce Redis until there's a concrete real-time need (rate limiting is the expected first use, Phase 2).

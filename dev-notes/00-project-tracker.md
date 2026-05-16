@@ -1,9 +1,9 @@
 # site-walker — Project Tracker
 
 **Last Updated:** 16 May 2026
-**Current Version:** 0.1.0 — in development, no milestones shipped yet
-**Current Phase:** Milestone 1 (Project Scaffolding) — not started
-**Overall Progress:** 0% — greenfield
+**Current Version:** 0.2.0
+**Current Phase:** Milestone 1 (Project Scaffolding) — mostly complete (example node:test wiring outstanding)
+**Overall Progress:** ~7% — M1 nearly done, 13 milestones remaining
 
 Vision and phasing live in [`../README.md`](../README.md). Stack and architecture decisions live in [`../CLAUDE.md`](../CLAUDE.md). Auth/session and data-model design live in companion docs in this directory. This file tracks the work.
 
