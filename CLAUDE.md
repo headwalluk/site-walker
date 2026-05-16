@@ -39,6 +39,7 @@ Listed in README. The important ones to internalise: no widget/browser code (sep
 ## Conventions
 
 - **Before any `git commit` or `git push`, run `npm run format && npm run lint` and clear all errors.** Don't stage code on a tree that fails either. Format is `prettier --write .`; lint is `eslint .` (flat config). Both are non-negotiable.
+- **Never default to common ports (3000, 8000, 8080, 8443, 9000, etc.).** The dev host runs many services full-time. Use obscure defaults (current dev pick: `PORT=47830`, with `PORT+1` reserved for any port-bound test server). Prefer in-memory test paths (Fastify `.inject()`) over real listeners; if a real listener is genuinely required, bind to port `0` and read the actual port off the socket.
 - Prefer the boring, mature, proven library over the newer/cleverer one unless there's a project-specific reason to reach for the new thing.
 - Migrations go through knex — no ad-hoc schema changes.
 - Don't introduce Redis until there's a concrete real-time need (rate limiting is the expected first use, Phase 2).

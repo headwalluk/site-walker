@@ -2,8 +2,8 @@
 
 **Last Updated:** 16 May 2026
 **Current Version:** 0.2.0
-**Current Phase:** Milestone 1 (Project Scaffolding) — mostly complete (example node:test wiring outstanding)
-**Overall Progress:** ~7% — M1 nearly done, 13 milestones remaining
+**Current Phase:** Milestone 2 (Tenant model) — not started
+**Overall Progress:** ~7% — M1 complete (1 of 14)
 
 Vision and phasing live in [`../README.md`](../README.md). Stack and architecture decisions live in [`../CLAUDE.md`](../CLAUDE.md). Auth/session and data-model design live in companion docs in this directory. This file tracks the work.
 
@@ -20,16 +20,20 @@ Goal: prove a visitor on a registered website can chat to the bot, with the brow
 
 ### Milestone 1: Project scaffolding
 
-**Target Completion:** TBD
-**Status:** 🔴 Not started
+**Target Completion:** 16 May 2026
+**Status:** ✅ Complete (16 May 2026)
 **Priority:** Foundation — blocks everything else
 
 npm init, TypeScript config, Fastify server with a hello-world route, knex installed and configured against MariaDB, `.env` handling, linter, formatter, test harness. Skeleton `bin/sw` and `bin/chat` in place so later milestones plug into a working frame.
 
-**Decisions to make on entering M1** (no answer needed yet, just before scaffolding starts):
-- Test framework — Jest vs node:test.
-- CLI library for `bin/sw` — commander.js vs yargs vs minimal hand-rolled.
-- `bin/chat` language — bash + curl + jq vs tiny Node + readline.
+**Resolved decisions:**
+- Module system: ESM (`"type": "module"`).
+- Test framework: `node:test` (built-in, zero deps).
+- CLI lib: `commander.js`.
+- `./bin/chat` language: Node + `readline/promises`.
+- Lint/format: Prettier 3 + ESLint 10 flat config + typescript-eslint 8 + eslint-config-prettier.
+- Env handling: Node's `--env-file-if-exists=.env` in npm scripts + `process.loadEnvFile('.env')` (silent fallback) in `bin/*` shims.
+- Server structure: `src/server.ts` exports `buildServer()`; `src/index.ts` is a thin entry point that calls `listen()`. Enables `fastify.inject()` based tests without binding a port.
 
 ### Milestone 2: Tenant model (websites + origin allowlist)
 

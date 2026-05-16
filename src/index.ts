@@ -1,14 +1,8 @@
-import Fastify from 'fastify';
+import { buildServer } from './server.js';
 
-const fastify = Fastify({
-  logger: true,
-});
+const fastify = buildServer();
 
-fastify.get('/', async () => {
-  return { ok: true, service: 'site-walker', version: '0.2.0' };
-});
-
-const port = Number(process.env.PORT ?? 3000);
+const port = Number(process.env.PORT ?? 47830);
 const host = process.env.HOST ?? '127.0.0.1';
 
 try {
