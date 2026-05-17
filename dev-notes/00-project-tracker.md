@@ -249,7 +249,13 @@ Basic browse already exists via the M7 CLI. This milestone is the **policy + too
 **Status:** 🔴 Not started
 **Priority:** High — gate on going live
 
-Process management (PM2 or systemd — decide), reverse-proxy config, health check endpoint (`/health` — DB + model backend ping), structured logging, deployment runbook. Cluster mode validated end-to-end (a session created via one node is readable from any node). WordPress-plugin project should be far enough along by this point that we can do a real integration test on a real site.
+Process management (PM2 or systemd — decide), reverse-proxy config, health check endpoint (`/health` — DB + model backend ping; lands in 0.7.0 with DB-only ping, provider ping comes here), structured logging, deployment runbook. Cluster mode validated end-to-end (a session created via one node is readable from any node). WordPress-plugin project should be far enough along by this point that we can do a real integration test on a real site.
+
+The reverse-proxy topology will front Fastify at `https://api.site-walker.net`. The project website at `https://site-walker.net` is a separate deploy concern (likely a static site).
+
+**Follow-ups noted here so they don't get lost:**
+- Gate `/docs` (Swagger UI) and `/openapi.json` on `NODE_ENV !== 'production'`. Useful for development and self-hosters; no reason to ship them on a public production endpoint.
+- Request-body schemas on `POST /chat` (with `attachValidation: true` + an error-handler that maps AJV errors to our typed `{ error: ... }` shapes) — currently documented in prose only. Either fold into M14 or its own polish cut.
 
 ---
 

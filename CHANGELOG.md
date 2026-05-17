@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- OpenAPI spec is now meaningfully usable from Swagger UI:
+  - `components.securitySchemes.bearerAuth` declared (HTTP bearer, `session-token (64 hex chars from POST /sessions)`). Swagger UI gains the **Authorize** button.
+  - `GET /messages` and `POST /chat` carry `security: [{ bearerAuth: [] }]` — they show with the 🔒 lock indicator and the UI's "Authorize" flow will attach the token to "Try it out" calls.
+  - `POST /sessions` declares its `Origin` header as a documented parameter. Wired with `attachValidation: true` so the route's existing typed-error response (`400 origin_required`) keeps firing on a missing header — no change to the M6 error contract.
+  - Existing OpenAPI smoke test in `src/server.test.ts` extended to assert the new components are present.
+- Request body schemas for `POST /chat` are still deliberately absent — the deeper fix that would translate AJV validation errors back into our typed `{ error: ... }` codes is a follow-up.
+
+### Notes
+- Operator-facing **API docs UI (`/docs`) and the spec endpoint (`/openapi.json`) will likely be gated behind `NODE_ENV !== 'production'`** in a later cut. They're useful for development and self-hosters but don't need to be live on a public production instance. Decision lives with M14 (production deployment).
+
 ## [0.9.0] - 2026-05-17
 
 ### Added

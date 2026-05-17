@@ -83,6 +83,22 @@ test('GET /openapi.json returns the generated OpenAPI 3 spec', async (t) => {
   assert.ok(paths.includes('/sessions'), `expected /sessions in paths`);
   assert.ok(paths.includes('/messages'), `expected /messages in paths`);
   assert.ok(paths.includes('/chat'), `expected /chat in paths`);
+
+  // bearerAuth security scheme is declared in components and applied to the
+  // protected routes; sessions documents its Origin header parameter.
+  const schemes = spec.components?.securitySchemes as Record<string, unknown> | undefined;
+  assert.ok(schemes?.bearerAuth, 'expected components.securitySchemes.bearerAuth');
+  const messagesGet = (spec.paths['/messages'] as { get: { security?: unknown[] } }).get;
+  const chatPost = (spec.paths['/chat'] as { post: { security?: unknown[] } }).post;
+  assert.deepEqual(messagesGet.security, [{ bearerAuth: [] }]);
+  assert.deepEqual(chatPost.security, [{ bearerAuth: [] }]);
+  const sessionsPost = (
+    spec.paths['/sessions'] as { post: { parameters?: Array<{ in: string; name: string }> } }
+  ).post;
+  const originParam = sessionsPost.parameters?.find(
+    (p) => p.in === 'header' && p.name === 'origin',
+  );
+  assert.ok(originParam, 'expected an Origin header parameter on POST /sessions');
 });
 
 test('GET /docs serves the Swagger UI HTML', async (t) => {

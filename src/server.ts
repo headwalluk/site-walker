@@ -211,6 +211,18 @@ export async function buildServer(opts: BuildServerOpts): Promise<FastifyInstanc
         { name: 'messages', description: 'conversation rehydrate' },
         { name: 'chat', description: 'send a turn, get a reply' },
       ],
+      components: {
+        securitySchemes: {
+          bearerAuth: {
+            type: 'http',
+            scheme: 'bearer',
+            bearerFormat: 'session-token (64 hex chars from POST /sessions)',
+            description:
+              'Session token returned by `POST /sessions`. Carry it as ' +
+              '`Authorization: Bearer <session_token>` on `GET /messages` and `POST /chat`.',
+          },
+        },
+      },
     },
   });
 
@@ -302,6 +314,7 @@ export async function buildServer(opts: BuildServerOpts): Promise<FastifyInstanc
   fastify.post(
     '/sessions',
     {
+      attachValidation: true,
       schema: {
         tags: ['sessions'],
         summary: 'Mint a session token',
@@ -310,6 +323,20 @@ export async function buildServer(opts: BuildServerOpts): Promise<FastifyInstanc
           "allowlist and returns an opaque session token plus the website's " +
           'welcome message. The token is carried as `Authorization: Bearer ...` ' +
           'on subsequent calls.',
+        headers: {
+          type: 'object',
+          required: ['origin'],
+          properties: {
+            origin: {
+              type: 'string',
+              description:
+                "The browser's `Origin` header (scheme + host, no path). " +
+                "Must be on the calling website's allowlist.",
+              examples: ['https://www.acme-corp.example'],
+            },
+          },
+          additionalProperties: true,
+        },
         response: {
           201: {
             description: 'session created',
@@ -364,6 +391,7 @@ export async function buildServer(opts: BuildServerOpts): Promise<FastifyInstanc
           'Returns the full ordered list of messages for the session identified ' +
           'by the `Authorization: Bearer ...` token. Used by clients on page load ' +
           'to restore a conversation in progress.',
+        security: [{ bearerAuth: [] }],
         response: {
           200: {
             description: 'message history',
@@ -415,6 +443,7 @@ export async function buildServer(opts: BuildServerOpts): Promise<FastifyInstanc
           "persists the user message, calls the configured LLM with the website's " +
           'system blocks + history, persists the assistant reply, and returns just ' +
           'the new reply. Use `GET /messages` to rehydrate the full conversation.',
+        security: [{ bearerAuth: [] }],
         response: {
           200: {
             description: 'assistant reply',
