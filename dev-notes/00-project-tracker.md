@@ -1,9 +1,9 @@
 # site-walker — Project Tracker
 
 **Last Updated:** 17 May 2026
-**Current Version:** 0.6.0
-**Current Phase:** Milestone 7 (Admin CLI expansion) — not started
-**Overall Progress:** ~43% — M1, M2, M3, M4, M5, M6 complete (6 of 14). 0.6.0 ships the Phase 1 deliverable: registered visitors can hold a full multi-turn conversation against their website's configured model, with every turn persisted; 0.5.0 was a between-milestone cleanup (TOML moves to repo root, `config/` retires into `templates/`, `.env` `0600` gate).
+**Current Version:** 0.7.0
+**Current Phase:** Milestone 7 (Admin CLI expansion) — `sw website list` already pulled forward; the rest is pending
+**Overall Progress:** ~43% — M1, M2, M3, M4, M5, M6 complete (6 of 14). 0.7.0 was a between-milestone polish: project moves to a public GitHub repo, the root route grows an HTML landing card with live `/health` pill, OpenAPI 3 spec at `/openapi.json` plus Swagger UI at `/docs`. 0.6.0 shipped the Phase 1 deliverable (registered visitors can hold a full multi-turn conversation against their website's configured model, with every turn persisted); 0.5.0 was an earlier between-milestone cleanup (TOML moves to repo root, `config/` retires into `templates/`, `.env` `0600` gate).
 
 Vision and phasing live in [`../README.md`](../README.md). Stack and architecture decisions live in [`../CLAUDE.md`](../CLAUDE.md). Auth/session and data-model design live in companion docs in this directory. This file tracks the work.
 

@@ -1,14 +1,18 @@
 {
   "name": "site-walker",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "A self-hosted, multi-tenant pre-sales chatbot API.",
   "private": true,
   "type": "module",
   "license": "AGPL-3.0-only",
   "author": "Paul <paul@headwall-hosting.com>",
+  "homepage": "https://github.com/headwalluk/site-walker",
   "repository": {
     "type": "git",
-    "url": "ssh://git@headgit.net:7652/headwall/site-walker.git"
+    "url": "git+https://github.com/headwalluk/site-walker.git"
+  },
+  "bugs": {
+    "url": "https://github.com/headwalluk/site-walker/issues"
   },
   "engines": {
     "node": ">=22.0.0"
@@ -37,6 +41,8 @@
     "typescript-eslint": "^8.59.3"
   },
   "dependencies": {
+    "@fastify/swagger": "^9.7.0",
+    "@fastify/swagger-ui": "^5.2.6",
     "commander": "^14.0.3",
     "fastify": "^5.8.5",
     "knex": "^3.2.10",

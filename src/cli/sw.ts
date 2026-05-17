@@ -17,7 +17,7 @@ import { readPersonaTemplate } from '../utils/templates.js';
 
 const program = new Command();
 
-program.name('sw').description('site-walker admin CLI').version('0.6.0');
+program.name('sw').description('site-walker admin CLI').version('0.7.0');
 
 const website = program.command('website').description('manage websites');
 

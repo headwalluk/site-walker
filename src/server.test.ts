@@ -5,6 +5,7 @@ import knex from 'knex';
 import type { Knex } from 'knex';
 import { buildServer } from './server.js';
 import { createWebsite, addOrigin } from './services/websites.js';
+import { VERSION } from './utils/version.js';
 
 function makeTestDb(): Knex {
   return knex({
@@ -24,7 +25,7 @@ function uniqueSlug(): string {
   return `test-${randomUUID().slice(0, 8)}`;
 }
 
-test('GET / returns ok payload with service and version', async (t) => {
+test('GET / returns JSON when Accept does not prefer HTML', async (t) => {
   const db = makeTestDb();
   const fastify = await buildServer({ db, logger: false });
   t.after(async () => {
@@ -37,8 +38,82 @@ test('GET / returns ok payload with service and version', async (t) => {
   assert.deepEqual(response.json(), {
     ok: true,
     service: 'site-walker',
-    version: '0.6.0',
+    version: VERSION,
   });
+});
+
+test('GET / returns the HTML landing page when Accept prefers text/html', async (t) => {
+  const db = makeTestDb();
+  const fastify = await buildServer({ db, logger: false });
+  t.after(async () => {
+    await fastify.close();
+    await db.destroy();
+  });
+
+  const response = await fastify.inject({
+    method: 'GET',
+    url: '/',
+    headers: { accept: 'text/html,application/xhtml+xml,*/*;q=0.8' },
+  });
+  assert.equal(response.statusCode, 200);
+  assert.match(response.headers['content-type'] as string, /text\/html/);
+  const body = response.body;
+  assert.match(body, /<title>site-walker<\/title>/);
+  assert.match(body, new RegExp(`Version ${VERSION}`));
+  assert.match(body, /github\.com\/headwalluk\/site-walker/);
+  assert.match(body, /\/openapi\.json/);
+});
+
+test('GET /openapi.json returns the generated OpenAPI 3 spec', async (t) => {
+  const db = makeTestDb();
+  const fastify = await buildServer({ db, logger: false });
+  t.after(async () => {
+    await fastify.close();
+    await db.destroy();
+  });
+
+  const response = await fastify.inject({ method: 'GET', url: '/openapi.json' });
+  assert.equal(response.statusCode, 200);
+  const spec = response.json();
+  assert.match(spec.openapi as string, /^3\./);
+  assert.equal(spec.info.title, 'site-walker');
+  assert.equal(spec.info.version, VERSION);
+  const paths = Object.keys(spec.paths as Record<string, unknown>);
+  assert.ok(paths.includes('/health'), `expected /health in paths, got: ${paths.join(', ')}`);
+  assert.ok(paths.includes('/sessions'), `expected /sessions in paths`);
+  assert.ok(paths.includes('/messages'), `expected /messages in paths`);
+  assert.ok(paths.includes('/chat'), `expected /chat in paths`);
+});
+
+test('GET /docs serves the Swagger UI HTML', async (t) => {
+  const db = makeTestDb();
+  const fastify = await buildServer({ db, logger: false });
+  t.after(async () => {
+    await fastify.close();
+    await db.destroy();
+  });
+
+  const response = await fastify.inject({ method: 'GET', url: '/docs/' });
+  assert.equal(response.statusCode, 200);
+  assert.match(response.headers['content-type'] as string, /text\/html/);
+  assert.match(response.body, /swagger-ui/i);
+});
+
+test('GET /health returns ok payload with DB reachable', async (t) => {
+  const db = makeTestDb();
+  const fastify = await buildServer({ db, logger: false });
+  t.after(async () => {
+    await fastify.close();
+    await db.destroy();
+  });
+
+  const response = await fastify.inject({ method: 'GET', url: '/health' });
+  assert.equal(response.statusCode, 200);
+  const body = response.json();
+  assert.equal(body.ok, true);
+  assert.equal(body.db, true);
+  assert.equal(body.version, VERSION);
+  assert.match(body.timestamp, /^\d{4}-\d{2}-\d{2}T/);
 });
 
 test('POST /sessions: rejects when Origin header is missing', async (t) => {

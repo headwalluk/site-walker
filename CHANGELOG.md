@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-05-17
+
+### Added
+- **Landing page** at `GET /`. Browsers (`Accept: text/html`) get a self-contained dark card showing the title, current version, strapline, a live status pill (calls `/health` after page load), four button-links (Health Check / GitHub Repo / API Documentation / OpenAPI JSON), and a small footer. JSON clients still get the previous `{ ok, service, version }` shape — content-negotiated. All HTML/CSS/JS is inline; no external assets, no CDN, no JS framework.
+- **`GET /health` endpoint.** Runs `SELECT 1` against MariaDB; returns 200 with `{ ok: true, db: true, version, timestamp }` on success, 503 with `ok: false` otherwise. The landing-page status pill drives off this endpoint.
+- **OpenAPI 3.x support** via `@fastify/swagger` + `@fastify/swagger-ui`:
+  - `/openapi.json` — the generated spec.
+  - `/docs` — Swagger UI for browsing the API interactively.
+  - Per-route `schema:` blocks with `summary`, `description`, `tags`, and full `response:` shapes for every status code. Request-body schemas are intentionally left out for now to preserve the M6 typed-error response shapes (`{ error: '...' }`); a follow-up can add them alongside a custom error handler.
+- `src/utils/version.ts` — reads `package.json` once at module load and exports the version, so the hardcoded version-in-three-files dance ends. `src/server.ts` and `src/server.test.ts` now reference `VERSION` from this module.
+- `package.json` gets `homepage` and `bugs` fields pointing at the GitHub repo; `repository.url` switched from the self-hosted SSH URL to the GitHub HTTPS form.
+
+### Changed
+- **Project repository moved to GitHub.** Public repo at https://github.com/headwalluk/site-walker; the previous self-hosted remote at `headgit.net` is retained as a secondary push target (`headgit`) for fallback.
+- **`validateRegistryAgainstWebsites` gains an optional `whereSlugs` filter** so tests can scope the consistency check to rows they own, instead of being broken by unrelated `model_slug` values in a shared dev DB. Production callers omit the argument and still scan everything. Fixes a pre-existing test isolation bug that surfaced during the M6 wrap-up.
+
+### Removed
+- One historical commit had a real (now-rotated) DB password accidentally committed in `.env.example` and reverted a few commits later. History was rewritten with `git filter-repo --replace-text` before the first GitHub push so the credential never lands on a public remote. Hashes from `532acf8` onward were rebuilt; the `headgit` remote was force-pushed to match.
+
+### Notes
+- `dev-notes/verify-trusted-api-default-route.png` (a reference screenshot from a sibling Headwall project) is now gitignored. It stayed on disk as the design guide for the landing page; once it's no longer useful it can be deleted by hand.
+- Deps: `@fastify/swagger` ^9, `@fastify/swagger-ui` ^5.
+
 ## [0.6.0] - 2026-05-17
 
 ### Added

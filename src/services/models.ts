@@ -144,14 +144,22 @@ export function validateContextBudget(check: ContextBudgetCheck): void {
  * Startup check: every website with a non-NULL model_slug must reference a
  * provider that exists in the loaded registry. Caller decides what to do
  * with the thrown error (fail boot, fail CLI command, etc.).
+ *
+ * `whereSlugs` narrows the scan to a specific subset of websites — used by
+ * tests that need to assert behaviour against rows they own, without being
+ * dragged into validating unrelated state in a shared dev DB. Production
+ * callers omit it to scan everything.
  */
 export async function validateRegistryAgainstWebsites(
   db: Knex,
   registry: ProviderRegistry,
+  whereSlugs?: string[],
 ): Promise<void> {
-  const rows = await db<Website>('websites')
-    .whereNotNull('model_slug')
-    .select('slug', 'model_slug');
+  const query = db<Website>('websites').whereNotNull('model_slug').select('slug', 'model_slug');
+  if (whereSlugs && whereSlugs.length > 0) {
+    query.whereIn('slug', whereSlugs);
+  }
+  const rows = await query;
   const problems: string[] = [];
   for (const row of rows) {
     if (!row.model_slug) continue;

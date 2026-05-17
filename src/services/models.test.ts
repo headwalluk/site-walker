@@ -228,7 +228,7 @@ test('validateRegistryAgainstWebsites: passes when every model_slug resolves', a
   const registry = fakeRegistry([piEntry]);
   await createWebsite(db, { slug, name: 'Test' });
   await setModel(db, slug, 'pi/qwen2:1.5b', registry);
-  await validateRegistryAgainstWebsites(db, registry);
+  await validateRegistryAgainstWebsites(db, registry, [slug]);
 });
 
 test('validateRegistryAgainstWebsites: fails when a website references a missing provider', async (t) => {
@@ -244,7 +244,7 @@ test('validateRegistryAgainstWebsites: fails when a website references a missing
   await setModel(db, slug, 'pi/qwen2:1.5b', registry);
 
   await assert.rejects(
-    () => validateRegistryAgainstWebsites(db, fakeRegistry([])),
+    () => validateRegistryAgainstWebsites(db, fakeRegistry([]), [slug]),
     /references provider "pi".*not defined/s,
   );
 });
