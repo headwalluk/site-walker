@@ -184,6 +184,49 @@ Set model_context_window=4096 for slug="acme-corp".
 
 This is the figure the `POST /chat` budget check refers to. The check refuses the request with `413 context_overflow` when `system + history + new user` tokens plus a headroom (12.5% of the window, 512-token floor) exceeds the window. Leave it unset (NULL) to skip the check entirely.
 
+### `sw website set-geo-mode <slug> <allowall|blocklist|allowlist>`
+
+Set the website's geo-blocking mode. Three modes:
+
+| Mode        | Behaviour                                                                        |
+| ----------- | -------------------------------------------------------------------------------- |
+| `allowall`  | Country list is ignored. Every visitor is accepted. **Default for new websites.**|
+| `blocklist` | Visitors whose IP resolves to a listed country are rejected; everyone else passes.|
+| `allowlist` | Only visitors whose IP resolves to a listed country are accepted.                |
+
+```
+$ ./bin/sw website set-geo-mode acme-corp allowlist
+Set geo mode for slug="acme-corp" to "allowlist".
+(Remember to populate the country list with `sw website set-geo-countries`.)
+```
+
+If the mode is set to `blocklist` or `allowlist`, the server requires `GEOIP_DB_PATH` to be configured ([`env.md`](env.md)). Otherwise startup will refuse with a clear error.
+
+### `sw website set-geo-countries <slug> <codes>`
+
+Atomically replace the website's country list. Codes are comma-separated ISO 3166-1 alpha-2 (two letters per country, case-insensitive on input — stored uppercase). Passing an empty string clears the list.
+
+```
+$ ./bin/sw website set-geo-countries acme-corp 'GB,US,FR'
+Set geo country list for slug="acme-corp": GB, US, FR (3 countries).
+
+$ ./bin/sw website set-geo-countries acme-corp ''
+Cleared geo country list for slug="acme-corp".
+```
+
+Duplicates and whitespace are tolerated and normalised. Codes that don't match `[A-Z]{2}` are rejected outright; full validation against the ISO list is left to MaxMind (it'll just never match an invented code).
+
+### `sw website show-geo <slug>`
+
+Display the current mode + country list.
+
+```
+$ ./bin/sw website show-geo acme-corp
+Geo policy for slug="acme-corp":
+  mode:      blocklist
+  countries: CN, KP, RU
+```
+
 ### `sw website show-model <slug>`
 
 Resolve the website's configured model against the registry and print the result.

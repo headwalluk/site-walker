@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-05-17
+
+### Added
+- **Per-website IP geo-blocking** via the local MaxMind GeoIP2 / GeoLite2 country database. New feature, not a milestone wrap — geo-blocking doesn't belong to any of the existing milestones in the tracker, so it lands as a between-milestone feature.
+  - Schema (`migrations/0006_add_geo_blocking.js`):
+    - `geo_modes` lookup table (`id, code UNIQUE, label`) seeded with `allowall`, `blocklist`, `allowlist`. **No enum columns** — the user's principle is "lookup tables over enums" so the migration ships one and the FK does the rest.
+    - `websites.geo_mode_id` FK to `geo_modes.id`, defaulted to `allowall` so existing websites pick up the safe default automatically.
+    - `website_geo_countries` join table (`website_id, country_code CHAR(2)`, unique pair) for the per-website ISO 3166-1 alpha-2 list.
+  - `src/services/geo.ts` — `MaxMindGeoChecker` (production binding), `GeoChecker` interface (test injection seam), `loadWebsiteGeoPolicy`, `checkGeoPolicy` (pure policy decision), `setWebsiteGeoMode`, `setWebsiteGeoCountries` (atomic replace, uppercases + dedupes), `getWebsiteGeoSummary`, `anyWebsiteHasGeoMode` (boot-time check). Validates ISO code shape (`/^[A-Z]{2}$/`) but doesn't fully validate against the ISO list — MaxMind just never matches invented codes.
+  - `src/services/geo.ts` policy: **`allowall` ignores the country list entirely**. `blocklist` denies listed countries, allows everything else. `allowlist` allows listed countries, denies everything else. Unresolvable IPs (private ranges, loopback, malformed) are **allowed in development, denied in production** — the asymmetric default keeps localhost dev workable without opening an unknown-country loophole on a public instance.
+  - `src/index.ts` — boot-time validation: if `GEOIP_DB_PATH` is unset but any website has a non-`allowall` mode, refuse to start with a clear message naming the var and the offending policies. If the path is set but the file can't be opened, fail loud too.
+  - **New route: `GET /sessions/preflight`.** Same auth + geo policy as `POST /sessions` but mints nothing. Returns `{ ok: true }` on success. Widgets can probe up-front to decide whether to render the chat affordance, instead of waiting for a 403 mid-conversation.
+  - Geo check wired into `POST /sessions`, `POST /chat`, `GET /messages`, and the new `GET /sessions/preflight`. Operator/meta routes (`/`, `/health`, `/docs`, `/openapi.json`) are untouched — they don't have a website context. Failure shape is `403 { error: 'geo_blocked' }` with no detail leaked to the client; the operator-side log line carries IP, country, slug, mode, and reason.
+  - `Fastify({ trustProxy: true })` — `req.ip` now honours `X-Forwarded-For` from a reverse proxy. No-op in dev (no proxy → falls through to socket address), required for the eventual `api.site-walker.net` deployment behind nginx.
+  - CLI: `sw website set-geo-mode <slug> <mode>`, `sw website set-geo-countries <slug> <codes>`, `sw website show-geo <slug>`. The first two are the operator's only path to enabling/disabling geo on a website; the third is a quick summary view.
+  - Env (`src/config/env.ts`): two new fields. `NODE_ENV` (default `'production'` — the tighter mode applies unless explicitly overridden) and `GEOIP_DB_PATH` (optional, path to a `.mmdb` file).
+  - 22 new tests (135 total). Service-level: each mode × in/out-of-list, null-country-dev-vs-prod, no-checker fallback, set-mode validation, set-countries replace/uppercase/dedupe/reject-invalid, mode-code typeguard, `anyWebsiteHasGeoMode`. Route-level via `fastify.inject({ remoteAddress: ... })` with an injected fake `GeoChecker`: blocklist matches → 403 on POST /sessions, allowlist permits one + denies another, preflight allow/deny (and verifies no session is minted on deny), POST /chat + GET /messages 403 paths.
+  - Docs: `docs/cli-sw.md` (three new commands), `docs/env.md` (NODE_ENV + GEOIP_DB_PATH rows + an example block), `docs/api-usage.md` (new `GET /sessions/preflight` reference + `geo_blocked` row in every relevant error table). `.env.example` updated with documented stubs for the new vars.
+  - Dep: `maxmind` ^5.0.6 — pure JS, no native bindings, fast synchronous lookups after async file open.
+
+### Changed
+- All website-scoped routes now run the geo check **after** website resolution but **before** any work that would have a side effect. POST /sessions doesn't mint a token to a blocked visitor; POST /chat doesn't persist a user message to a blocked visitor; GET /messages doesn't leak history to a blocked visitor. /openapi.json carries the new `403 geo_blocked` response on the affected routes.
+
 ## [0.9.1] - 2026-05-17
 
 ### Changed

@@ -41,6 +41,8 @@ If the file does not exist, the gate is a no-op.
 | `HOST`        | `127.0.0.1`    | API server, `./bin/chat` | Bind address for the API. `./bin/chat` uses it as the default for its outbound HTTP target. |
 | `PORT`        | `47830`        | API server, `./bin/chat` | Bind port for the API. **Avoid common defaults (3000, 8000, 8080, etc.).** `PORT+1` is reserved for any future port-bound test server. |
 | `SW_CONFIG`   | (unset)        | API, CLIs             | Override path for `site-walker.toml`. When set, the loader skips the four-path search. Still subject to the 0600 gate. See [`site-walker-toml.md`](site-walker-toml.md). |
+| `NODE_ENV`    | `production`   | API server            | Set to `development` (or any value other than `production`) to relax production-only safety defaults. Today the only behaviour gated on this is geo-blocking's null-country handling: in production an unresolvable IP is denied, in development it's allowed (so localhost / private ranges keep working). **Default is `production`** — the tighter mode kicks in unless you explicitly opt out. |
+| `GEOIP_DB_PATH` | (unset)      | API server            | Filesystem path to a MaxMind GeoIP2 / GeoLite2 country database (`.mmdb`). When set, geo-blocking is available; when unset, only `allowall` mode is supported. **If any website is configured with `blocklist` or `allowlist` and this var is unset (or the file can't be opened), the server refuses to start.** Typical value: `/var/lib/GeoIP/GeoLite2-Country.mmdb`. |
 
 Unrecognised variables are ignored; environment is shared with anything else running on the host, and we don't filter it.
 
@@ -57,6 +59,14 @@ DB_PORT=3306
 DB_NAME=site_walker
 DB_USER=site_walker
 DB_PASSWORD=change-me-please
+
+# Set this if you have at least one website using geo-blocking.
+# Typical value on a Debian-family host with MaxMind packages installed:
+# GEOIP_DB_PATH=/var/lib/GeoIP/GeoLite2-Country.mmdb
+
+# Set NODE_ENV=development to allow private/loopback IPs through the
+# geo-blocking check. The default is production, which denies them.
+# NODE_ENV=development
 ```
 
 ## Notes

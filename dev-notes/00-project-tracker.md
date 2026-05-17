@@ -1,8 +1,8 @@
 # site-walker — Project Tracker
 
 **Last Updated:** 17 May 2026
-**Current Version:** 0.9.1
-**Current Phase:** Milestones 7 + 8 partially shipped. M7 is awaiting `db backup/restore` + `blocks rebuild`; M8 is awaiting the direct Anthropic / Gemini / OpenAI cluster (OpenRouter alone unblocks production-quality models today). 0.9.1 is a patch — internal `process.env` consolidation behind `src/config/env.ts`, no visible change.
+**Current Version:** 0.10.0
+**Current Phase:** Milestones 7 + 8 partially shipped. M7 is awaiting `db backup/restore` + `blocks rebuild`; M8 is awaiting the direct Anthropic / Gemini / OpenAI cluster (OpenRouter alone unblocks production-quality models today). 0.10.0 is a between-milestone feature: per-website IP geo-blocking (MaxMind, lookup-table-driven modes, new `GET /sessions/preflight` probe). 0.9.1 was a patch — internal `process.env` consolidation behind `src/config/env.ts`, no visible change.
 **Overall Progress:** ~52% — M1–M6 complete (6 of 14), M7 + M8 partial. 0.9.0 shipped the OpenRouter protocol adapter + a generic model-discovery command (`sw provider models`); side-by-side against cortex/qwen2 on the Pi, OpenRouter→Haiku is dramatically better, which is the expected separation between cheap dev and production-ready inference. 0.8.0 expanded the admin CLI (website delete/set-welcome, origins subgroup, sessions browse). 0.7.0 was a between-milestone polish (GitHub move, HTML landing card, `/health`, OpenAPI 3 + Swagger UI). 0.6.0 shipped the Phase 1 deliverable (M6 chat endpoint + `./bin/chat`).
 
 Vision and phasing live in [`../README.md`](../README.md). Stack and architecture decisions live in [`../CLAUDE.md`](../CLAUDE.md). Auth/session and data-model design live in companion docs in this directory. This file tracks the work.

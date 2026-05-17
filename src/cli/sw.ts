@@ -19,11 +19,16 @@ import { assemblePrompt, loadDiskBlocks } from '../services/system-blocks.js';
 import { resolveModel, setContextWindow, setModel, setParameters } from '../services/models.js';
 import { loadConfig } from '../config/site-walker-config.js';
 import { listProviderModels } from '../providers/list-models.js';
+import {
+  getWebsiteGeoSummary,
+  setWebsiteGeoCountries,
+  setWebsiteGeoMode,
+} from '../services/geo.js';
 import { readPersonaTemplate } from '../utils/templates.js';
 
 const program = new Command();
 
-program.name('sw').description('site-walker admin CLI').version('0.9.1');
+program.name('sw').description('site-walker admin CLI').version('0.10.0');
 
 const website = program.command('website').description('manage websites');
 
@@ -291,6 +296,69 @@ website
       console.log(`  model:                ${resolved.model}`);
       console.log(`  parameters:           ${JSON.stringify(resolved.parameters)}`);
       console.log(`  model_context_window: ${resolved.contextWindow ?? '(unset)'}`);
+    } finally {
+      await db.destroy();
+    }
+  });
+
+website
+  .command('set-geo-mode')
+  .description("set a website's geo-blocking mode (allowall|blocklist|allowlist)")
+  .argument('<slug>', 'website slug')
+  .argument('<mode>', 'one of: allowall, blocklist, allowlist')
+  .action(async (slug: string, mode: string) => {
+    try {
+      const result = await setWebsiteGeoMode(db, slug, mode);
+      console.log(`Set geo mode for slug="${slug}" to "${result.modeCode}".`);
+      if (result.modeCode !== 'allowall') {
+        console.log('(Remember to populate the country list with `sw website set-geo-countries`.)');
+      }
+    } finally {
+      await db.destroy();
+    }
+  });
+
+website
+  .command('set-geo-countries')
+  .description("set a website's geo country list (comma-separated ISO codes; empty clears)")
+  .argument('<slug>', 'website slug')
+  .argument('<codes>', 'comma-separated ISO 3166-1 alpha-2 codes (e.g. "GB,US,FR"); empty clears')
+  .action(async (slug: string, codes: string) => {
+    try {
+      const list = codes
+        .split(',')
+        .map((s) => s.trim())
+        .filter((s) => s.length > 0);
+      const result = await setWebsiteGeoCountries(db, slug, list);
+      if (result.countries.length === 0) {
+        console.log(`Cleared geo country list for slug="${slug}".`);
+      } else {
+        console.log(
+          `Set geo country list for slug="${slug}": ${result.countries.join(', ')} ` +
+            `(${result.countries.length} ${result.countries.length === 1 ? 'country' : 'countries'}).`,
+        );
+      }
+    } finally {
+      await db.destroy();
+    }
+  });
+
+website
+  .command('show-geo')
+  .description("show a website's geo-blocking mode + country list")
+  .argument('<slug>', 'website slug')
+  .action(async (slug: string) => {
+    try {
+      const summary = await getWebsiteGeoSummary(db, slug);
+      console.log(`Geo policy for slug="${summary.slug}":`);
+      console.log(`  mode:      ${summary.modeCode}`);
+      if (summary.modeCode === 'allowall') {
+        console.log(`  countries: (ignored in allowall mode)`);
+      } else if (summary.countries.length === 0) {
+        console.log(`  countries: (none — list is empty)`);
+      } else {
+        console.log(`  countries: ${summary.countries.join(', ')}`);
+      }
     } finally {
       await db.destroy();
     }

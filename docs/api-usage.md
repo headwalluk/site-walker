@@ -18,11 +18,12 @@ A widget has three things to do:
 
 Three endpoints cover this:
 
-| Endpoint        | Method | Purpose                                                   |
-| --------------- | ------ | --------------------------------------------------------- |
-| `/sessions`     | POST   | Mint a session token. Returns the welcome message too.    |
-| `/chat`         | POST   | Send one user turn. Returns the assistant's reply.        |
-| `/messages`     | GET    | Rehydrate full conversation history for an existing session. |
+| Endpoint               | Method | Purpose                                                             |
+| ---------------------- | ------ | ------------------------------------------------------------------- |
+| `/sessions/preflight`  | GET    | Probe whether a session *could* be minted — no token issued.        |
+| `/sessions`            | POST   | Mint a session token. Returns the welcome message too.              |
+| `/chat`                | POST   | Send one user turn. Returns the assistant's reply.                  |
+| `/messages`            | GET    | Rehydrate full conversation history for an existing session.        |
 
 The base URL in development is `http://127.0.0.1:47830`. In production the instance lives at `https://api.site-walker.net` (or wherever the operator has deployed it).
 
@@ -38,6 +39,25 @@ Before any widget loads, the operator running the site-walker instance has done 
 The first one of these the widget cares about is the **origin allowlist**. The browser sends an `Origin` header on requests automatically; site-walker accepts the session-creation request only if that `Origin` matches one of the website's registered origins. If you see `403 origin_not_allowed`, the operator hasn't added your host yet.
 
 ## Endpoint reference
+
+### `GET /sessions/preflight` — "can I start a session?"
+
+A lightweight probe with the same auth + geo policy as `POST /sessions`, but it mints nothing and persists nothing. Use it on widget mount to decide whether to show a chat affordance at all.
+
+```http
+GET /sessions/preflight
+Origin: https://www.acme-corp.example
+```
+
+**Success (200):**
+
+```json
+{ "ok": true }
+```
+
+**Failure shapes:** identical to `POST /sessions` minus the success body — `400 origin_required`, `403 origin_not_allowed`, `403 geo_blocked`, `503 capacity_exceeded`.
+
+If preflight returns 200, a subsequent `POST /sessions` from the same browser will almost certainly succeed too. (Almost — the operator could change the policy between the two calls. Don't treat preflight as a guarantee, just an early signal.)
 
 ### `POST /sessions` — mint a session
 
@@ -65,6 +85,7 @@ The token is opaque, 64 hex characters, and has no client-side expiry concept to
 | ------ | --------------------- | -------------------------------------------------------------------------------- |
 | 400    | `origin_required`     | The browser didn't send an `Origin` header. Unusual — most browsers always do.   |
 | 403    | `origin_not_allowed`  | Your host isn't on the website's allowlist. Operator action required.            |
+| 403    | `geo_blocked`         | The visitor's IP is in (blocklist mode) or out of (allowlist mode) the website's country list. Hide the chat affordance for this visitor. |
 | 503    | `capacity_exceeded`   | Per-IP / per-website rate limit reached. Phase 1 stub; lights up in M11.         |
 
 ### `POST /chat` — send a user turn
@@ -104,6 +125,7 @@ The message is trimmed server-side and must be between 1 and 8000 characters aft
 | 400    | `message_too_long`      | `message` exceeds 8000 chars. `detail` carries `length` and `limit`.               |
 | 401    | `token_required`        | `Authorization` header missing.                                                    |
 | 401    | `invalid_token`         | Token isn't recognised. Drop the cached token and mint a fresh session.            |
+| 403    | `geo_blocked`           | The visitor's IP is no longer accepted by the website's geo policy (operator may have changed it mid-session). Drop the cached token; this visitor can't continue. |
 | 413    | `context_overflow`      | System prompt + history + new message exceeds the website's declared context window. `detail` carries `total_prompt_tokens`, `context_window`, `headroom_tokens`. Recoverable — see "Error handling" below. |
 | 502    | `model_error`           | Upstream LLM call failed (rate limit, network, etc.). Retry after a delay.         |
 | 503    | `model_not_configured`  | Operator hasn't set a model for this website. Operator action required.            |
@@ -144,10 +166,11 @@ Messages are ordered ascending by `created_at`. The welcome message is **not** p
 
 **Failure shapes:**
 
-| Status | `error` value     | Meaning                                                          |
-| ------ | ----------------- | ---------------------------------------------------------------- |
-| 401    | `token_required`  | Missing `Authorization`.                                         |
-| 401    | `invalid_token`   | Token isn't recognised. Drop the cached token and start over.    |
+| Status | `error` value     | Meaning                                                                  |
+| ------ | ----------------- | ------------------------------------------------------------------------ |
+| 401    | `token_required`  | Missing `Authorization`.                                                 |
+| 401    | `invalid_token`   | Token isn't recognised. Drop the cached token and start over.            |
+| 403    | `geo_blocked`     | The visitor's IP no longer fits the website's geo policy. Same handling as for `POST /chat` above. |
 
 ## Putting it together
 

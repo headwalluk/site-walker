@@ -26,6 +26,21 @@ export interface RuntimeEnv {
   readonly swConfig: string | undefined;
   /** Resolved $XDG_CONFIG_HOME, defaulting to $HOME/.config. */
   readonly xdgConfigHome: string;
+  /**
+   * Raw `NODE_ENV`, defaulting to `'production'` so the tighter mode
+   * applies whenever the var is unset. Set explicitly to `'development'`
+   * (or any other value) to opt out of production-tight defaults.
+   */
+  readonly nodeEnv: string;
+  /** `true` iff `nodeEnv === 'production'`. Used for security defaults. */
+  readonly isProduction: boolean;
+  /**
+   * Path to the MaxMind GeoIP2 / GeoLite2 country database file. When set,
+   * the server loads it at boot and the geo-blocking feature is available.
+   * When unset, geo-blocking can only operate in `allowall` mode — startup
+   * refuses to continue if any website has a stricter mode configured.
+   */
+  readonly geoipDbPath: string | undefined;
 }
 
 function parsePort(raw: string | undefined, name: string, fallback: number): number {
@@ -50,6 +65,7 @@ function nonEmptyOrDefault(raw: string | undefined, fallback: string): string {
  */
 export function loadEnv(): RuntimeEnv {
   const home = os.homedir();
+  const nodeEnv = nonEmptyOrDefault(process.env.NODE_ENV, 'production');
   const env: RuntimeEnv = Object.freeze({
     db: Object.freeze({
       host: nonEmptyOrDefault(process.env.DB_HOST, '127.0.0.1'),
@@ -65,6 +81,12 @@ export function loadEnv(): RuntimeEnv {
     swConfig:
       process.env.SW_CONFIG && process.env.SW_CONFIG !== '' ? process.env.SW_CONFIG : undefined,
     xdgConfigHome: nonEmptyOrDefault(process.env.XDG_CONFIG_HOME, path.join(home, '.config')),
+    nodeEnv,
+    isProduction: nodeEnv === 'production',
+    geoipDbPath:
+      process.env.GEOIP_DB_PATH && process.env.GEOIP_DB_PATH !== ''
+        ? process.env.GEOIP_DB_PATH
+        : undefined,
   });
   return env;
 }

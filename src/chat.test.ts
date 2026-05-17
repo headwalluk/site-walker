@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto';
 import type { Knex } from 'knex';
 import { buildServer } from './server.js';
 import { createWebsite, addOrigin } from './services/websites.js';
+import { setWebsiteGeoCountries, setWebsiteGeoMode, type GeoChecker } from './services/geo.js';
 import { makeTestDb } from './testing/db.js';
 import type { ProviderEntry, ProviderRegistry } from './config/site-walker-config.js';
 import type { ChatRequest, ChatResponse, ProtocolAdapter } from './providers/index.js';
@@ -403,4 +404,240 @@ test('POST /chat: 500 when buildServer was constructed without a registry', asyn
   });
   assert.equal(res.statusCode, 500);
   assert.equal(res.json().error, 'server_misconfigured');
+});
+
+// ----- geo-blocking -----
+
+function fakeGeoChecker(mapping: Record<string, string | null>): GeoChecker {
+  return { lookup: (ip) => (ip in mapping ? mapping[ip] : null) };
+}
+
+test('POST /sessions: 403 geo_blocked when blocklist matches the visitor country', async (t) => {
+  const db = makeTestDb();
+  const fastify = await buildServer({
+    db,
+    logger: false,
+    geoChecker: fakeGeoChecker({ '203.0.113.10': 'RU' }),
+  });
+  const { slug, origin } = await makeChatWebsite(db);
+  await setWebsiteGeoMode(db, slug, 'blocklist');
+  await setWebsiteGeoCountries(db, slug, ['RU', 'CN']);
+  t.after(async () => {
+    await fastify.close();
+    await db('websites').where({ slug }).del();
+    await db.destroy();
+  });
+
+  const res = await fastify.inject({
+    method: 'POST',
+    url: '/sessions',
+    headers: { origin },
+    remoteAddress: '203.0.113.10',
+  });
+  assert.equal(res.statusCode, 403);
+  assert.equal(res.json().error, 'geo_blocked');
+});
+
+test('POST /sessions: allowlist permits the listed country and rejects others', async (t) => {
+  const db = makeTestDb();
+  const fastify = await buildServer({
+    db,
+    logger: false,
+    geoChecker: fakeGeoChecker({
+      '203.0.113.20': 'GB',
+      '203.0.113.21': 'US',
+    }),
+  });
+  const { slug, origin } = await makeChatWebsite(db);
+  await setWebsiteGeoMode(db, slug, 'allowlist');
+  await setWebsiteGeoCountries(db, slug, ['GB']);
+  t.after(async () => {
+    await fastify.close();
+    await db('websites').where({ slug }).del();
+    await db.destroy();
+  });
+
+  const ok = await fastify.inject({
+    method: 'POST',
+    url: '/sessions',
+    headers: { origin },
+    remoteAddress: '203.0.113.20',
+  });
+  assert.equal(ok.statusCode, 201);
+
+  const denied = await fastify.inject({
+    method: 'POST',
+    url: '/sessions',
+    headers: { origin },
+    remoteAddress: '203.0.113.21',
+  });
+  assert.equal(denied.statusCode, 403);
+  assert.equal(denied.json().error, 'geo_blocked');
+});
+
+test('GET /sessions/preflight: returns { ok: true } when geo allows', async (t) => {
+  const db = makeTestDb();
+  const fastify = await buildServer({
+    db,
+    logger: false,
+    geoChecker: fakeGeoChecker({ '203.0.113.30': 'GB' }),
+  });
+  const { slug, origin } = await makeChatWebsite(db);
+  await setWebsiteGeoMode(db, slug, 'allowlist');
+  await setWebsiteGeoCountries(db, slug, ['GB']);
+  t.after(async () => {
+    await fastify.close();
+    await db('websites').where({ slug }).del();
+    await db.destroy();
+  });
+
+  const res = await fastify.inject({
+    method: 'GET',
+    url: '/sessions/preflight',
+    headers: { origin },
+    remoteAddress: '203.0.113.30',
+  });
+  assert.equal(res.statusCode, 200);
+  assert.deepEqual(res.json(), { ok: true });
+});
+
+test('GET /sessions/preflight: 403 geo_blocked when policy denies (mints nothing)', async (t) => {
+  const db = makeTestDb();
+  const fastify = await buildServer({
+    db,
+    logger: false,
+    geoChecker: fakeGeoChecker({ '203.0.113.40': 'RU' }),
+  });
+  const { slug, origin } = await makeChatWebsite(db);
+  await setWebsiteGeoMode(db, slug, 'blocklist');
+  await setWebsiteGeoCountries(db, slug, ['RU']);
+  t.after(async () => {
+    await fastify.close();
+    await db('websites').where({ slug }).del();
+    await db.destroy();
+  });
+
+  const res = await fastify.inject({
+    method: 'GET',
+    url: '/sessions/preflight',
+    headers: { origin },
+    remoteAddress: '203.0.113.40',
+  });
+  assert.equal(res.statusCode, 403);
+  assert.equal(res.json().error, 'geo_blocked');
+
+  // Verify no session was minted as a side effect.
+  const sessionCount = await db('sessions')
+    .join('websites', 'websites.id', 'sessions.website_id')
+    .where('websites.slug', slug)
+    .count<{ n: number }[]>({ n: '*' });
+  assert.equal(Number(sessionCount[0].n), 0);
+});
+
+test('GET /sessions/preflight: 400 when Origin missing, 403 when not allowlisted', async (t) => {
+  const db = makeTestDb();
+  const fastify = await buildServer({
+    db,
+    logger: false,
+    geoChecker: fakeGeoChecker({}),
+  });
+  t.after(async () => {
+    await fastify.close();
+    await db.destroy();
+  });
+
+  const missing = await fastify.inject({ method: 'GET', url: '/sessions/preflight' });
+  assert.equal(missing.statusCode, 400);
+  assert.equal(missing.json().error, 'origin_required');
+
+  const stranger = await fastify.inject({
+    method: 'GET',
+    url: '/sessions/preflight',
+    headers: { origin: 'https://stranger.example.com' },
+  });
+  assert.equal(stranger.statusCode, 403);
+  assert.equal(stranger.json().error, 'origin_not_allowed');
+});
+
+test('POST /chat: 403 geo_blocked rejects after session is minted', async (t) => {
+  const db = makeTestDb();
+  // First request (POST /sessions) sees GB → allowed.
+  // Second request (POST /chat) sees RU → blocked.
+  const fastify = await buildServer({
+    db,
+    logger: false,
+    registry: makeFakeRegistry(),
+    adapterFactory: () => makeFakeAdapter(),
+    geoChecker: fakeGeoChecker({
+      '203.0.113.50': 'GB',
+      '203.0.113.51': 'RU',
+    }),
+  });
+  const { slug, origin } = await makeChatWebsite(db);
+  t.after(async () => {
+    await fastify.close();
+    await db('websites').where({ slug }).del();
+    await db.destroy();
+  });
+
+  const sessionRes = await fastify.inject({
+    method: 'POST',
+    url: '/sessions',
+    headers: { origin },
+    remoteAddress: '203.0.113.50',
+  });
+  assert.equal(sessionRes.statusCode, 201);
+  const token = sessionRes.json().session_token;
+
+  // Now flip the policy to a blocklist that includes RU, and call /chat from RU.
+  await setWebsiteGeoMode(db, slug, 'blocklist');
+  await setWebsiteGeoCountries(db, slug, ['RU']);
+
+  const chatRes = await fastify.inject({
+    method: 'POST',
+    url: '/chat',
+    headers: { authorization: `Bearer ${token}` },
+    payload: { message: 'hi' },
+    remoteAddress: '203.0.113.51',
+  });
+  assert.equal(chatRes.statusCode, 403);
+  assert.equal(chatRes.json().error, 'geo_blocked');
+});
+
+test('GET /messages: 403 geo_blocked when policy denies', async (t) => {
+  const db = makeTestDb();
+  const fastify = await buildServer({
+    db,
+    logger: false,
+    geoChecker: fakeGeoChecker({
+      '203.0.113.60': 'GB',
+      '203.0.113.61': 'RU',
+    }),
+  });
+  const { slug, origin } = await makeChatWebsite(db);
+  t.after(async () => {
+    await fastify.close();
+    await db('websites').where({ slug }).del();
+    await db.destroy();
+  });
+
+  const sessionRes = await fastify.inject({
+    method: 'POST',
+    url: '/sessions',
+    headers: { origin },
+    remoteAddress: '203.0.113.60',
+  });
+  const token = sessionRes.json().session_token;
+
+  await setWebsiteGeoMode(db, slug, 'blocklist');
+  await setWebsiteGeoCountries(db, slug, ['RU']);
+
+  const res = await fastify.inject({
+    method: 'GET',
+    url: '/messages',
+    headers: { authorization: `Bearer ${token}` },
+    remoteAddress: '203.0.113.61',
+  });
+  assert.equal(res.statusCode, 403);
+  assert.equal(res.json().error, 'geo_blocked');
 });

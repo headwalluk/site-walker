@@ -5,7 +5,14 @@ import type { Knex } from 'knex';
 import { findWebsiteByOrigin } from './services/websites.js';
 import { createSession, findSessionByToken, listMessages } from './services/sessions.js';
 import { ChatError, runChat, type AdapterFactory } from './services/chat.js';
+import {
+  checkGeoPolicy,
+  loadWebsiteGeoPolicy,
+  type CheckGeoResult,
+  type GeoChecker,
+} from './services/geo.js';
 import type { ProviderRegistry } from './config/site-walker-config.js';
+import { env as runtimeEnv } from './config/env.js';
 import { VERSION } from './utils/version.js';
 
 const DEFAULT_WELCOME = 'Hi! How can I help?';
@@ -22,6 +29,12 @@ export interface BuildServerOpts {
   registry?: ProviderRegistry;
   /** Replace the adapter factory used by /chat (tests inject a fake). */
   adapterFactory?: AdapterFactory;
+  /**
+   * Country lookup for geo-blocking. Pass `null` to skip lookups entirely
+   * (only safe when every website is in `allowall` mode — production code
+   * checks for this at boot). Tests inject a stub.
+   */
+  geoChecker?: GeoChecker | null;
 }
 
 /**
@@ -188,9 +201,23 @@ const errorResponseSchema = {
   required: ['error'],
 };
 
+async function enforceGeo(
+  db: Knex,
+  websiteId: number,
+  ip: string,
+  checker: GeoChecker | null,
+): Promise<CheckGeoResult> {
+  const policy = await loadWebsiteGeoPolicy(db, websiteId);
+  return checkGeoPolicy(policy, ip, checker, { isProduction: runtimeEnv.isProduction });
+}
+
 export async function buildServer(opts: BuildServerOpts): Promise<FastifyInstance> {
   const { db, logger = true, registry, adapterFactory } = opts;
-  const fastify = Fastify({ logger });
+  const geoChecker: GeoChecker | null = opts.geoChecker ?? null;
+  // trustProxy: required for X-Forwarded-For to be honoured behind nginx /
+  // Cloudflare / whatever fronts api.site-walker.net. In dev with no proxy
+  // it's a no-op — req.ip falls through to the socket address.
+  const fastify = Fastify({ logger, trustProxy: true });
 
   await fastify.register(fastifySwagger, {
     openapi: {
@@ -369,6 +396,21 @@ export async function buildServer(opts: BuildServerOpts): Promise<FastifyInstanc
         return reply.status(403).send({ error: 'origin_not_allowed' });
       }
 
+      const geo = await enforceGeo(db, website.id, req.ip, geoChecker);
+      if (!geo.allowed) {
+        req.log.info(
+          {
+            ip: req.ip,
+            country: geo.country,
+            slug: website.slug,
+            mode: geo.mode,
+            reason: geo.reason,
+          },
+          'POST /sessions: geo_blocked',
+        );
+        return reply.status(403).send({ error: 'geo_blocked' });
+      }
+
       if (!hasCapacity(website.id)) {
         return reply.status(503).send({ error: 'capacity_exceeded' });
       }
@@ -378,6 +420,78 @@ export async function buildServer(opts: BuildServerOpts): Promise<FastifyInstanc
         session_token: session.token,
         welcome_message: website.welcome_message ?? DEFAULT_WELCOME,
       });
+    },
+  );
+
+  fastify.get(
+    '/sessions/preflight',
+    {
+      attachValidation: true,
+      schema: {
+        tags: ['sessions'],
+        summary: 'Probe whether a session could be minted',
+        description:
+          'Same auth and geo policy as POST /sessions, but mints nothing. Returns ' +
+          '`{ ok: true }` if a session *could* be started by this Origin from this IP. ' +
+          'Useful for widgets that want to hide the chat affordance up-front rather ' +
+          'than discovering blockers when the visitor tries to type.',
+        headers: {
+          type: 'object',
+          required: ['origin'],
+          properties: {
+            origin: { type: 'string' },
+          },
+          additionalProperties: true,
+        },
+        response: {
+          200: {
+            description: 'session could be minted',
+            type: 'object',
+            properties: { ok: { type: 'boolean' } },
+            required: ['ok'],
+          },
+          400: errorResponseSchema,
+          403: errorResponseSchema,
+          503: errorResponseSchema,
+        },
+      },
+    },
+    async (req, reply) => {
+      const origin = req.headers.origin;
+      if (!origin) {
+        return reply.status(400).send({ error: 'origin_required' });
+      }
+
+      let website = null;
+      try {
+        website = await findWebsiteByOrigin(db, origin);
+      } catch {
+        // Malformed origin — treat as not allowed.
+      }
+      if (!website) {
+        return reply.status(403).send({ error: 'origin_not_allowed' });
+      }
+
+      const geo = await enforceGeo(db, website.id, req.ip, geoChecker);
+      if (!geo.allowed) {
+        req.log.info(
+          {
+            ip: req.ip,
+            country: geo.country,
+            slug: website.slug,
+            mode: geo.mode,
+            reason: geo.reason,
+          },
+          'GET /sessions/preflight: geo_blocked',
+        );
+        return reply.status(403).send({ error: 'geo_blocked' });
+      }
+
+      if (!hasCapacity(website.id)) {
+        return reply.status(503).send({ error: 'capacity_exceeded' });
+      }
+
+      return reply.send({ ok: true });
     },
   );
 
@@ -414,6 +528,7 @@ export async function buildServer(opts: BuildServerOpts): Promise<FastifyInstanc
             required: ['messages'],
           },
           401: errorResponseSchema,
+          403: errorResponseSchema,
         },
       },
     },
@@ -425,6 +540,20 @@ export async function buildServer(opts: BuildServerOpts): Promise<FastifyInstanc
       const session = await findSessionByToken(db, token);
       if (!session) {
         return reply.status(401).send({ error: 'invalid_token' });
+      }
+      const geo = await enforceGeo(db, session.website_id, req.ip, geoChecker);
+      if (!geo.allowed) {
+        req.log.info(
+          {
+            ip: req.ip,
+            country: geo.country,
+            websiteId: session.website_id,
+            mode: geo.mode,
+            reason: geo.reason,
+          },
+          'GET /messages: geo_blocked',
+        );
+        return reply.status(403).send({ error: 'geo_blocked' });
       }
       const messages = await listMessages(db, session.id);
       return reply.send({ messages });
@@ -463,6 +592,7 @@ export async function buildServer(opts: BuildServerOpts): Promise<FastifyInstanc
           },
           400: errorResponseSchema,
           401: errorResponseSchema,
+          403: errorResponseSchema,
           413: errorResponseSchema,
           500: errorResponseSchema,
           502: errorResponseSchema,
@@ -482,6 +612,28 @@ export async function buildServer(opts: BuildServerOpts): Promise<FastifyInstanc
       const body = req.body as { message?: unknown } | undefined;
       if (!body || typeof body.message !== 'string') {
         return reply.status(400).send({ error: 'message_required' });
+      }
+
+      // Resolve the session up-front for the geo check; runChat will look it
+      // up again. Two queries, but the second is on a fresh transaction and
+      // bumps last_active_at, so deduplicating isn't worth the coupling.
+      const session = await findSessionByToken(db, token);
+      if (!session) {
+        return reply.status(401).send({ error: 'invalid_token' });
+      }
+      const geo = await enforceGeo(db, session.website_id, req.ip, geoChecker);
+      if (!geo.allowed) {
+        req.log.info(
+          {
+            ip: req.ip,
+            country: geo.country,
+            websiteId: session.website_id,
+            mode: geo.mode,
+            reason: geo.reason,
+          },
+          'POST /chat: geo_blocked',
+        );
+        return reply.status(403).send({ error: 'geo_blocked' });
       }
 
       try {
