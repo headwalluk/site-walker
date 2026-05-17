@@ -1,80 +1,29 @@
 # site-walker
 
-A self-hosted, multi-tenant chatbot API for answering pre-sales questions on
-low-traffic websites. Bought-in services exist; this is being built for the fun
-of it.
+[![License: AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](LICENSE)
+[![Node: ≥22](https://img.shields.io/badge/node-%E2%89%A522-339933.svg?logo=node.js&logoColor=white)](package.json)
+[![Status: pre-1.0](https://img.shields.io/badge/status-pre--1.0-orange.svg)](dev-notes/00-project-tracker.md)
 
-## Goals
+A self-hosted, multi-tenant pre-sales chatbot API.
 
-- A chatbot HTTP endpoint that web visitors can talk to about the business/site.
-- **Multi-tenant:** one API instance serves many websites. Each website has its
-  own system blocks, persona, and configured LLM. Tenant resolution for browser
-  traffic happens via the request `Origin` + an opaque session token; no API
-  keys in Phase 1.
-- Each visitor session maintains its own conversation history server-side, scoped
-  to the website it belongs to.
-- Conversations are seeded with **preformatted system blocks** (per website)
-  containing core FAQs, glossary, and a website/company/business summary.
-- Those system blocks are mostly static — regenerated daily or weekly by a cron
-  using a high-end LLM, then served from disk at request time.
-- An operator CLI (`./bin/sw`) for admin tasks: managing websites, origin
-  allowlists, model selection, database backup/restore, ad-hoc system-block
-  rebuilds.
+## What it is
 
-## Hardware & model strategy
+One site-walker instance serves many websites. Visitors talk to the bot through their website's own integration (a WordPress plugin, in the design case — that lives in a separate project). The bot answers from per-website system blocks plus the running conversation, persisted server-side. No tools, no agents, no cross-session memory: a tight pre-sales Q&A bot you can point at your own infrastructure.
 
-- **Development:** locally-hosted Ollama on a Raspberry Pi with hardware-accelerated
-  NPU. Reasonable speed, but small context window.
-- **Production fallback:** if the Pi's context window proves too tight, swap the
-  model backend for Anthropic Haiku (larger context, similar latency profile from
-  the visitor's point of view). The application code should treat the model as a
-  pluggable backend so this swap is a config change, not a rewrite.
+Browser auth is by `Origin` allowlist + opaque session token. LLM backends are pluggable: Phase 1 ships an `ollama-native` adapter for self-hosting on a Raspberry Pi or laptop; cloud adapters (Anthropic, OpenRouter) land in Phase 2.
 
-## Phased approach
+## Who it's for
 
-### Phase 1 — Simple test project
-Smallest thing that proves the loop end-to-end:
-- `POST /sessions` mints a session token after verifying the request `Origin`
-  against the calling website's allowlist. Returns a welcome message.
-- `POST /chat` accepts the session token (as a bearer) plus a message,
-  appends to history, runs the LLM with that website's system blocks
-  prepended, returns the new reply.
-- `GET /messages` re-hydrates the conversation on page reload.
-- Per-session conversation history in MariaDB, scoped by `website_id`.
-- Pluggable LLM backend behind a TOML-declared provider registry. Phase 1
-  ships the `ollama-native` adapter; the abstraction means adding cloud
-  providers later is a config edit, not a rewrite.
-- `./bin/sw` admin CLI — enough to register a website, manage its origin
-  allowlist and welcome message, pick a model, and back up/restore the
-  database.
-- `./bin/chat` test helper — Node + readline interactive client that reads
-  the project `.env` for host/port and exercises the loop from the terminal.
-  Replaces a browser UI in development.
+Small-site operators who want a pre-sales bot they can stand up and reason about end-to-end without renting somebody else's SaaS — and developers who want a small, opinionated codebase to read or extend.
 
-Goal: validate that the Pi + system-blocks approach gives useful answers at
-acceptable latency, and surface whatever context-window pain points exist.
+## Docs
 
-### Phase 2 — Production
-Add the things a real public endpoint needs:
-- Additional protocol adapters (`openrouter`, `anthropic`) on top of the
-  Phase 1 abstraction.
-- A strategy for trimming conversation history when context fills
-  (sliding window vs. summarise-older-turns — decide before schema is set).
-- Prompt-injection / jailbreak handling appropriate for a pre-sales bot.
-- Rate limiting / abuse protection (first Redis use).
-- Conversation logging review — retention policy + operator review tooling.
-- Cron job that rebuilds each website's system blocks from source material.
-- Production deployment runbook, health checks, cluster validation.
+Operator and developer reference docs live in [`docs/`](docs/):
 
-## Non-goals (for now)
+- [**`./bin/sw` CLI reference**](docs/cli-sw.md) — register websites, manage origins, choose models, inspect system blocks.
+- [**`./bin/chat` reference**](docs/cli-chat.md) — interactive test client that exercises the loop end-to-end.
+- [**`site-walker.toml`**](docs/site-walker-toml.md) — the provider registry: search paths, permission gate, per-provider keys.
+- [**`.env`**](docs/env.md) — environment file: database connection, host/port, permission gate.
+- [**System blocks**](docs/system-blocks.md) — persona, disk blocks, ordering rules, token-budget interplay.
 
-- HTML widget / browser code. The visitor-facing widget is a separate project,
-  expected to ship as a **WordPress plugin** that calls this API.
-- Account-based memory across sessions.
-- Anything resembling agentic tool use — pre-sales Q&A only.
-
-## Open questions to settle in Phase 1
-
-- History-trimming strategy (shapes session storage schema; settled in Phase 2 but
-  schema should accommodate the chosen approach).
-- Where the bot should say "I don't know, contact us" rather than guess.
+Internal planning, design docs, and the project tracker live in [`dev-notes/`](dev-notes/).
