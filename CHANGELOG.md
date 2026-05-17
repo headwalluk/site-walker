@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-05-17
+
+### Added
+- **M8 (partial)** — first cloud-LLM protocol adapter. OpenRouter is now a first-class provider, which incidentally unlocks Anthropic / OpenAI / Google models behind a single integration. A direct Anthropic adapter (and Gemini / OpenAI siblings) is planned but deferred — there's no urgent reason to add three adapters when OpenRouter already reaches all of them.
+  - `src/providers/openrouter.ts` — `OpenRouterAdapter` implementing the OpenAI Chat Completions wire format: `POST {base_url}/chat/completions`, `Authorization: Bearer <api_key>`, body shape `{ model, messages, temperature?, top_p?, max_tokens?, stop?, stream: false }`. Response parsing pulls `choices[0].message.content` for the reply and `usage.prompt_tokens` / `usage.completion_tokens` for token accounting. Trailing slash on `base_url` is normalised. `api_key` missing → constructor throws.
+  - Default `base_url` of `https://openrouter.ai/api/v1` when the TOML entry doesn't set one. Override is supported (self-hosted OpenAI-compatible proxies that speak the OpenRouter shape).
+  - Sends `HTTP-Referer: https://site-walker.net` + `X-Title: Site Walker` headers by default so requests show up attributed in OpenRouter's dashboards. Both are overridable via constructor opts.
+  - Wired into `buildAdapter` in `src/providers/index.ts`. The previous "lands in M8" throw for `openrouter` is gone; `anthropic` and `openai-compatible` still throw, with the error message now suggesting `openrouter` as the path to Anthropic models in the meantime.
+- **Model discovery.**
+  - `src/providers/list-models.ts` — `listProviderModels(entry)` queries a configured provider for its available models. `ollama-native` → `GET {base_url}/api/tags`; `openrouter` → `GET {base_url}/models` (with `Authorization: Bearer <api_key>` if a key is present, for dashboard attribution; not strictly required). Returns `{ id, label?, contextWindow? }[]`. Unimplemented protocols throw with a clear message.
+  - `sw provider models <provider> [-f|--filter <substring>]` CLI — prints **copy-pasteable full slugs** (`<provider>/<model-id>`) so the output drops straight into `sw website set-model`. `--filter` is a case-insensitive substring match against both id and label; OpenRouter reports hundreds of models, so the filter is the difference between a useful list and noise.
+- 14 new tests (113 total). Adapter coverage: payload shape, headers (Authorization + HTTP-Referer + X-Title + Content-Type), parameter mapping, response + usage parsing, 401 path, missing-content path, trailing-slash normalisation, missing-api_key, custom referer/title override. Model-listing coverage: ollama-native mapping, openrouter mapping with context_length, api_key forwarding, missing-base_url for ollama, "not supported" for anthropic, upstream non-2xx surfacing.
+
+### Changed
+- `docs/site-walker-toml.md` — protocol table now shows `openrouter` as **implemented**, notes the default base_url + auth header behaviour, and points `anthropic` users at `openrouter` for the time being.
+- `templates/site-walker.toml.example` — protocol list and example entries refreshed to reflect openrouter's implemented status and the deferral of direct anthropic.
+- `docs/cli-sw.md` — new `sw provider models` section with a worked filter example.
+
+### Notes
+- Smoke-tested live against OpenRouter with `anthropic/claude-haiku-4.5`. Side-by-side against `cortex/qwen2:1.5b` on the Raspberry Pi the difference in answer quality is dramatic, as expected — the Pi remains the cheap development target; Haiku is the production-ready option.
+
 ## [0.8.0] - 2026-05-17
 
 ### Added

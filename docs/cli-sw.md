@@ -212,10 +212,43 @@ List the providers parsed from `site-walker.toml`. `api_key` values are **never*
 $ ./bin/sw provider list
 Provider registry (/home/op/site-walker/site-walker.toml):
   cortex               protocol=ollama-native base_url=http://cortex.local:8000 is_local=true
-  laptop               protocol=ollama-native base_url=http://laptop.local:11434 is_local=true
+  openrouter           protocol=openrouter
 ```
 
 The path printed is the resolved config path — useful for confirming which copy of the TOML was loaded when multiple search paths could match. Search-path precedence is documented in [`site-walker-toml.md`](site-walker-toml.md).
+
+### `sw provider models <provider> [-f|--filter <substring>]`
+
+Query a configured provider for the list of models it can serve. The output prints **copy-pasteable full slugs** (provider name + `/` + model id) so you can paste them straight into `sw website set-model`.
+
+Supported protocols:
+
+- `ollama-native` — `GET {base_url}/api/tags`
+- `openrouter` — `GET {base_url}/models` (sends your `api_key` as `Authorization: Bearer …` if present, so OpenRouter can attribute the lookup; not strictly required)
+- Other protocols don't yet have a discovery endpoint wired and will refuse with a clear message.
+
+```
+$ ./bin/sw provider models cortex
+Models on provider "cortex" (protocol=ollama-native):
+  cortex/deepseek_r1_distill_qwen:1.5b
+  cortex/llama3.2:3b
+  cortex/qwen2.5-coder:1.5b
+  cortex/qwen2.5-instruct:1.5b
+  cortex/qwen2:1.5b
+
+Total: 5
+
+$ ./bin/sw provider models openrouter --filter haiku
+Models on provider "openrouter" (protocol=openrouter):
+  openrouter/anthropic/claude-haiku-4.5     ctx=200000      Claude Haiku 4.5
+  ...
+
+Total: 3 (of 247 reported by the provider)
+```
+
+`--filter` is a case-insensitive substring match against the model id and the human-readable label. OpenRouter alone reports hundreds of models — the filter is the difference between a useful list and a wall of text.
+
+A printed slug like `openrouter/anthropic/claude-haiku-4.5` is exactly what `sw website set-model <slug> ...` expects.
 
 ---
 

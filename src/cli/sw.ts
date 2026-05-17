@@ -18,11 +18,12 @@ import { findSessionByTokenOrId, listMessages, listSessions } from '../services/
 import { assemblePrompt, loadDiskBlocks } from '../services/system-blocks.js';
 import { resolveModel, setContextWindow, setModel, setParameters } from '../services/models.js';
 import { loadConfig } from '../config/site-walker-config.js';
+import { listProviderModels } from '../providers/list-models.js';
 import { readPersonaTemplate } from '../utils/templates.js';
 
 const program = new Command();
 
-program.name('sw').description('site-walker admin CLI').version('0.8.0');
+program.name('sw').description('site-walker admin CLI').version('0.9.0');
 
 const website = program.command('website').description('manage websites');
 
@@ -313,6 +314,63 @@ provider
         const local = entry.is_local ? ' is_local=true' : '';
         console.log(`  ${entry.name.padEnd(20)} protocol=${entry.protocol}${baseUrl}${local}`);
       }
+    } finally {
+      await db.destroy();
+    }
+  });
+
+provider
+  .command('models')
+  .description('query a provider for its available models (copy-pasteable into `set-model`)')
+  .argument('<provider>', 'provider name from site-walker.toml')
+  .option('-f, --filter <substring>', 'case-insensitive substring filter against model id + label')
+  .action(async (name: string, opts: { filter?: string }) => {
+    try {
+      const registry = await loadConfig();
+      const entry = registry.providers.get(name);
+      if (!entry) {
+        console.error(
+          `Provider "${name}" not defined in ${registry.configPath}. ` +
+            `Known: ${[...registry.providers.keys()].join(', ') || '(none)'}.`,
+        );
+        process.exitCode = 1;
+        return;
+      }
+
+      const models = await listProviderModels(entry);
+      const filter = opts.filter?.toLowerCase();
+      const filtered = filter
+        ? models.filter(
+            (m) =>
+              m.id.toLowerCase().includes(filter) ||
+              (m.label?.toLowerCase().includes(filter) ?? false),
+          )
+        : models;
+
+      if (filtered.length === 0) {
+        console.log(
+          filter
+            ? `(no models on "${name}" match filter "${opts.filter}")`
+            : `(no models reported by "${name}")`,
+        );
+        return;
+      }
+
+      const slugW = Math.max(12, ...filtered.map((m) => `${entry.name}/${m.id}`.length));
+      console.log(`Models on provider "${entry.name}" (protocol=${entry.protocol}):`);
+      for (const m of filtered) {
+        const slug = `${entry.name}/${m.id}`.padEnd(slugW);
+        const ctx = m.contextWindow ? `ctx=${m.contextWindow}` : '';
+        const ctxCol = ctx.padEnd(14);
+        const label = m.label ?? '';
+        console.log(`  ${slug}  ${ctxCol}  ${label}`.trimEnd());
+      }
+      console.log(
+        `\nTotal: ${filtered.length}` +
+          (filter && filtered.length !== models.length
+            ? ` (of ${models.length} reported by the provider)`
+            : ''),
+      );
     } finally {
       await db.destroy();
     }

@@ -61,12 +61,12 @@ Any other key is currently ignored. Unknown protocol values are rejected at star
 
 ### Supported protocols
 
-| Protocol            | Status                  | Notes                                                                                       |
-| ------------------- | ----------------------- | ------------------------------------------------------------------------------------------- |
-| `ollama-native`     | implemented (M5)        | `POST {base_url}/api/chat`. Tested against Ollama on Raspberry Pi (NPU) and on x86 Linux.   |
-| `anthropic`         | planned (M8)            | Direct Anthropic Messages API. Adapter throws "lands in M8" today.                          |
-| `openrouter`        | planned (M8)            | OpenAI-compatible wire format against OpenRouter's base URL.                                |
-| `openai-compatible` | planned (M8)            | Generic OpenAI-clone provider; reserved if a third use case arises that isn't OpenRouter.   |
+| Protocol            | Status                | Notes                                                                                                                          |
+| ------------------- | --------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| `ollama-native`     | implemented (M5)      | `POST {base_url}/api/chat`. Tested against Ollama on Raspberry Pi (NPU) and on x86 Linux. `base_url` is required.              |
+| `openrouter`        | implemented (0.9.0)   | OpenAI Chat Completions wire format. `POST {base_url}/chat/completions`. `base_url` defaults to `https://openrouter.ai/api/v1` when absent. `api_key` required. Sends `HTTP-Referer: https://site-walker.net` + `X-Title: Site Walker` for dashboard attribution. |
+| `anthropic`         | planned               | Direct Anthropic Messages API. For Anthropic models today, use `openrouter` and a model slug like `openrouter/anthropic/claude-haiku-4.5`. |
+| `openai-compatible` | planned               | Generic OpenAI-clone provider; reserved if a third use case arises that isn't OpenRouter.                                       |
 
 A website pointed at an unimplemented protocol will accept `sw website set-model` (the registry has the provider) but fail at first chat request.
 

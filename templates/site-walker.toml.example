@@ -20,12 +20,16 @@
 # Each [providers.<name>] entry defines one provider. The <name> is what
 # you reference in a website's model_slug as the part before the first `/`.
 #
-# Supported protocols (M5 ships ollama-native only; the others land in M8):
+# Supported protocols:
 #
 #   ollama-native       — self-hosted Ollama, calls POST {base_url}/api/chat
-#   anthropic           — Anthropic Messages API
-#   openrouter          — OpenAI-compatible wire format, OpenRouter base URL
-#   openai-compatible   — generic OpenAI-clone provider
+#                         (implemented; requires base_url)
+#   openrouter          — OpenAI Chat Completions wire format against
+#                         OpenRouter's base URL (implemented; requires api_key,
+#                         base_url defaults to https://openrouter.ai/api/v1)
+#   anthropic           — direct Anthropic Messages API (planned; use openrouter
+#                         for Anthropic models in the meantime)
+#   openai-compatible   — generic OpenAI-clone provider (planned)
 #
 # Optional flag:
 #
@@ -45,12 +49,16 @@ is_local = true
 # base_url = "http://laptop.local:11434"
 # is_local = true
 
-# Example: Anthropic cloud (Phase 2, M8).
-# [providers.anthropic]
-# protocol = "anthropic"
-# api_key = "sk-ant-api03-REPLACE-ME"
-
-# Example: OpenRouter (Phase 2, M8). Lets you reach many models behind one key.
+# Example: OpenRouter. One key reaches many models (Anthropic, OpenAI, etc.)
+# behind a single OpenAI-compatible wire format. base_url is optional — it
+# defaults to https://openrouter.ai/api/v1.
 # [providers.openrouter]
 # protocol = "openrouter"
 # api_key = "sk-or-v1-REPLACE-ME"
+
+# Example: Anthropic direct (planned — not yet wired). Until this is
+# implemented, reach Anthropic models via openrouter using a model slug like
+# `openrouter/anthropic/claude-haiku-4.5`.
+# [providers.anthropic]
+# protocol = "anthropic"
+# api_key = "sk-ant-api03-REPLACE-ME"

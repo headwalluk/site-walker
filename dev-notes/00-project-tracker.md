@@ -1,9 +1,9 @@
 # site-walker — Project Tracker
 
 **Last Updated:** 17 May 2026
-**Current Version:** 0.8.0
-**Current Phase:** Milestone 7 (Admin CLI expansion) — website + sessions surface done at 0.8.0; `db backup/restore` and `blocks rebuild` deferred
-**Overall Progress:** ~46% — M1–M6 complete (6 of 14); M7 is partially shipped (website + sessions feature-complete for Phase 1; db backup/restore and blocks rebuild remain). 0.8.0 expanded the admin CLI: `sw website delete/set-welcome`, the new `origins {list,add,remove}` subgroup, and `sw sessions {list,show}` for dev-time browse. 0.7.0 was a between-milestone polish (GitHub move, HTML landing card, `/health`, OpenAPI 3 + Swagger UI). 0.6.0 shipped the Phase 1 deliverable (M6 chat endpoint + `./bin/chat`); 0.5.0 was an earlier between-milestone cleanup.
+**Current Version:** 0.9.0
+**Current Phase:** Milestones 7 + 8 partially shipped. M7 is awaiting `db backup/restore` + `blocks rebuild`; M8 is awaiting the direct Anthropic / Gemini / OpenAI cluster (OpenRouter alone unblocks production-quality models today).
+**Overall Progress:** ~52% — M1–M6 complete (6 of 14), M7 + M8 partial. 0.9.0 shipped the OpenRouter protocol adapter + a generic model-discovery command (`sw provider models`); side-by-side against cortex/qwen2 on the Pi, OpenRouter→Haiku is dramatically better, which is the expected separation between cheap dev and production-ready inference. 0.8.0 expanded the admin CLI (website delete/set-welcome, origins subgroup, sessions browse). 0.7.0 was a between-milestone polish (GitHub move, HTML landing card, `/health`, OpenAPI 3 + Swagger UI). 0.6.0 shipped the Phase 1 deliverable (M6 chat endpoint + `./bin/chat`).
 
 Vision and phasing live in [`../README.md`](../README.md). Stack and architecture decisions live in [`../CLAUDE.md`](../CLAUDE.md). Auth/session and data-model design live in companion docs in this directory. This file tracks the work.
 
@@ -179,20 +179,25 @@ Expand the M2/M3 stub CLI into a full admin surface. Subcommands (working names)
 
 Goal: a publicly-exposed pre-sales bot that's safe to point real visitor traffic at. Pluggable backends, abuse protection, automated regeneration of system blocks, retention policy, deployable.
 
-### Milestone 8: Additional protocol adapters (`openrouter`, `anthropic`)
+### Milestone 8: Additional protocol adapters (`openrouter`, `anthropic`, …)
 
-**Target Completion:** TBD
-**Status:** 🔴 Not started
+**Target Completion:** in progress
+**Status:** 🟡 Partial (0.9.0, 17 May 2026)
 **Priority:** High — unlocks production-grade models per README hardware strategy
 
-Add two protocol adapters to the M5 abstraction:
+Add cloud-LLM protocol adapters to the M5 abstraction.
 
-- **`openrouter`** (priority) — OpenAI-compatible wire format, OpenRouter's base URL and model-name convention. Highest priority because it gives access to many models behind one provider entry.
-- **`anthropic`** — direct Anthropic Messages API. Production fallback for the larger-context use case.
+- ✅ **`openrouter`** (priority) — shipped at 0.9.0. OpenAI Chat Completions wire format. `POST {base_url}/chat/completions`, `api_key` required, `base_url` defaults to `https://openrouter.ai/api/v1`. Sends `HTTP-Referer: https://site-walker.net` + `X-Title: Site Walker` for dashboard attribution. Smoke-tested live against `anthropic/claude-haiku-4.5`.
+- 🔴 **`anthropic`** — direct Messages API. Deferred — OpenRouter already reaches all Anthropic models, and the user wants this batched with the broader cloud-provider cluster (Gemini, OpenAI direct) when those land together.
+- 🔴 **`openai-compatible`** — generic OpenAI-clone. Reserved for a concrete third use case that isn't OpenRouter-specific. No demand yet.
 
-Per-adapter parameter translation per [`03-llm-providers.md`](03-llm-providers.md). Error mapping (auth failures, rate limits, context overflows from the provider side) normalised to common shapes. Retry/backoff on transient failures.
+Detailed per-adapter parameter translation per [`03-llm-providers.md`](03-llm-providers.md). Error mapping (auth failures, rate limits, context overflows) is currently surfaced via the existing `model_error` 502 path; richer typed mapping is a future polish, not a v1 blocker.
 
-May also introduce `openai-compatible` if a third use case appears that's not OpenRouter-specific.
+**Shipped at 0.9.0:**
+- `src/providers/openrouter.ts` — adapter + DEFAULT_OPENROUTER_BASE_URL constant + DEFAULT_REFERER / DEFAULT_TITLE.
+- `buildAdapter` in `src/providers/index.ts` — `openrouter` wired; the "lands in M8" throw retained for `anthropic` / `openai-compatible` with a hint pointing at openrouter.
+- `src/providers/list-models.ts` + `sw provider models <provider> [-f|--filter <substring>]` — generic discovery surface. ollama-native uses `/api/tags`, openrouter uses `/models`. Output prints copy-pasteable full slugs so they drop straight into `sw website set-model`.
+- 14 new tests (113 total).
 
 ### Milestone 9: History-trimming strategy
 
