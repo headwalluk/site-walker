@@ -1,9 +1,9 @@
 # site-walker — Project Tracker
 
 **Last Updated:** 17 May 2026
-**Current Version:** 0.7.0
-**Current Phase:** Milestone 7 (Admin CLI expansion) — `sw website list` already pulled forward; the rest is pending
-**Overall Progress:** ~43% — M1, M2, M3, M4, M5, M6 complete (6 of 14). 0.7.0 was a between-milestone polish: project moves to a public GitHub repo, the root route grows an HTML landing card with live `/health` pill, OpenAPI 3 spec at `/openapi.json` plus Swagger UI at `/docs`. 0.6.0 shipped the Phase 1 deliverable (registered visitors can hold a full multi-turn conversation against their website's configured model, with every turn persisted); 0.5.0 was an earlier between-milestone cleanup (TOML moves to repo root, `config/` retires into `templates/`, `.env` `0600` gate).
+**Current Version:** 0.8.0
+**Current Phase:** Milestone 7 (Admin CLI expansion) — website + sessions surface done at 0.8.0; `db backup/restore` and `blocks rebuild` deferred
+**Overall Progress:** ~46% — M1–M6 complete (6 of 14); M7 is partially shipped (website + sessions feature-complete for Phase 1; db backup/restore and blocks rebuild remain). 0.8.0 expanded the admin CLI: `sw website delete/set-welcome`, the new `origins {list,add,remove}` subgroup, and `sw sessions {list,show}` for dev-time browse. 0.7.0 was a between-milestone polish (GitHub move, HTML landing card, `/health`, OpenAPI 3 + Swagger UI). 0.6.0 shipped the Phase 1 deliverable (M6 chat endpoint + `./bin/chat`); 0.5.0 was an earlier between-milestone cleanup.
 
 Vision and phasing live in [`../README.md`](../README.md). Stack and architecture decisions live in [`../CLAUDE.md`](../CLAUDE.md). Auth/session and data-model design live in companion docs in this directory. This file tracks the work.
 
@@ -153,17 +153,25 @@ Ollama remains the lowest common denominator — design system blocks against th
 
 ### Milestone 7: Admin CLI (`./bin/sw`)
 
-**Target Completion:** TBD
-**Status:** 🔴 Not started
+**Target Completion:** in progress
+**Status:** 🟡 Partial (0.8.0, 17 May 2026)
 **Priority:** High — operator surface for everything Phase 1 produced
 
 Expand the M2/M3 stub CLI into a full admin surface. Subcommands (working names):
-- `sw website list/show/delete` (`create` already exists from M2)
-- `sw website origins list/add/remove <slug>` (`add` already exists from M2)
-- `sw website set-welcome <slug> <message>` — updates the welcome message returned by `POST /sessions`
-- `sw db backup/restore/list/prune` — wrapper around `mysqldump`/`mysql`
-- `sw blocks rebuild <slug>` — ad-hoc trigger for what the M10 cron will run automatically
-- `sw sessions list/show <token-or-id>` — read-only browse for development; the formal review surface comes in M13
+- ✅ `sw website list/show/delete` — `create`/`show` from M2, `list` pulled forward 17 May 2026, `delete` shipped at 0.8.0.
+- ✅ `sw website origins list/add/remove <slug>` — full subgroup shipped at 0.8.0. `sw website add-origin` (M2) kept as a working alias.
+- ✅ `sw website set-welcome <slug> <message>` — shipped at 0.8.0; empty-string clears to NULL.
+- ✅ `sw sessions list/show <token-or-id>` — shipped at 0.8.0; read-only dev browse with website-scoped filter and per-row message counts. The formal review surface (retention, redaction) still comes in M13.
+- 🔴 `sw db backup/restore/list/prune` — deferred. Wrapper around `mysqldump`/`mysql` needs design calls (storage path, filename convention, retention policy for `prune`, restore's overwrite semantics, mysqldump credential handling). Worth a focused sync before implementing.
+- 🔴 `sw blocks rebuild <slug>` — deferred to M10. The command's job is to trigger the M10 cron logic ad-hoc; nothing to trigger until that lands.
+
+**Shipped at 0.8.0:**
+- `src/services/websites.ts` — `deleteWebsite` (transactional, returns cascade counts for origins/sessions/messages), `setWelcomeMessage` (empty string → NULL → server falls back to default), `listOrigins`, `removeOrigin` (id-or-origin-string).
+- `src/services/sessions.ts` — `listSessions({ websiteSlug?, limit? })` returning rows with `website_slug` and aggregated `message_count`, ordered by `last_active_at desc`, limit clamped `[1, 200]` default 20. `findSessionByTokenOrId` resolves digit-only refs → id, else → token.
+- CLI surface: `sw website delete -f|--force`, `sw website set-welcome`, `sw website origins {list,add,remove}`, `sw sessions {list,show}`.
+- `./bin/chat`'s "no origins configured" error now points at the canonical `origins add` form.
+- `docs/cli-sw.md` refreshed with every new subcommand.
+- 10 new service tests (99 total).
 
 ---
 

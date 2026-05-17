@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-05-17
+
+### Added
+- **M7 (partial)** — `./bin/sw` admin surface expansion. Website + sessions are now feature-complete for Phase 1; the `db backup/restore/...` and `blocks rebuild` pieces are deferred to a later cut so we can settle their design questions in sync.
+  - `sw website delete <slug> -f|--force` — hard-delete with FK CASCADE. Without `--force` the command refuses; with it, the deletion runs in a transaction and the output reports how many origins / sessions / messages were cascaded.
+  - `sw website set-welcome <slug> <message>` — sets `welcome_message`; passing the empty string clears the column to NULL so the route falls back to the built-in default.
+  - `sw website origins {list,add,remove} <slug> [...]` — origins are now a proper subgroup. `list` prints id + origin in insertion order. `add` is the new canonical form for what `add-origin` did. `remove` accepts either a numeric `website_origins.id` (as shown by `list`) or an origin URL (matched after the same normalisation `add` applies, so casing/trailing-slash differences don't trip you up).
+  - `sw website add-origin <slug> <origin>` is preserved as a working alias of `origins add` so existing scripts and muscle memory keep working.
+  - `sw sessions list [--website <slug>] [--limit <n>]` / `sw sessions show <token-or-id>` — read-only browse over the session log. `list` joins through to the website slug and aggregates a message count per row; `show` accepts a numeric id or full token and prints the session metadata plus the ordered message log (with multi-line message bodies indented under the header for readability).
+- New service functions:
+  - `deleteWebsite(db, slug)` — transactional delete + cascade counts.
+  - `setWelcomeMessage(db, slug, message)` — empty string → NULL.
+  - `listOrigins(db, slug)` / `removeOrigin(db, slug, ref)` — `ref` is matched as id-or-origin.
+  - `listSessions(db, opts)` — joins websites + aggregates message_count, orderBy `last_active_at desc`, limit clamped to `[1, 200]` with a default of 20.
+  - `findSessionByTokenOrId(db, ref)` — digit-only ref → id lookup, otherwise → token.
+- 10 new service tests (99 total). Coverage: deleteWebsite cascade, setWelcomeMessage set + clear + missing-slug, listOrigins ordering, removeOrigin by id + by origin + missing-ref, findSessionByTokenOrId both branches, listSessions filter + limit + message_count aggregation.
+
+### Changed
+- `./bin/chat`'s "no origins configured" hint now points at `sw website origins add` rather than the older `sw website add-origin` form.
+- `docs/cli-sw.md` refreshed with the new subcommands (`website delete`, `website set-welcome`, `website origins {list,add,remove}`, `sessions {list,show}`).
+
 ## [0.7.0] - 2026-05-17
 
 ### Added

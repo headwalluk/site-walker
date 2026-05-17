@@ -69,7 +69,7 @@ async function run(slug: string, opts: ChatOpts): Promise<void> {
     const looked = await firstOriginForSlug(slug);
     if (!looked) {
       console.error(
-        `No origins configured for "${slug}". Add one with: ./bin/sw website add-origin ${slug} <https://example.com>`,
+        `No origins configured for "${slug}". Add one with: ./bin/sw website origins add ${slug} <https://example.com>`,
       );
       process.exitCode = 1;
       return;

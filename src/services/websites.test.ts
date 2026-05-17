@@ -6,11 +6,16 @@ import type { Knex } from 'knex';
 import {
   addOrigin,
   createWebsite,
+  deleteWebsite,
   findWebsiteByOrigin,
   getWebsiteBySlug,
+  listOrigins,
   normaliseOrigin,
+  removeOrigin,
   setPersona,
+  setWelcomeMessage,
 } from './websites.js';
+import { appendMessage, createSession } from './sessions.js';
 
 function makeTestDb(): Knex {
   return knex({
@@ -170,4 +175,139 @@ test('normaliseOrigin: pure-function cases', () => {
   assert.throws(() => normaliseOrigin('ftp://example.com'), /scheme must be http or https/);
   assert.throws(() => normaliseOrigin('https://example.com/foo'), /must not include a path/);
   assert.throws(() => normaliseOrigin('https://example.com?q=1'), /must not include a query/);
+});
+
+test('setWelcomeMessage sets and clears the column', async (t) => {
+  const db = makeTestDb();
+  const slug = uniqueSlug();
+  t.after(async () => {
+    await db('websites').where({ slug }).del();
+    await db.destroy();
+  });
+
+  await createWebsite(db, { slug, name: 'Welcome Site' });
+
+  const set = await setWelcomeMessage(db, slug, 'Welcome, friend.');
+  assert.equal(set.welcome_message, 'Welcome, friend.');
+
+  const cleared = await setWelcomeMessage(db, slug, '');
+  assert.equal(cleared.welcome_message, null);
+});
+
+test('setWelcomeMessage throws when website slug does not exist', async (t) => {
+  const db = makeTestDb();
+  t.after(async () => {
+    await db.destroy();
+  });
+
+  await assert.rejects(
+    () => setWelcomeMessage(db, 'no-such-website-xyz', 'hi'),
+    /Website not found/,
+  );
+});
+
+test('listOrigins returns rows in insertion order', async (t) => {
+  const db = makeTestDb();
+  const slug = uniqueSlug();
+  t.after(async () => {
+    await db('websites').where({ slug }).del();
+    await db.destroy();
+  });
+
+  await createWebsite(db, { slug, name: 'Origins Site' });
+  await addOrigin(db, slug, `https://a.${slug}.example`);
+  await addOrigin(db, slug, `https://b.${slug}.example`);
+
+  const rows = await listOrigins(db, slug);
+  assert.equal(rows.length, 2);
+  assert.equal(rows[0].origin, `https://a.${slug}.example`);
+  assert.equal(rows[1].origin, `https://b.${slug}.example`);
+});
+
+test('removeOrigin matches by numeric id', async (t) => {
+  const db = makeTestDb();
+  const slug = uniqueSlug();
+  t.after(async () => {
+    await db('websites').where({ slug }).del();
+    await db.destroy();
+  });
+
+  await createWebsite(db, { slug, name: 'Origins Site' });
+  const added = await addOrigin(db, slug, `https://${slug}.example.com`);
+  await addOrigin(db, slug, `https://other-${slug}.example.com`);
+
+  const removed = await removeOrigin(db, slug, String(added.id));
+  assert.equal(removed.id, added.id);
+  const remaining = await listOrigins(db, slug);
+  assert.equal(remaining.length, 1);
+  assert.equal(remaining[0].origin, `https://other-${slug}.example.com`);
+});
+
+test('removeOrigin matches by origin string (normalised)', async (t) => {
+  const db = makeTestDb();
+  const slug = uniqueSlug();
+  t.after(async () => {
+    await db('websites').where({ slug }).del();
+    await db.destroy();
+  });
+
+  await createWebsite(db, { slug, name: 'Origins Site' });
+  await addOrigin(db, slug, `https://${slug}.example.com`);
+
+  // Match via a slightly different casing — normaliseOrigin should align them.
+  const removed = await removeOrigin(db, slug, `https://${slug.toUpperCase()}.example.com/`);
+  assert.equal(removed.origin, `https://${slug}.example.com`);
+  const remaining = await listOrigins(db, slug);
+  assert.equal(remaining.length, 0);
+});
+
+test('removeOrigin throws when the ref does not match any origin', async (t) => {
+  const db = makeTestDb();
+  const slug = uniqueSlug();
+  t.after(async () => {
+    await db('websites').where({ slug }).del();
+    await db.destroy();
+  });
+
+  await createWebsite(db, { slug, name: 'Origins Site' });
+  await assert.rejects(
+    () => removeOrigin(db, slug, 'https://nope.example.com'),
+    /Origin not found/,
+  );
+});
+
+test('deleteWebsite cascades to origins, sessions, and messages', async (t) => {
+  const db = makeTestDb();
+  const slug = uniqueSlug();
+  t.after(async () => {
+    // belt-and-braces in case the test fails before deleteWebsite runs
+    await db('websites').where({ slug }).del();
+    await db.destroy();
+  });
+
+  const website = await createWebsite(db, { slug, name: 'Delete Site' });
+  await addOrigin(db, slug, `https://${slug}.example.com`);
+  const session = await createSession(db, website.id);
+  await appendMessage(db, session.id, 'user', 'hi');
+  await appendMessage(db, session.id, 'assistant', 'hello');
+
+  const counts = await deleteWebsite(db, slug);
+  assert.equal(counts.origins, 1);
+  assert.equal(counts.sessions, 1);
+  assert.equal(counts.messages, 2);
+
+  assert.equal(await getWebsiteBySlug(db, slug), null);
+  const origins = await db('website_origins').where({ website_id: website.id });
+  assert.equal(origins.length, 0);
+  const sessions = await db('sessions').where({ website_id: website.id });
+  assert.equal(sessions.length, 0);
+});
+
+test('deleteWebsite throws when website slug does not exist', async (t) => {
+  const db = makeTestDb();
+  t.after(async () => {
+    await db.destroy();
+  });
+
+  await assert.rejects(() => deleteWebsite(db, 'no-such-website-xyz'), /Website not found/);
 });

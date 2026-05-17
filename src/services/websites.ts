@@ -119,6 +119,101 @@ export async function listWebsites(db: Knex): Promise<Website[]> {
   return rows.map((r) => normaliseWebsiteRow(r) as Website);
 }
 
+export interface CascadeCounts {
+  origins: number;
+  sessions: number;
+  messages: number;
+}
+
+/**
+ * Delete a website + everything that references it via FK CASCADE
+ * (`website_origins`, `sessions`, `messages`). Returns the cascade counts the
+ * caller can show to the operator so the impact of the operation is visible.
+ *
+ * Counts are read in the same transaction as the delete so they match what
+ * was actually removed.
+ */
+export async function deleteWebsite(db: Knex, slug: string): Promise<CascadeCounts> {
+  return db.transaction(async (trx) => {
+    const website = await trx<Website>('websites').where({ slug }).first();
+    if (!website) {
+      throw new Error(`Website not found: slug="${slug}"`);
+    }
+    const [originRow, sessionRow] = await Promise.all([
+      trx('website_origins').where({ website_id: website.id }).count<{ n: number }[]>({ n: '*' }),
+      trx('sessions').where({ website_id: website.id }).count<{ n: number }[]>({ n: '*' }),
+    ]);
+    const messageRow = await trx('messages')
+      .join('sessions', 'sessions.id', 'messages.session_id')
+      .where('sessions.website_id', website.id)
+      .count<{ n: number }[]>({ n: '*' });
+
+    await trx('websites').where({ id: website.id }).del();
+
+    return {
+      origins: Number(originRow[0]?.n ?? 0),
+      sessions: Number(sessionRow[0]?.n ?? 0),
+      messages: Number(messageRow[0]?.n ?? 0),
+    };
+  });
+}
+
+/**
+ * Set or clear the welcome message returned by `POST /sessions`. Passing the
+ * empty string sets the column to NULL, which causes the route to fall back
+ * to its built-in default.
+ */
+export async function setWelcomeMessage(db: Knex, slug: string, message: string): Promise<Website> {
+  const website = await getWebsiteBySlug(db, slug);
+  if (!website) {
+    throw new Error(`Website not found: slug="${slug}"`);
+  }
+  const value = message.length === 0 ? null : message;
+  await db('websites').where({ id: website.id }).update({ welcome_message: value });
+  const updated = await getWebsiteById(db, website.id);
+  if (!updated) {
+    throw new Error(`setWelcomeMessage: read-back failed for id=${website.id}`);
+  }
+  return updated;
+}
+
+export async function listOrigins(db: Knex, slug: string): Promise<WebsiteOrigin[]> {
+  const website = await getWebsiteBySlug(db, slug);
+  if (!website) {
+    throw new Error(`Website not found: slug="${slug}"`);
+  }
+  return db<WebsiteOrigin>('website_origins')
+    .where({ website_id: website.id })
+    .orderBy('id', 'asc');
+}
+
+/**
+ * Remove a single origin from a website's allowlist. `ref` is either the
+ * numeric `website_origins.id` (string of digits) or the origin URL (matched
+ * after the same normalisation that `addOrigin` applies). Throws when the
+ * website doesn't exist or the origin isn't on its allowlist.
+ */
+export async function removeOrigin(db: Knex, slug: string, ref: string): Promise<WebsiteOrigin> {
+  const website = await getWebsiteBySlug(db, slug);
+  if (!website) {
+    throw new Error(`Website not found: slug="${slug}"`);
+  }
+
+  const query = db<WebsiteOrigin>('website_origins').where({ website_id: website.id });
+  if (/^\d+$/.test(ref)) {
+    query.andWhere({ id: Number(ref) });
+  } else {
+    const origin = normaliseOrigin(ref);
+    query.andWhere({ origin });
+  }
+  const row = await query.first();
+  if (!row) {
+    throw new Error(`Origin not found for slug="${slug}": ref="${ref}"`);
+  }
+  await db('website_origins').where({ id: row.id }).del();
+  return row;
+}
+
 export async function addOrigin(
   db: Knex,
   websiteSlug: string,

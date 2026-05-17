@@ -39,6 +39,69 @@ export async function findSessionByToken(db: Knex, token: string): Promise<Sessi
   return row ?? null;
 }
 
+export interface SessionWithMeta extends Session {
+  website_slug: string;
+  message_count: number;
+}
+
+export interface ListSessionsOpts {
+  /** Filter to a single website slug. */
+  websiteSlug?: string;
+  /** Maximum rows returned. Defaults to 20; capped at 200. */
+  limit?: number;
+}
+
+/**
+ * Read-only browse over sessions. Joins through to `websites` for the slug
+ * and aggregates `messages` for a count, so the operator-facing listing is
+ * useful at a glance without N+1 round-trips. Most-recently-active first.
+ */
+export async function listSessions(
+  db: Knex,
+  opts: ListSessionsOpts = {},
+): Promise<SessionWithMeta[]> {
+  const limit = Math.min(200, Math.max(1, opts.limit ?? 20));
+  const query = db('sessions as s')
+    .join('websites as w', 'w.id', 's.website_id')
+    .leftJoin('messages as m', 'm.session_id', 's.id')
+    .select<
+      SessionWithMeta[]
+    >('s.id', 's.website_id', 's.token', 's.summary', 's.created_at', 's.last_active_at', { website_slug: 'w.slug' })
+    .count<{ message_count: string | number }[]>({ message_count: 'm.id' })
+    .groupBy(
+      's.id',
+      's.website_id',
+      's.token',
+      's.summary',
+      's.created_at',
+      's.last_active_at',
+      'w.slug',
+    )
+    .orderBy('s.last_active_at', 'desc')
+    .limit(limit);
+
+  if (opts.websiteSlug) {
+    query.andWhere('w.slug', opts.websiteSlug);
+  }
+
+  const rows = (await query) as Array<SessionWithMeta & { message_count: string | number }>;
+  return rows.map((r) => ({ ...r, message_count: Number(r.message_count) }));
+}
+
+/**
+ * Look up a session by either numeric id (digits only) or full token.
+ * Returns null when neither match — callers decide the failure mode.
+ */
+export async function findSessionByTokenOrId(db: Knex, ref: string): Promise<Session | null> {
+  if (/^\d+$/.test(ref)) {
+    const row = await db<Session>('sessions')
+      .where({ id: Number(ref) })
+      .first();
+    return row ?? null;
+  }
+  return findSessionByToken(db, ref);
+}
+
 export async function listMessages(db: Knex, sessionId: number): Promise<Message[]> {
   return db<Message>('messages')
     .where({ session_id: sessionId })

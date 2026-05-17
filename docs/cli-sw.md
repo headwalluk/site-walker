@@ -25,6 +25,7 @@ Top-level commands:
 | `website`  | manage websites and their per-tenant configuration    |
 | `provider` | inspect the TOML-defined provider registry            |
 | `blocks`   | inspect a website's assembled system blocks           |
+| `sessions` | read-only browse over sessions and their messages     |
 
 ---
 
@@ -71,20 +72,60 @@ $ ./bin/sw website show acme-corp
 }
 ```
 
-### `sw website add-origin <slug> <origin>`
+### `sw website delete <slug> -f|--force`
 
-Add a browser `Origin` to the website's allowlist. The origin is scheme + host only (no path, query, or fragment). Host is lower-cased on insert.
+Hard-delete a website and everything that references it via FK CASCADE: origins, sessions, messages. **Irreversible** — `--force` is required.
 
 ```
-$ ./bin/sw website add-origin acme-corp https://www.acme-corp.example
-Added origin id=4 origin="https://www.acme-corp.example" to website slug="acme-corp"
+$ ./bin/sw website delete acme-corp --force
+Deleted website slug="acme-corp". Cascaded: 2 origin(s), 17 session(s), 84 message(s).
 ```
+
+Without `--force` the command refuses and prints a one-line explainer.
+
+### `sw website set-welcome <slug> <message>`
+
+Set the welcome message returned by `POST /sessions`. Pass the empty string to clear it; the route then falls back to its built-in default (`Hi! How can I help?`).
+
+```
+$ ./bin/sw website set-welcome acme-corp 'Welcome to Acme — what can we help with?'
+Set welcome_message for slug="acme-corp" (40 chars).
+
+$ ./bin/sw website set-welcome acme-corp ''
+Cleared welcome_message for slug="acme-corp" (falls back to default).
+```
+
+### `sw website origins {list,add,remove} <slug> [...]`
+
+Manage a website's origin allowlist. `add` and `remove` modify the list; `list` prints what's there.
+
+```
+$ ./bin/sw website origins list acme-corp
+id  origin
+ 3  https://www.acme-corp.example
+ 4  https://acme-corp.example
+
+$ ./bin/sw website origins add acme-corp https://shop.acme-corp.example
+Added origin id=5 origin="https://shop.acme-corp.example" to website slug="acme-corp"
+
+$ ./bin/sw website origins remove acme-corp 5
+Removed origin id=5 origin="https://shop.acme-corp.example" from slug="acme-corp"
+
+$ ./bin/sw website origins remove acme-corp https://acme-corp.example
+Removed origin id=4 origin="https://acme-corp.example" from slug="acme-corp"
+```
+
+`remove` accepts either the numeric `website_origins.id` (as printed by `list`) or the origin URL. URL matching uses the same normalisation as `add` (lower-case host, no trailing slash) so casing/slash differences don't trip you up.
 
 Notes:
 
 - An origin can belong to one website at a time (unique constraint).
 - HTTPS and HTTP are both accepted; in production you almost certainly want HTTPS only.
 - The visitor's browser sends the `Origin` header on `POST /sessions`; the server rejects with `403 origin_not_allowed` if it isn't on the website's list.
+
+### `sw website add-origin <slug> <origin>` *(alias)*
+
+Equivalent to `sw website origins add <slug> <origin>`. Kept for back-compat with earlier milestones; prefer the `origins add` form in new docs and scripts.
 
 ### `sw website set-persona <slug> <persona-text>`
 
@@ -195,6 +236,52 @@ Total estimated tokens (including handling rule): ~2441
 ```
 
 Tokens are estimated as `ceil(chars / 3)` — quick and cheap, not exact. Use the total to size-check against a website's `model_context_window` before going live.
+
+---
+
+## `sw sessions`
+
+Read-only browse over the session log. Useful for spot-checking what visitors have been saying during development. M13 will bring a richer review surface (filtering, redaction, retention); these commands are the dev-time slice of that.
+
+### `sw sessions list [--website <slug>] [--limit <n>]`
+
+List sessions, most-recently-active first. Defaults to 20 rows; `--limit` is capped at 200.
+
+```
+$ ./bin/sw sessions list --limit 3
+ id  website          token (prefix)     msgs  last_active
+331  bullfix-fixings  241ae15bf2220e75…     5  2026-05-17T15:10:42.000Z
+282  bullfix-fixings  1de6f38b6bdfda59…     8  2026-05-17T14:59:59.000Z
+281  bullfix-fixings  14d36acd82babc42…     6  2026-05-17T14:43:41.000Z
+
+$ ./bin/sw sessions list --website devx-headwall --limit 2
+ id  website        token (prefix)     msgs  last_active
+280  devx-headwall  25b3f834f7eea800…    10  2026-05-17T14:19:19.000Z
+279  devx-headwall  98c2930d3a4b9d9a…     4  2026-05-17T13:35:56.000Z
+```
+
+The token prefix is the first 16 characters with an ellipsis — enough to spot the session you're after, never enough to be worth copying as auth.
+
+### `sw sessions show <token-or-id>`
+
+Print a single session's metadata followed by its full message log. The argument is either the numeric `sessions.id` (digits only) or the full session token (64 hex chars).
+
+```
+$ ./bin/sw sessions show 280
+Session 280 (website "devx-headwall"):
+  token:          25b3f834f7eea8003f02e354e974e46bf6a51a19b484385dfdd5064ad3b24f12
+  created_at:     2026-05-17T13:41:04.000Z
+  last_active_at: 2026-05-17T14:19:19.000Z
+  summary:        (none)
+  messages:       10
+
+Messages:
+  [161] 2026-05-17T13:41:07.000Z user: Hi again
+  [162] 2026-05-17T13:41:18.000Z assistant: Hello! How can I assist you today?
+  ...
+```
+
+Multi-line message bodies are indented under the header line so they read cleanly in a terminal.
 
 ---
 
