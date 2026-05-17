@@ -8,16 +8,18 @@ of it.
 
 - A chatbot HTTP endpoint that web visitors can talk to about the business/site.
 - **Multi-tenant:** one API instance serves many websites. Each website has its
-  own system blocks and API key(s). Tenant resolution happens via API key on
-  every request.
+  own system blocks, persona, and configured LLM. Tenant resolution for browser
+  traffic happens via the request `Origin` + an opaque session token; no API
+  keys in Phase 1.
 - Each visitor session maintains its own conversation history server-side, scoped
   to the website it belongs to.
 - Conversations are seeded with **preformatted system blocks** (per website)
   containing core FAQs, glossary, and a website/company/business summary.
 - Those system blocks are mostly static — regenerated daily or weekly by a cron
   using a high-end LLM, then served from disk at request time.
-- An operator CLI (`./bin/sw`) for admin tasks: managing websites, API keys,
-  database backup/restore, ad-hoc system-block rebuilds.
+- An operator CLI (`./bin/sw`) for admin tasks: managing websites, origin
+  allowlists, model selection, database backup/restore, ad-hoc system-block
+  rebuilds.
 
 ## Hardware & model strategy
 
@@ -39,19 +41,23 @@ Smallest thing that proves the loop end-to-end:
   prepended, returns the new reply.
 - `GET /messages` re-hydrates the conversation on page reload.
 - Per-session conversation history in MariaDB, scoped by `website_id`.
-- Single model backend (Ollama on the Pi) behind a thin interface.
+- Pluggable LLM backend behind a TOML-declared provider registry. Phase 1
+  ships the `ollama-native` adapter; the abstraction means adding cloud
+  providers later is a config edit, not a rewrite.
 - `./bin/sw` admin CLI — enough to register a website, manage its origin
-  allowlist and welcome message, and back up/restore the database.
-- `./bin/chat` test helper — small interactive script (bash or tiny Node)
-  that reads the project `.env` for host/port and exercises the loop from
-  the terminal. Replaces a browser UI in development.
+  allowlist and welcome message, pick a model, and back up/restore the
+  database.
+- `./bin/chat` test helper — Node + readline interactive client that reads
+  the project `.env` for host/port and exercises the loop from the terminal.
+  Replaces a browser UI in development.
 
 Goal: validate that the Pi + system-blocks approach gives useful answers at
 acceptable latency, and surface whatever context-window pain points exist.
 
 ### Phase 2 — Production
 Add the things a real public endpoint needs:
-- Pluggable model backend (Ollama ↔ Haiku) chosen by config.
+- Additional protocol adapters (`openrouter`, `anthropic`) on top of the
+  Phase 1 abstraction.
 - A strategy for trimming conversation history when context fills
   (sliding window vs. summarise-older-turns — decide before schema is set).
 - Prompt-injection / jailbreak handling appropriate for a pre-sales bot.
