@@ -12,6 +12,20 @@ Companion planning docs:
 - [`02-data-model.md`](02-data-model.md) — schema sketch for `websites`, `website_origins`, `sessions`, `messages`
 - [`03-llm-providers.md`](03-llm-providers.md) — TOML provider registry, per-website model selection, protocol adapters, normalised parameters, context-window handling
 
+## Next up
+
+End-of-day 2026-05-17. Picking up tomorrow in roughly this order:
+
+1. **Reverse proxy for `api.site-walker.net`** (operator-side, outside this repo). Front Fastify on `47830` with nginx (or similar). Domain is owned; DNS/cert work plus the proxy config. Will exercise the `trustProxy: true` and `X-Forwarded-For` plumbing that 0.10.0 wired in.
+2. **CORS in this repo** (was deferred from M3 / M6 / 0.7.0). The WP plugin can't actually call the API cross-origin until this lands. Likely `@fastify/cors` with the per-request origin checked against the website's allowlist — same source of truth that `POST /sessions` already consults. Once this is in, the "coming soon" note in `docs/api-usage.md` can come out.
+3. **Back to the WordPress plugin** (separate repo). Flesh out the widget against the real API, exercising `GET /sessions/preflight` for the "should I show the chat affordance?" decision.
+
+Other deferred work, in the order it's likely to surface:
+- **M7 finish**: `sw db backup/restore/list/prune`, `sw blocks rebuild` (the latter is really an M10 trigger).
+- **M11**: rate limiting + abuse heuristics (first Redis use). Geo-blocking already exposes `is_local` on the provider entry for this milestone to consume.
+- **M9**: history trimming. The 0.6.0 chat path currently refuses with `413 context_overflow` when the prompt + history busts the window; M9 turns that into graceful drop-old-turns or summarise-older-turns.
+- **M14 follow-ups already noted**: gate `/docs` + `/openapi.json` on `NODE_ENV !== 'production'`; add request-body schemas to `POST /chat` with `attachValidation: true` so OpenAPI carries the body shape without breaking typed-error responses.
+
 ---
 
 ## Phase 1 — Smallest end-to-end loop
