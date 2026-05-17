@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-05-17
+
+### Added
+- M6 — Chat endpoint + `./bin/chat` test harness. This is the Phase 1 deliverable: a registered website's session can carry a full multi-turn conversation through the API to its configured model and back, with every turn persisted.
+  - `src/services/chat.ts` — `runChat({ db, registry, sessionToken, message })` orchestrates: trim + length-cap the body (`MAX_MESSAGE_CHARS = 8000`), resolve session → website → model via the M5 abstractions, load disk blocks + persona via the M4 loader, estimate `system + history + new-user` tokens and refuse with `context_overflow` when the M5 headroom is busted, persist the user message, call the adapter, persist the assistant reply, return `{ reply, message_id }`. Adapter failures translate to a typed `model_error` and leave the user message in the audit log with no assistant row written. Optional `adapterFactory` injection lets tests stub the upstream without touching real HTTP.
+  - `ChatError` class with a stable `code` discriminator (`invalid_token`, `message_required`, `message_too_long`, `context_overflow`, `model_not_configured`, `model_error`); HTTP-status mapping lives entirely in the route layer.
+  - `src/server.ts` — new `POST /chat` route. Bearer-token auth, JSON body `{ message: string }`, error codes mapped to status (`401`/`400`/`413`/`502`/`503`). `buildServer({ db, registry, adapterFactory? })` now accepts the provider registry; existing tests that don't touch `/chat` keep working because registry is optional (and `/chat` returns `500 server_misconfigured` if it's missing).
+  - `src/index.ts` — loads the TOML registry at boot and runs `validateRegistryAgainstWebsites` before binding, so a stale `model_slug` referencing a missing provider fails fast on startup rather than at first request.
+  - `src/cli/chat.ts` — interactive test client. Node + `readline/promises`, `commander` arg parsing. Usage: `./bin/chat <slug> [--origin URL] [--host H] [--port P]`. If `--origin` is omitted, looks up the first allowlisted origin for the slug directly from the DB so the harness "just works" once a website is configured. Reads `HOST`/`PORT` from `.env` (defaults `127.0.0.1:47830`). `/quit` or EOF to exit; bad-status responses print the error code + detail and stay in the loop.
+  - 10 new tests in `src/chat.test.ts` (85 total across the suite). Coverage: missing bearer → 401, unknown token → 401, missing/empty body → 400 `message_required`, oversize body → 400 `message_too_long`, no model configured → 503 `model_not_configured`, prompt blows the context window → 413 `context_overflow` with `detail.total_prompt_tokens`/`context_window`, happy path (adapter sees `[system, user]`, response persists, `GET /messages` rehydrates both turns), adapter throws → 502 `model_error` with user message persisted and no assistant row, second turn includes prior history (`[system, user1, assistant1, user2]`), and `buildServer` without a registry → 500 `server_misconfigured`. All driven via `fastify.inject` with an injected fake adapter; no real Ollama call in CI.
+- `is_local` boolean on provider entries in `site-walker.toml`. Parsed into `ProviderEntry`, surfaced in `sw provider list`, mentioned in the TOML template. No behaviour wired yet — M11 (rate limiting) will read it to relax limits on self-hosted backends. Cheap-now-vs-cheap-later decision over building a full model-metadata registry; trade-off captured in the M6 design pass.
+
+### Changed
+- `src/server.ts` and the corresponding test now report `version: '0.6.0'`. The hardcoded string had been stuck at `0.2.0` since M1 scaffolding — fixed in passing.
+- Project version bumped to `0.6.0`. CLI version string in `src/cli/sw.ts` follows.
+
 ## [0.5.0] - 2026-05-16
 
 ### Changed

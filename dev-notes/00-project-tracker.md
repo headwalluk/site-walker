@@ -1,9 +1,9 @@
 # site-walker — Project Tracker
 
-**Last Updated:** 16 May 2026
-**Current Version:** 0.5.0
-**Current Phase:** Milestone 6 (Chat endpoint + ./bin/chat) — not started
-**Overall Progress:** ~36% — M1, M2, M3, M4, M5 complete (5 of 14). 0.5.0 was a between-milestone cleanup: TOML moves out of `data/` to the project root, `config/` retires into `templates/`, `.env` gets the same `0600` gate as `site-walker.toml`.
+**Last Updated:** 17 May 2026
+**Current Version:** 0.6.0
+**Current Phase:** Milestone 7 (Admin CLI expansion) — not started
+**Overall Progress:** ~43% — M1, M2, M3, M4, M5, M6 complete (6 of 14). 0.6.0 ships the Phase 1 deliverable: registered visitors can hold a full multi-turn conversation against their website's configured model, with every turn persisted; 0.5.0 was a between-milestone cleanup (TOML moves to repo root, `config/` retires into `templates/`, `.env` `0600` gate).
 
 Vision and phasing live in [`../README.md`](../README.md). Stack and architecture decisions live in [`../CLAUDE.md`](../CLAUDE.md). Auth/session and data-model design live in companion docs in this directory. This file tracks the work.
 
@@ -125,13 +125,31 @@ Ollama remains the lowest common denominator — design system blocks against th
 
 ### Milestone 6: Chat endpoint + `./bin/chat` test harness
 
-**Target Completion:** TBD
-**Status:** 🔴 Not started
+**Target Completion:** 17 May 2026
+**Status:** ✅ Complete (17 May 2026)
 **Priority:** Critical — this *is* the Phase 1 deliverable
 
 `POST /chat` that ties everything together: bearer session token resolves website + session, append the new user message to `messages`, load full history, load that website's system blocks, call the model backend, persist the assistant reply, return `{ reply, message_id }`. Returns only the new reply, **not** the full history — clients use `GET /messages` for rehydrate.
 
-`./bin/chat` — small interactive script that reads `.env` for host/port, calls `POST /sessions` to get a token, then loops on user input. Bash + curl + jq if that's enough; tiny Node + readline if we want better line editing.
+`./bin/chat` — small interactive script that reads `.env` for host/port, calls `POST /sessions` to get a token, then loops on user input.
+
+**Shipped:**
+- `src/services/chat.ts` — `runChat({ db, registry, sessionToken, message })` orchestrates: trim + length-cap (`MAX_MESSAGE_CHARS = 8000`), resolve session → website → model via M5 abstractions, load persona + disk blocks via the M4 loader, refuse `context_overflow` (system + history + new-user vs. window with the M5 12.5%/512-floor headroom), persist user message, call adapter, persist assistant reply, return `{ reply, message_id, tokens_used? }`. Adapter throw → typed `model_error`, user message stays in the audit log, no assistant row written. Optional `adapterFactory` injection for tests.
+- `ChatError` with a stable `code` discriminator (`invalid_token` / `message_required` / `message_too_long` / `context_overflow` / `model_not_configured` / `model_error`). HTTP-status mapping lives entirely in the route layer.
+- `src/server.ts` — `POST /chat` route. Bearer-token auth, JSON body `{ message: string }`, error→status mapping (`401`/`400`/`413`/`502`/`503`). `buildServer({ db, registry, adapterFactory? })` now takes the provider registry; `registry` is optional so the older `/sessions` + `/messages` tests don't churn, and `/chat` returns `500 server_misconfigured` if it was omitted.
+- `src/index.ts` — loads the TOML registry at boot and runs `validateRegistryAgainstWebsites` before `fastify.listen` so a stale `model_slug` referencing a missing provider fails fast at startup, not on first request.
+- `src/cli/chat.ts` — Node + `readline/promises`, `commander` parsing. Usage: `./bin/chat <slug> [--origin URL] [--host H] [--port P]`. When `--origin` is omitted, looks up the first allowlisted origin for the slug directly via knex (no extra CLI ceremony). Reads `HOST`/`PORT` from `.env`, defaults `127.0.0.1:47830`. `/quit` or EOF exits; non-2xx responses print code + detail and stay in the loop.
+- 10 new tests in `src/chat.test.ts` (85 total across the suite). Covers every typed error and the happy path; the multi-turn history check confirms turn 2 sends `[system, user1, assistant1, user2]` to the adapter. All driven via `fastify.inject` with an injected fake adapter — no real Ollama call in CI.
+- Smoke-tested end-to-end against the live Pi (`cortex/qwen2:1.5b`, context window 4096): two-turn curl conversation recalled a name from turn 1 in turn 2; `./bin/chat` mints a session, sends the message, prints the reply, and `GET /messages` rehydrates both turns.
+- `is_local` flag on provider TOML entries (parsed into `ProviderEntry`, surfaced by `sw provider list`, documented in `templates/site-walker.toml.example`). No behaviour wired yet; M11 will read it for rate-limit tuning. Deliberately preferred over a full `provider/model` metadata registry — see open-question resolution below.
+- Fixed long-stale `version: '0.2.0'` in `src/server.ts` (and the matching `server.test.ts` assertion) → `0.6.0`.
+
+**Resolved decisions:**
+- **No model-metadata registry in Phase 1.** Static `provider/model → context_window` tables are clean for the 4 Ollama models we care about but fall apart for OpenRouter's hundreds. The per-website `model_context_window` column already gives the budget check what it needs. Revisit if/when M8 brings cloud providers and we can see what the call sites actually want.
+- **`is_local` lives on the provider, not the model.** A single provider entry is either Ollama-on-LAN or it isn't — one boolean, accurate by construction, no maintenance churn. Powers future M11 rate-limit decisions for free.
+- **Health/`is_online` is M11/M14 territory.** Needs background probes, staleness rules, circuit-breaker semantics — out of scope here.
+- **Budget enforcement on the request path = hard refuse with `413 context_overflow`.** Graceful trimming is explicitly M9's job; faking it now would be half-finished work the M9 milestone has to undo.
+- **Failure semantics on adapter throw = user msg stays, no assistant row, `502 model_error`.** The conversation log requirement (M13) wants that user turn captured regardless of upstream availability.
 
 ### Milestone 7: Admin CLI (`./bin/sw`)
 

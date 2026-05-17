@@ -11,7 +11,7 @@ import { readPersonaTemplate } from '../utils/templates.js';
 
 const program = new Command();
 
-program.name('sw').description('site-walker admin CLI').version('0.5.0');
+program.name('sw').description('site-walker admin CLI').version('0.6.0');
 
 const website = program.command('website').description('manage websites');
 
@@ -166,8 +166,9 @@ provider
         return;
       }
       for (const entry of registry.providers.values()) {
-        const tail = entry.base_url ? ` base_url=${entry.base_url}` : '';
-        console.log(`  ${entry.name.padEnd(20)} protocol=${entry.protocol}${tail}`);
+        const baseUrl = entry.base_url ? ` base_url=${entry.base_url}` : '';
+        const local = entry.is_local ? ' is_local=true' : '';
+        console.log(`  ${entry.name.padEnd(20)} protocol=${entry.protocol}${baseUrl}${local}`);
       }
     } finally {
       await db.destroy();

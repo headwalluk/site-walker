@@ -17,6 +17,12 @@ export interface ProviderEntry {
   protocol: Protocol;
   base_url?: string;
   api_key?: string;
+  /**
+   * Marks providers served from the operator's own infrastructure (Ollama on
+   * LAN, etc.) vs cloud APIs. Free signal for M11 rate-limit tuning and
+   * future timeout / retry policy. Defaults to false when unset.
+   */
+  is_local?: boolean;
 }
 
 export interface ProviderRegistry {
@@ -115,6 +121,7 @@ function parseProviders(raw: unknown, filePath: string): Map<string, ProviderEnt
     };
     if (typeof v.base_url === 'string') entry.base_url = v.base_url;
     if (typeof v.api_key === 'string') entry.api_key = v.api_key;
+    if (typeof v.is_local === 'boolean') entry.is_local = v.is_local;
     entries.set(name, entry);
   }
   return entries;

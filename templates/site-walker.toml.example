@@ -26,16 +26,24 @@
 #   anthropic           — Anthropic Messages API
 #   openrouter          — OpenAI-compatible wire format, OpenRouter base URL
 #   openai-compatible   — generic OpenAI-clone provider
+#
+# Optional flag:
+#
+#   is_local            — true for self-hosted backends on your own network.
+#                         M11 (rate limiting) reads this to relax limits on
+#                         local traffic. Defaults to false.
 
 # Example: self-hosted Ollama on a Raspberry Pi.
 [providers.pi]
 protocol = "ollama-native"
 base_url = "http://rpi.local:11434"
+is_local = true
 
 # Example: a second self-hosted Ollama on a laptop, available as fallback.
 # [providers.laptop]
 # protocol = "ollama-native"
 # base_url = "http://laptop.local:11434"
+# is_local = true
 
 # Example: Anthropic cloud (Phase 2, M8).
 # [providers.anthropic]

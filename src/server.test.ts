@@ -37,7 +37,7 @@ test('GET / returns ok payload with service and version', async (t) => {
   assert.deepEqual(response.json(), {
     ok: true,
     service: 'site-walker',
-    version: '0.2.0',
+    version: '0.6.0',
   });
 });
 
