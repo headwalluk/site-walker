@@ -2,6 +2,7 @@ import { Command } from 'commander';
 import { createInterface } from 'node:readline/promises';
 import { stdin, stdout } from 'node:process';
 import { db } from '../db/index.js';
+import { env } from '../config/env.js';
 import { getWebsiteBySlug } from '../services/websites.js';
 
 interface ChatOpts {
@@ -54,8 +55,8 @@ async function postJSON<T>(
 }
 
 async function run(slug: string, opts: ChatOpts): Promise<void> {
-  const host = opts.host ?? process.env.HOST ?? '127.0.0.1';
-  const port = Number(opts.port ?? process.env.PORT ?? 47830);
+  const host = opts.host ?? env.http.host;
+  const port = opts.port ? Number(opts.port) : env.http.port;
   const baseUrl = `http://${host}:${port}`;
 
   let origin = opts.origin;

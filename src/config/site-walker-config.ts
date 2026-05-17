@@ -2,6 +2,7 @@ import { readFile, stat } from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import { parse as parseToml } from 'smol-toml';
+import { env as defaultEnv, type RuntimeEnv } from './env.js';
 
 export const SUPPORTED_PROTOCOLS = [
   'ollama-native',
@@ -35,14 +36,17 @@ export const CONFIG_FILENAME = 'site-walker.toml';
 /**
  * Search paths in precedence order — first match wins.
  * Mirrors dev-notes/03-llm-providers.md.
+ *
+ * `xdgConfigHome` defaults to the project's runtime env if omitted, which
+ * itself resolves `$XDG_CONFIG_HOME` with the standard `$HOME/.config`
+ * fallback. Tests that want to vary it pass a fresh value directly.
  */
-export function searchPaths(): string[] {
+export function searchPaths(xdgConfigHome: string = defaultEnv.xdgConfigHome): string[] {
   const home = os.homedir();
-  const xdg = process.env.XDG_CONFIG_HOME || path.join(home, '.config');
   return [
     path.join(process.cwd(), CONFIG_FILENAME),
     path.join(home, '.site-walker', CONFIG_FILENAME),
-    path.join(xdg, 'site-walker', CONFIG_FILENAME),
+    path.join(xdgConfigHome, 'site-walker', CONFIG_FILENAME),
     path.join('/etc', CONFIG_FILENAME),
   ];
 }
@@ -56,15 +60,15 @@ async function fileExists(p: string): Promise<boolean> {
   }
 }
 
-async function resolveConfigPath(): Promise<string> {
-  const override = process.env.SW_CONFIG;
+async function resolveConfigPath(env: RuntimeEnv): Promise<string> {
+  const override = env.swConfig;
   if (override) {
     if (!(await fileExists(override))) {
       throw new Error(`SW_CONFIG="${override}" but the file does not exist or is not readable.`);
     }
     return override;
   }
-  const paths = searchPaths();
+  const paths = searchPaths(env.xdgConfigHome);
   for (const p of paths) {
     if (await fileExists(p)) return p;
   }
@@ -130,15 +134,20 @@ function parseProviders(raw: unknown, filePath: string): Map<string, ProviderEnt
 /**
  * Load + validate the host-side provider registry.
  *
- * Default behaviour (no args): consult SW_CONFIG env, then walk the search
- * paths, applying the 0600 permission gate regardless of how the file was
- * resolved.
+ * Default behaviour (no args): consult the runtime env for `SW_CONFIG`,
+ * then walk the search paths, applying the 0600 permission gate regardless
+ * of how the file was resolved.
  *
  * Tests pass an explicit `configPath` to bypass discovery while keeping
- * the gate in force.
+ * the gate in force, or pass an `env` snapshot when verifying env-driven
+ * behaviour (e.g. `SW_CONFIG` overrides) after mutating `process.env`.
  */
-export async function loadConfig(opts?: { configPath?: string }): Promise<ProviderRegistry> {
-  const resolved = opts?.configPath ?? (await resolveConfigPath());
+export async function loadConfig(opts?: {
+  configPath?: string;
+  env?: RuntimeEnv;
+}): Promise<ProviderRegistry> {
+  const env = opts?.env ?? defaultEnv;
+  const resolved = opts?.configPath ?? (await resolveConfigPath(env));
   await assertPermissionGate(resolved);
   const text = await readFile(resolved, 'utf8');
   const raw = parseToml(text);

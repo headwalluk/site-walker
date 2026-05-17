@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { chmod, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { loadEnv } from './env.js';
 import { CONFIG_FILENAME, loadConfig, searchPaths } from './site-walker-config.js';
 
 async function makeTempConfig(
@@ -97,7 +98,9 @@ test('loadConfig: SW_CONFIG env override still hits the permission gate', async 
     else process.env.SW_CONFIG = original;
   });
 
-  await assert.rejects(() => loadConfig(), /must be mode 0600/);
+  // Pass a fresh env snapshot so the loader sees the just-mutated SW_CONFIG,
+  // not the module-load singleton captured before this test ran.
+  await assert.rejects(() => loadConfig({ env: loadEnv() }), /must be mode 0600/);
 });
 
 test('loadConfig: SW_CONFIG env override resolves a 0600 file', async (t) => {
@@ -113,7 +116,7 @@ test('loadConfig: SW_CONFIG env override resolves a 0600 file', async (t) => {
     else process.env.SW_CONFIG = original;
   });
 
-  const registry = await loadConfig();
+  const registry = await loadConfig({ env: loadEnv() });
   assert.equal(registry.configPath, file);
   assert.ok(registry.providers.has('pi'));
 });

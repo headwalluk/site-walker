@@ -1,8 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import knex from 'knex';
-import type { Knex } from 'knex';
 import type { ProviderEntry, ProviderRegistry } from '../config/site-walker-config.js';
 import {
   defaultHeadroom,
@@ -14,20 +12,7 @@ import {
   validateRegistryAgainstWebsites,
 } from './models.js';
 import { createWebsite, getWebsiteBySlug } from './websites.js';
-
-function makeTestDb(): Knex {
-  return knex({
-    client: 'mysql2',
-    connection: {
-      host: process.env.DB_HOST ?? '127.0.0.1',
-      port: Number(process.env.DB_PORT ?? 3306),
-      user: process.env.DB_USER ?? 'site_walker',
-      password: process.env.DB_PASSWORD ?? '',
-      database: process.env.DB_NAME ?? 'site_walker',
-    },
-    pool: { min: 0, max: 5 },
-  });
-}
+import { makeTestDb } from '../testing/db.js';
 
 function uniqueSlug(): string {
   return `test-${randomUUID().slice(0, 8)}`;

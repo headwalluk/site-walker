@@ -7,8 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.1] - 2026-05-17
+
 ### Changed
-- OpenAPI spec is now meaningfully usable from Swagger UI:
+- **Internal refactor: consolidate `process.env` reads behind a single config module.** No observable API change. Patch bump rather than minor because no feature lands; the goal was to stop sprinkling `process.env.X` across the codebase.
+  - New `src/config/env.ts`: exports a frozen `RuntimeEnv` singleton (`env`) plus a `loadEnv()` factory for tests that need a fresh snapshot after mutating `process.env`. Normalises `DB_HOST` / `DB_PORT` / `DB_USER` / `DB_PASSWORD` / `DB_NAME`, `HOST` / `PORT`, and `SW_CONFIG` / `XDG_CONFIG_HOME` into typed, defaulted fields. **Ports are validated at startup** — `DB_PORT=not-a-number` (or out-of-range) now fails immediately with a clear "must be a positive integer in [1, 65535]" message instead of becoming `NaN` and surfacing as a confusing MariaDB error later.
+  - Consumers refactored to import from `env`: `src/db/index.ts`, `src/index.ts`, `src/cli/chat.ts`, and `src/config/site-walker-config.ts`. The TOML loader's `loadConfig` now accepts an optional `env` param defaulting to the singleton; the two SW_CONFIG-override tests pass `loadEnv()` after mutating `process.env` so they observe their own changes.
+  - `searchPaths(xdgConfigHome?)` exposes `XDG_CONFIG_HOME` resolution as a parameter rather than reading `process.env` inline.
+  - `src/testing/db.ts`: shared `makeTestDb()` helper consuming `env.db.*`. Five test files (`server`, `chat`, `services/{websites,sessions,models}`) had a duplicated 5-line knex factory; that's now one copy.
+  - `knexfile.js` keeps its own DB_* reads — it's plain JS consumed by the knex CLI before any TypeScript build step, so it can't import compiled `src/`. Documented as the one exception in the env module's docstring intent.
+
+### Notes
+- Tests are unchanged in count (113) and behaviour — the refactor was strictly internal.
+- The next visible feature will get the version bump back into minor territory.
+
+## [0.9.0] - 2026-05-17
   - `components.securitySchemes.bearerAuth` declared (HTTP bearer, `session-token (64 hex chars from POST /sessions)`). Swagger UI gains the **Authorize** button.
   - `GET /messages` and `POST /chat` carry `security: [{ bearerAuth: [] }]` — they show with the 🔒 lock indicator and the UI's "Authorize" flow will attach the token to "Try it out" calls.
   - `POST /sessions` declares its `Origin` header as a documented parameter. Wired with `attachValidation: true` so the route's existing typed-error response (`400 origin_required`) keeps firing on a missing header — no change to the M6 error contract.

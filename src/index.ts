@@ -1,5 +1,6 @@
 import { buildServer } from './server.js';
 import { db } from './db/index.js';
+import { env } from './config/env.js';
 import { assertEnvFilePermissions } from './utils/env.js';
 import { loadConfig } from './config/site-walker-config.js';
 import { validateRegistryAgainstWebsites } from './services/models.js';
@@ -11,11 +12,8 @@ await validateRegistryAgainstWebsites(db, registry);
 
 const fastify = await buildServer({ db, registry });
 
-const port = Number(process.env.PORT ?? 47830);
-const host = process.env.HOST ?? '127.0.0.1';
-
 try {
-  await fastify.listen({ port, host });
+  await fastify.listen({ port: env.http.port, host: env.http.host });
 } catch (err) {
   fastify.log.error(err);
   process.exit(1);
