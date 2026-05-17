@@ -20,6 +20,7 @@ Small-site operators who want a pre-sales bot they can stand up and reason about
 
 Operator and developer reference docs live in [`docs/`](docs/):
 
+- [**Browser API usage**](docs/api-usage.md) — chat flow for widget developers: `POST /sessions`, `POST /chat`, `GET /messages`, token persistence, error handling.
 - [**`./bin/sw` CLI reference**](docs/cli-sw.md) — register websites, manage origins, choose models, inspect system blocks.
 - [**`./bin/chat` reference**](docs/cli-chat.md) — interactive test client that exercises the loop end-to-end.
 - [**`site-walker.toml`**](docs/site-walker-toml.md) — the provider registry: search paths, permission gate, per-provider keys.
