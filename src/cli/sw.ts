@@ -3,7 +3,13 @@ import { assertEnvFilePermissions } from '../utils/env.js';
 import { db } from '../db/index.js';
 
 assertEnvFilePermissions();
-import { addOrigin, createWebsite, getWebsiteBySlug, setPersona } from '../services/websites.js';
+import {
+  addOrigin,
+  createWebsite,
+  getWebsiteBySlug,
+  listWebsites,
+  setPersona,
+} from '../services/websites.js';
 import { assemblePrompt, loadDiskBlocks } from '../services/system-blocks.js';
 import { resolveModel, setContextWindow, setModel, setParameters } from '../services/models.js';
 import { loadConfig } from '../config/site-walker-config.js';
@@ -25,6 +31,40 @@ website
       const row = await createWebsite(db, { slug, name: opts.name ?? slug, persona });
       console.log(`Created website: id=${row.id} slug=${row.slug} name="${row.name}"`);
       console.log(`Persona seeded from templates/PERSONA.md (${persona.length} chars).`);
+    } finally {
+      await db.destroy();
+    }
+  });
+
+website
+  .command('list')
+  .description('list all websites (slug, name, model, origin count)')
+  .action(async () => {
+    try {
+      const rows = await listWebsites(db);
+      if (rows.length === 0) {
+        console.log('(no websites)');
+        return;
+      }
+      const counts = await db('website_origins')
+        .select('website_id')
+        .count<{ website_id: number; n: string | number }[]>({ n: '*' })
+        .groupBy('website_id');
+      const countByWebsiteId = new Map<number, number>(
+        counts.map((r) => [r.website_id, Number(r.n)]),
+      );
+      const slugW = Math.max(4, ...rows.map((r) => r.slug.length));
+      const nameW = Math.max(4, ...rows.map((r) => r.name.length));
+      console.log(
+        `${'slug'.padEnd(slugW)}  ${'name'.padEnd(nameW)}  ${'model'.padEnd(28)}  origins`,
+      );
+      for (const r of rows) {
+        const model = r.model_slug ?? '(unset)';
+        const origins = countByWebsiteId.get(r.id) ?? 0;
+        console.log(
+          `${r.slug.padEnd(slugW)}  ${r.name.padEnd(nameW)}  ${model.padEnd(28)}  ${origins}`,
+        );
+      }
     } finally {
       await db.destroy();
     }

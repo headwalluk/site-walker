@@ -114,6 +114,11 @@ export async function getWebsiteBySlug(db: Knex, slug: string): Promise<Website 
   return normaliseWebsiteRow(row);
 }
 
+export async function listWebsites(db: Knex): Promise<Website[]> {
+  const rows = await db<Website>('websites').select('*').orderBy('slug', 'asc');
+  return rows.map((r) => normaliseWebsiteRow(r) as Website);
+}
+
 export async function addOrigin(
   db: Knex,
   websiteSlug: string,
