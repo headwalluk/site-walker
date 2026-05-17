@@ -39,3 +39,7 @@ coverage/
 tmp/
 var/
 *.swp
+
+# Inspiration / reference assets pulled in from other projects.
+# Kept on disk while we're using them, never committed.
+dev-notes/verify-trusted-api-default-route.png
