@@ -229,6 +229,109 @@ test('GET /messages: 401 when bearer token is unknown', async (t) => {
   assert.equal(response.json().error, 'invalid_token');
 });
 
+test('CORS: OPTIONS preflight from a registered origin echoes Access-Control-Allow-Origin', async (t) => {
+  const db = makeTestDb();
+  const slug = uniqueSlug();
+  const origin = `https://${slug}.example.com`;
+
+  await createWebsite(db, { slug, name: 'Test' });
+  await addOrigin(db, slug, origin);
+
+  const fastify = await buildServer({ db, logger: false });
+  t.after(async () => {
+    await fastify.close();
+    await db('websites').where({ slug }).del();
+    await db.destroy();
+  });
+
+  const response = await fastify.inject({
+    method: 'OPTIONS',
+    url: '/sessions',
+    headers: {
+      origin,
+      'access-control-request-method': 'POST',
+      'access-control-request-headers': 'authorization,content-type',
+    },
+  });
+
+  assert.equal(response.statusCode, 204);
+  assert.equal(response.headers['access-control-allow-origin'], origin);
+  // Vary: Origin keeps caches from cross-pollinating responses across origins.
+  assert.match(response.headers['vary'] as string, /Origin/);
+  const allowMethods = response.headers['access-control-allow-methods'] as string;
+  assert.match(allowMethods, /POST/);
+  assert.match(allowMethods, /OPTIONS/);
+  const allowHeaders = (response.headers['access-control-allow-headers'] as string).toLowerCase();
+  assert.match(allowHeaders, /authorization/);
+  assert.match(allowHeaders, /content-type/);
+});
+
+test('CORS: OPTIONS preflight from an unregistered origin gets no Access-Control-Allow-Origin', async (t) => {
+  const db = makeTestDb();
+  const fastify = await buildServer({ db, logger: false });
+  t.after(async () => {
+    await fastify.close();
+    await db.destroy();
+  });
+
+  const response = await fastify.inject({
+    method: 'OPTIONS',
+    url: '/sessions',
+    headers: {
+      origin: 'https://stranger.example.com',
+      'access-control-request-method': 'POST',
+      'access-control-request-headers': 'authorization,content-type',
+    },
+  });
+
+  // The server doesn't 403 — it just doesn't grant CORS. Browser blocks
+  // the subsequent actual request. This deliberately doesn't leak which
+  // origins are registered.
+  assert.equal(response.headers['access-control-allow-origin'], undefined);
+});
+
+test('CORS: POST /sessions actual response carries Access-Control-Allow-Origin for a registered origin', async (t) => {
+  const db = makeTestDb();
+  const slug = uniqueSlug();
+  const origin = `https://${slug}.example.com`;
+
+  await createWebsite(db, { slug, name: 'Test' });
+  await addOrigin(db, slug, origin);
+
+  const fastify = await buildServer({ db, logger: false });
+  t.after(async () => {
+    await fastify.close();
+    await db('websites').where({ slug }).del();
+    await db.destroy();
+  });
+
+  const response = await fastify.inject({
+    method: 'POST',
+    url: '/sessions',
+    headers: { origin },
+  });
+
+  assert.equal(response.statusCode, 201);
+  assert.equal(response.headers['access-control-allow-origin'], origin);
+  assert.match(response.headers['vary'] as string, /Origin/);
+});
+
+test('CORS: request without an Origin header still succeeds (non-browser callers)', async (t) => {
+  // curl, ./bin/chat, server-to-server — these don't send Origin and must
+  // not be affected by the CORS layer. POST /sessions has its own 400 for
+  // missing origin; that's a separate gate from CORS.
+  const db = makeTestDb();
+  const fastify = await buildServer({ db, logger: false });
+  t.after(async () => {
+    await fastify.close();
+    await db.destroy();
+  });
+
+  const response = await fastify.inject({ method: 'GET', url: '/openapi.json' });
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.headers['access-control-allow-origin'], undefined);
+});
+
 test('POST /sessions then GET /messages returns an empty message list', async (t) => {
   const db = makeTestDb();
   const slug = uniqueSlug();

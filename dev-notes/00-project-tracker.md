@@ -1,9 +1,9 @@
 # site-walker — Project Tracker
 
-**Last Updated:** 17 May 2026
-**Current Version:** 0.10.0
-**Current Phase:** Milestones 7 + 8 partially shipped. M7 is awaiting `db backup/restore` + `blocks rebuild`; M8 is awaiting the direct Anthropic / Gemini / OpenAI cluster (OpenRouter alone unblocks production-quality models today). 0.10.0 is a between-milestone feature: per-website IP geo-blocking (MaxMind, lookup-table-driven modes, new `GET /sessions/preflight` probe). 0.9.1 was a patch — internal `process.env` consolidation behind `src/config/env.ts`, no visible change.
-**Overall Progress:** ~52% — M1–M6 complete (6 of 14), M7 + M8 partial. 0.9.0 shipped the OpenRouter protocol adapter + a generic model-discovery command (`sw provider models`); side-by-side against cortex/qwen2 on the Pi, OpenRouter→Haiku is dramatically better, which is the expected separation between cheap dev and production-ready inference. 0.8.0 expanded the admin CLI (website delete/set-welcome, origins subgroup, sessions browse). 0.7.0 was a between-milestone polish (GitHub move, HTML landing card, `/health`, OpenAPI 3 + Swagger UI). 0.6.0 shipped the Phase 1 deliverable (M6 chat endpoint + `./bin/chat`).
+**Last Updated:** 18 May 2026
+**Current Version:** 0.11.0
+**Current Phase:** Milestones 7 + 8 partially shipped. M7 is awaiting `db backup/restore` + `blocks rebuild`; M8 is awaiting the direct Anthropic / Gemini / OpenAI cluster (OpenRouter alone unblocks production-quality models today). 0.11.0 wires CORS against the per-website origin allowlist (`@fastify/cors`, dynamic origin resolver, no parallel config) and renames `GET /sessions/preflight` → `GET /sessions/can-start` so "preflight" can refer unambiguously to the browser's CORS `OPTIONS`. 0.10.0 was a between-milestone feature: per-website IP geo-blocking (MaxMind, lookup-table-driven modes). 0.9.1 was a patch — internal `process.env` consolidation behind `src/config/env.ts`, no visible change.
+**Overall Progress:** ~48% — M1–M6 complete (6 of 15), M7 + M8 partial. 0.9.0 shipped the OpenRouter protocol adapter + a generic model-discovery command (`sw provider models`); side-by-side against cortex/qwen2 on the Pi, OpenRouter→Haiku is dramatically better, which is the expected separation between cheap dev and production-ready inference. 0.8.0 expanded the admin CLI (website delete/set-welcome, origins subgroup, sessions browse). 0.7.0 was a between-milestone polish (GitHub move, HTML landing card, `/health`, OpenAPI 3 + Swagger UI). 0.6.0 shipped the Phase 1 deliverable (M6 chat endpoint + `./bin/chat`).
 
 Vision and phasing live in [`../README.md`](../README.md). Stack and architecture decisions live in [`../CLAUDE.md`](../CLAUDE.md). Auth/session and data-model design live in companion docs in this directory. This file tracks the work.
 
@@ -14,16 +14,16 @@ Companion planning docs:
 
 ## Next up
 
-End-of-day 2026-05-17. Picking up tomorrow in roughly this order:
+End-of-day 2026-05-18. Picking up next in roughly this order:
 
-1. **Reverse proxy for `api.site-walker.net`** (operator-side, outside this repo). Front Fastify on `47830` with nginx (or similar). Domain is owned; DNS/cert work plus the proxy config. Will exercise the `trustProxy: true` and `X-Forwarded-For` plumbing that 0.10.0 wired in.
-2. **CORS in this repo** (was deferred from M3 / M6 / 0.7.0). The WP plugin can't actually call the API cross-origin until this lands. Likely `@fastify/cors` with the per-request origin checked against the website's allowlist — same source of truth that `POST /sessions` already consults. Once this is in, the "coming soon" note in `docs/api-usage.md` can come out.
-3. **Back to the WordPress plugin** (separate repo). Flesh out the widget against the real API, exercising `GET /sessions/preflight` for the "should I show the chat affordance?" decision.
+1. **Reverse proxy for `api.site-walker.net`** (operator-side, outside this repo). Dev proxy at `apix.site-walker.net` → `sentinel:47830` is already up via Apache on `nexus.headwall.co.uk` (IP-locked to the developer's home IP). Production `api.site-walker.net` is the open task: front Fastify on `47830` with Apache or nginx, DNS/cert work, no IP lock. Exercises the `trustProxy: true` + `X-Forwarded-For` plumbing that 0.10.0 wired in.
+2. **Back to the WordPress plugin** (separate repo). Flesh out the widget against the real API now that CORS (0.11.0) allows cross-origin calls. Exercising `GET /sessions/can-start` (renamed from `/sessions/preflight` in 0.11.0 so "preflight" can refer unambiguously to CORS `OPTIONS`) for the "should I show the chat affordance?" decision.
 
 Other deferred work, in the order it's likely to surface:
 - **M7 finish**: `sw db backup/restore/list/prune`, `sw blocks rebuild` (the latter is really an M10 trigger).
 - **M11**: rate limiting + abuse heuristics (first Redis use). Geo-blocking already exposes `is_local` on the provider entry for this milestone to consume.
 - **M9**: history trimming. The 0.6.0 chat path currently refuses with `413 context_overflow` when the prompt + history busts the window; M9 turns that into graceful drop-old-turns or summarise-older-turns.
+- **M15**: friendlier CLI + boot error messages for non-developer operators. Raw knex/mysql2 stack traces today (e.g. `ER_DUP_ENTRY` on `sw website origins add`) are fine for the developer audience but unhelpful for a self-hoster.
 - **M14 follow-ups already noted**: gate `/docs` + `/openapi.json` on `NODE_ENV !== 'production'`; add request-body schemas to `POST /chat` with `attachValidation: true` so OpenAPI carries the body shape without breaking typed-error responses.
 
 ---
@@ -270,6 +270,27 @@ The reverse-proxy topology will front Fastify at `https://api.site-walker.net`. 
 **Follow-ups noted here so they don't get lost:**
 - Gate `/docs` (Swagger UI) and `/openapi.json` on `NODE_ENV !== 'production'`. Useful for development and self-hosters; no reason to ship them on a public production endpoint.
 - Request-body schemas on `POST /chat` (with `attachValidation: true` + an error-handler that maps AJV errors to our typed `{ error: ... }` shapes) — currently documented in prose only. Either fold into M14 or its own polish cut.
+
+### Milestone 15: Friendlier CLI + boot error messages
+
+**Target Completion:** TBD
+**Status:** 🔴 Not started
+**Priority:** Medium — operator-experience polish, not on the critical path to going live
+
+The CLI today surfaces raw knex/mysql2 errors when the database refuses an operation — e.g. `sw website origins add <slug> <existing-origin>` dumps a full mysql2 stack trace including the offending SQL plus the `ER_DUP_ENTRY` / `website_origins_origin_unique` constraint name. Fine for the developer running this repo, hostile to a self-hosting operator who doesn't know mysql2's error vocabulary. This milestone is the **error-translation pass** across operator-touched surfaces.
+
+Scope:
+- **`./bin/sw` actions** wrap service calls and map well-known failure shapes to single-line human-readable errors with a suggested next step. Examples to cover:
+  - Unique-constraint violations (duplicate slug, duplicate origin) → "An origin `https://…` is already registered. Use `sw website origins list <slug>` to see existing entries."
+  - Foreign-key failures (slug not found) → "No website with slug `<slug>`. Available: <list>. Create one with `sw website create <slug>`."
+  - Malformed args caught upstream by service-layer validators (bad origin format, invalid model slug) → echo the validator's message plain.
+  - Raw error stays available behind `--verbose` / `--debug` for the developer audience.
+- **`./bin/chat`** connection failures (`ECONNREFUSED` against the configured `HOST:PORT` → "site-walker isn't running on `$HOST:$PORT` — start it with `npm run dev`?").
+- **Boot-time errors** (`src/index.ts` / `buildServer`) — invalid `site-walker.toml`, missing `0600` perms, unreachable DB, missing GeoIP DB when required — already have decent messages, but get a consistency pass against the same vocabulary so the operator sees one voice across CLI + boot.
+
+**Scope guard:** HTTP API error shapes (`{ error: 'origin_not_allowed', ... }`) are aimed at widget developers and documented in `docs/api-usage.md` — out of scope here. This milestone is purely about humans typing at a shell.
+
+**Open question to resolve here:** centralised translation registry (`errorMap.ts` keyed by mysql2 `code` / `errno`, called from a thin CLI-action wrapper) versus hand-written per-action `try/catch`. Centralised scales but adds indirection; hand-written is concrete but verbose. Probably worth deferring the decision until we have three concrete examples in the wild.
 
 ---
 

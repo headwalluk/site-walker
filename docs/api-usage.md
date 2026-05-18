@@ -20,7 +20,7 @@ Three endpoints cover this:
 
 | Endpoint               | Method | Purpose                                                             |
 | ---------------------- | ------ | ------------------------------------------------------------------- |
-| `/sessions/preflight`  | GET    | Probe whether a session *could* be minted — no token issued.        |
+| `/sessions/can-start`  | GET    | Probe whether a session *could* be minted — no token issued.        |
 | `/sessions`            | POST   | Mint a session token. Returns the welcome message too.              |
 | `/chat`                | POST   | Send one user turn. Returns the assistant's reply.                  |
 | `/messages`            | GET    | Rehydrate full conversation history for an existing session.        |
@@ -40,12 +40,12 @@ The first one of these the widget cares about is the **origin allowlist**. The b
 
 ## Endpoint reference
 
-### `GET /sessions/preflight` — "can I start a session?"
+### `GET /sessions/can-start` — "can I start a session?"
 
 A lightweight probe with the same auth + geo policy as `POST /sessions`, but it mints nothing and persists nothing. Use it on widget mount to decide whether to show a chat affordance at all.
 
 ```http
-GET /sessions/preflight
+GET /sessions/can-start
 Origin: https://www.acme-corp.example
 ```
 
@@ -57,7 +57,9 @@ Origin: https://www.acme-corp.example
 
 **Failure shapes:** identical to `POST /sessions` minus the success body — `400 origin_required`, `403 origin_not_allowed`, `403 geo_blocked`, `503 capacity_exceeded`.
 
-If preflight returns 200, a subsequent `POST /sessions` from the same browser will almost certainly succeed too. (Almost — the operator could change the policy between the two calls. Don't treat preflight as a guarantee, just an early signal.)
+If the probe returns 200, a subsequent `POST /sessions` from the same browser will almost certainly succeed too. (Almost — the operator could change the policy between the two calls. Don't treat the probe as a guarantee, just an early signal.)
+
+> **Note on the name.** This route was originally `GET /sessions/preflight`. It was renamed to `/sessions/can-start` so the word "preflight" can refer unambiguously to the browser's CORS preflight (`OPTIONS`). The two are independent: every browser-facing route below also responds to CORS preflight automatically when the request's `Origin` is registered against any website.
 
 ### `POST /sessions` — mint a session
 
@@ -171,6 +173,19 @@ Messages are ordered ascending by `created_at`. The welcome message is **not** p
 | 401    | `token_required`  | Missing `Authorization`.                                                 |
 | 401    | `invalid_token`   | Token isn't recognised. Drop the cached token and start over.            |
 | 403    | `geo_blocked`     | The visitor's IP no longer fits the website's geo policy. Same handling as for `POST /chat` above. |
+
+## CORS
+
+The chat API is designed to be called from a browser, so it speaks CORS. The rules are simple and they piggyback on the same per-website origin allowlist you've already set up:
+
+- **An `Origin` registered with any website is an allowed CORS origin.** That's the single source of truth — there's no second "CORS origins" list. `sw website origins add <slug> https://www.example.com` is the only step.
+- **The server echoes the request's `Origin` back** as `Access-Control-Allow-Origin`, with `Vary: Origin` so caches don't cross-pollinate.
+- **Unregistered origins get no CORS header.** The HTTP response itself looks normal (200, 403, etc. depending on the route's own logic), but the browser blocks JS from reading it. From the operator's perspective the API doesn't *leak* which origins are valid.
+- **Allowed methods:** `GET`, `POST`, `OPTIONS`. **Allowed headers:** `Content-Type`, `Authorization`. **Credentials:** not used (we authenticate with a Bearer token in `Authorization`, not cookies — don't set `credentials: 'include'` on your `fetch`).
+- **Preflight `OPTIONS` requests** are handled automatically. The browser sends them before any `POST /chat`, `POST /sessions`, or `GET /messages` because of the `Authorization` / `Content-Type: application/json` headers. The server returns a `204` with the allow headers above and a `Max-Age` of 600 seconds so the browser doesn't re-preflight on every turn.
+- **Non-browser callers** (curl, the `./bin/chat` CLI, server-to-server) don't send an `Origin` header and the CORS layer leaves them alone. Same code path, same response.
+
+If your browser console shows `Access-Control-Allow-Origin missing`, the fix is almost always the operator running `sw website origins add` for your widget's host. The server didn't 403 — it just didn't recognise the origin, so it didn't grant CORS.
 
 ## Putting it together
 
@@ -301,7 +316,6 @@ If the visitor explicitly opts out of "remember this conversation" (privacy UI, 
 - **Message length cap:** 8000 characters after trimming. Enforce this in the widget too so you can give a friendly UI message instead of trusting the server's 400.
 - **Single conversation per session:** one session, one growing message log. There's no "new conversation" affordance built into the API; minting a fresh session token (e.g. by clearing `localStorage` and reloading) is how you start over.
 - **No streaming yet.** Each `POST /chat` is request-then-response. Show a "Thinking…" indicator during the in-flight period. Token streaming is on the roadmap.
-- **CORS is not yet wired.** Today site-walker doesn't ship CORS middleware, which means cross-origin browser calls will fail at the preflight step. The chat API was designed for browser use and CORS is on the immediate punch-list; you'll need it before integration goes live. Local development from the same origin works without CORS, so you can iterate on the widget structure in the meantime.
 - **No client-controllable model.** The model is set per-website by the operator; widgets can't override it per session. Comparison testing today means swapping the website's model via `sw website set-model` between conversations.
 - **No retention sweep yet.** Sessions and messages persist indefinitely. M13 will add retention + privacy controls.
 

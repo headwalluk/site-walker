@@ -1,6 +1,7 @@
 import Fastify, { type FastifyInstance } from 'fastify';
 import fastifySwagger from '@fastify/swagger';
 import fastifySwaggerUi from '@fastify/swagger-ui';
+import fastifyCors from '@fastify/cors';
 import type { Knex } from 'knex';
 import { findWebsiteByOrigin } from './services/websites.js';
 import { createSession, findSessionByToken, listMessages } from './services/sessions.js';
@@ -259,6 +260,27 @@ export async function buildServer(opts: BuildServerOpts): Promise<FastifyInstanc
     staticCSP: true,
   });
 
+  // CORS reuses the per-website origin allowlist as its single source of
+  // truth: any Origin registered against any website via `sw website origins
+  // add` is an allowed CORS origin. Unregistered origins get no CORS header
+  // and the browser blocks the response. Non-browser callers (curl, ./bin/chat,
+  // server-to-server) send no Origin header and bypass this layer entirely.
+  await fastify.register(fastifyCors, {
+    origin: async (origin: string | undefined) => {
+      if (!origin) return false;
+      try {
+        const website = await findWebsiteByOrigin(db, origin);
+        return website !== null;
+      } catch {
+        return false;
+      }
+    },
+    methods: ['GET', 'POST', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization'],
+    credentials: false,
+    maxAge: 600,
+  });
+
   fastify.get('/openapi.json', { schema: { hide: true } }, async () => fastify.swagger());
 
   fastify.get(
@@ -424,7 +446,7 @@ export async function buildServer(opts: BuildServerOpts): Promise<FastifyInstanc
   );
 
   fastify.get(
-    '/sessions/preflight',
+    '/sessions/can-start',
     {
       attachValidation: true,
       schema: {
@@ -482,7 +504,7 @@ export async function buildServer(opts: BuildServerOpts): Promise<FastifyInstanc
             mode: geo.mode,
             reason: geo.reason,
           },
-          'GET /sessions/preflight: geo_blocked',
+          'GET /sessions/can-start: geo_blocked',
         );
         return reply.status(403).send({ error: 'geo_blocked' });
       }

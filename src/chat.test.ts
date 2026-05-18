@@ -475,7 +475,7 @@ test('POST /sessions: allowlist permits the listed country and rejects others', 
   assert.equal(denied.json().error, 'geo_blocked');
 });
 
-test('GET /sessions/preflight: returns { ok: true } when geo allows', async (t) => {
+test('GET /sessions/can-start: returns { ok: true } when geo allows', async (t) => {
   const db = makeTestDb();
   const fastify = await buildServer({
     db,
@@ -493,7 +493,7 @@ test('GET /sessions/preflight: returns { ok: true } when geo allows', async (t) 
 
   const res = await fastify.inject({
     method: 'GET',
-    url: '/sessions/preflight',
+    url: '/sessions/can-start',
     headers: { origin },
     remoteAddress: '203.0.113.30',
   });
@@ -501,7 +501,7 @@ test('GET /sessions/preflight: returns { ok: true } when geo allows', async (t) 
   assert.deepEqual(res.json(), { ok: true });
 });
 
-test('GET /sessions/preflight: 403 geo_blocked when policy denies (mints nothing)', async (t) => {
+test('GET /sessions/can-start: 403 geo_blocked when policy denies (mints nothing)', async (t) => {
   const db = makeTestDb();
   const fastify = await buildServer({
     db,
@@ -519,7 +519,7 @@ test('GET /sessions/preflight: 403 geo_blocked when policy denies (mints nothing
 
   const res = await fastify.inject({
     method: 'GET',
-    url: '/sessions/preflight',
+    url: '/sessions/can-start',
     headers: { origin },
     remoteAddress: '203.0.113.40',
   });
@@ -534,7 +534,7 @@ test('GET /sessions/preflight: 403 geo_blocked when policy denies (mints nothing
   assert.equal(Number(sessionCount[0].n), 0);
 });
 
-test('GET /sessions/preflight: 400 when Origin missing, 403 when not allowlisted', async (t) => {
+test('GET /sessions/can-start: 400 when Origin missing, 403 when not allowlisted', async (t) => {
   const db = makeTestDb();
   const fastify = await buildServer({
     db,
@@ -546,13 +546,13 @@ test('GET /sessions/preflight: 400 when Origin missing, 403 when not allowlisted
     await db.destroy();
   });
 
-  const missing = await fastify.inject({ method: 'GET', url: '/sessions/preflight' });
+  const missing = await fastify.inject({ method: 'GET', url: '/sessions/can-start' });
   assert.equal(missing.statusCode, 400);
   assert.equal(missing.json().error, 'origin_required');
 
   const stranger = await fastify.inject({
     method: 'GET',
-    url: '/sessions/preflight',
+    url: '/sessions/can-start',
     headers: { origin: 'https://stranger.example.com' },
   });
   assert.equal(stranger.statusCode, 403);

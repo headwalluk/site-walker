@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-05-18
+
+### Added
+- **CORS** via `@fastify/cors`, wired against the per-website origin allowlist as its single source of truth. Any `Origin` registered against any website (via `sw website origins add`) is an allowed CORS origin — no second list, no parallel config.
+  - Dynamic async origin resolver delegates to the existing `findWebsiteByOrigin(db, origin)` from M2. Allowed origins get echoed back as `Access-Control-Allow-Origin: <origin>` with `Vary: Origin`. Unregistered origins get **no** CORS header — the HTTP response is otherwise normal, the browser blocks JS from reading it, and the API deliberately doesn't leak which origins are valid.
+  - Settings: `methods: ['GET', 'POST', 'OPTIONS']`, `allowedHeaders: ['Content-Type', 'Authorization']`, `credentials: false`, `maxAge: 600` (browsers cache the preflight for 10 minutes — cuts repeat preflights to one per visitor per 10 min on a chat session).
+  - Non-browser callers (curl, `./bin/chat`, server-to-server) send no `Origin` and bypass the CORS layer entirely. Same code path as before, no behaviour change for those flows.
+- 4 new tests in `src/server.test.ts` (139 total): registered-origin preflight echoes ACAO + Vary + methods + headers; unregistered preflight gets no ACAO; actual `POST /sessions` response carries ACAO for a registered origin; request without `Origin` still succeeds and gets no ACAO.
+- Dep: `@fastify/cors` ^11.2.0.
+
+### Changed
+- **Route rename: `GET /sessions/preflight` → `GET /sessions/can-start`.** The original name was chosen before CORS landed; with the CORS layer in place "preflight" needed to refer unambiguously to the browser's `OPTIONS` preflight. The new name pairs naturally with `POST /sessions` — "can I start one?" → "start one". Behaviour is unchanged. Breaking for any existing caller; the WordPress-plugin widget (the only known caller) is being built against this repo in parallel, so the coordination cost is zero.
+- `docs/api-usage.md` — new top-level `## CORS` section explaining that browser clients need their `Origin` registered via `sw website origins add`, with notes on preflight handling, allowed methods/headers, credentials-off, and the non-browser bypass. The "CORS is not yet wired" placeholder in the gaps list is removed. Endpoint table + section header renamed to `/sessions/can-start`, with a callout flagging the rename for anyone migrating from 0.10.0.
+- `dev-notes/00-project-tracker.md` — new **M15: Friendlier CLI + boot error messages** added to Phase 2. Triggered by a raw `ER_DUP_ENTRY` mysql2 stack trace on `sw website origins add` against a duplicate origin; M15 gathers the error-translation pass for operator-touched surfaces (CLI actions + boot errors) when it becomes a priority. The "CORS in this repo" item is dropped from "Next up" now that it's shipped.
+
 ## [0.10.0] - 2026-05-17
 
 ### Added
