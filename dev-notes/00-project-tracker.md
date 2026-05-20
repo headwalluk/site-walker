@@ -1,9 +1,9 @@
 # site-walker — Project Tracker
 
 **Last Updated:** 20 May 2026
-**Current Version:** 0.13.1
-**Current Phase:** **SaaS pivot — execution.** v0.11.0 was the last prototype release. v0.12.0 landed M16 (multi-tenant rename + accounts). v0.13.0 lands M17 (DB-backed provider registry + chatbot BYO keys; TOML config path deleted). v0.13.1 patches the `sw provider add --local` flag-defaulting bug surfaced during end-to-end validation. Remaining SaaS-pivot work is M18–M20 in [`10-saas-shape.md`](10-saas-shape.md). The pre-pivot deferred items (M7 finish, old M9/M11/M12/M13/M14/M15) stay renumber-deferred until after M20.
-**Overall Progress (post-M17, v0.13.1):** M1–M6 complete, M7 + M8 partial, M16 complete in v0.12.0, M17 complete in v0.13.0. End-to-end validated against `cortex/qwen2:1.5b` (local Ollama) and `openrouter/anthropic/claude-haiku-4.5` (BYO key, metered); both adapters serve real traffic on `headwall-devx`. SaaS-pivot work picks up from a DB-canonical config baseline.
+**Current Version:** 0.14.0
+**Current Phase:** **SaaS pivot — execution.** v0.11.0 was the last prototype release. v0.12.0 landed M16 (multi-tenant rename + accounts). v0.13.0 lands M17 (DB-backed provider registry + chatbot BYO keys; TOML config path deleted). v0.13.1 patched the `sw provider add --local` flag-defaulting bug. v0.14.0 lands M18 (cost-accounting foundation + `sw chatbot usage` + Anthropic prompt-caching substrate). Remaining SaaS-pivot work is M19 + M20 in [`10-saas-shape.md`](10-saas-shape.md). The pre-pivot deferred items (M7 finish, old M9/M11/M12/M13/M14/M15) stay renumber-deferred until after M20.
+**Overall Progress (post-M18, v0.14.0):** M1–M6 complete, M7 + M8 partial, M16/M17/M18 complete in v0.12.0/v0.13.0/v0.14.0. Token + USD cost recording on every assistant turn; `sw chatbot usage <slug> [--since 24h]` aggregates. Anthropic prompt-caching schema substrate in place (cache_creation/read token columns + four-bucket cost formula); the adapter-side wiring is a named follow-up post-M20.
 
 Vision and phasing live in [`../README.md`](../README.md). **Note:** README still markets the prototype-era "self-hosted multi-tenant API" framing; rewrite ships after M16 lands, not before, to avoid documenting vapourware. Stack and architecture decisions live in [`../CLAUDE.md`](../CLAUDE.md). Auth/session and data-model design live in companion docs in this directory. This file tracks the work.
 
@@ -16,13 +16,13 @@ Companion planning docs:
 
 ## Next up
 
-Post-M17, 2026-05-20. Picking up next in roughly this order:
+Post-M18, 2026-05-20. Picking up next in roughly this order:
 
-1. **M18 — Cost accounting (foundation, no enforcement).** Token + $ per message, `chatbot_id` denormalised onto `messages` for daily-spend query speed. `sw chatbot usage` CLI surface. Run for long enough to see real cost shapes before turning caps on. The pricing columns added in M17 (`provider_models.input_per_million_usd` / `output_per_million_usd`) are the inputs.
-2. **M19 — Admin HTTP API + auth.** `admin_keys` table (account admin keys only, `account_id NOT NULL`). Provisioning surface is `SW_PROVISIONING_KEY` in `.env`, air-gapped from `admin_keys` — see the resolved decision in [`10-saas-shape.md`](10-saas-shape.md). Unblocks `site-walker-wp` from talking to the API for anything beyond chat itself.
-3. **M20 — Budget caps.** Daily + per-session enforcement at `/sessions/can-start`, `POST /sessions`, `POST /chat`. 402 error semantics. The session cap shape (soft-handoff at 80%, hard-cap → email capture) is sketched in [`11-budget-handoff.md`](11-budget-handoff.md); concrete design lands during the M20 pass.
+1. **M19 — Admin HTTP API + auth.** `admin_keys` table (account admin keys only, `account_id NOT NULL`). Provisioning surface is `SW_PROVISIONING_KEY` in `.env`, air-gapped from `admin_keys` — see the resolved decision in [`10-saas-shape.md`](10-saas-shape.md). Unblocks `site-walker-wp` from talking to the API for anything beyond chat itself.
+2. **M20 — Budget caps.** Daily + per-session enforcement at `/sessions/can-start`, `POST /sessions`, `POST /chat`. 402 error semantics. The session cap shape (soft-handoff at 80%, hard-cap → email capture) is sketched in [`11-budget-handoff.md`](11-budget-handoff.md); concrete design lands during the M20 pass.
+3. **Post-M20: Anthropic prompt caching (via OpenRouter).** Substrate already in DB (M18). Adapter-side work: send `cache_control` markers on system-blocks prefix, parse cache stats from response, gate by model, skip below the minimum-cacheable threshold. ~70-80% input-billing savings expected for chatbots with stable system blocks and many conversations per cache window. See [`10-saas-shape.md`](10-saas-shape.md).
 
-Before M18 starts: **rebuild the local dev fixture** to live on the v0.13.0 schema. Recipe in the v0.13.0 CHANGELOG entry — `sw secrets gen-key` → paste into `.env`, then `sw provider add cortex ...`, `sw provider models add cortex qwen2:1.5b ...`, similarly for openrouter, then `sw chatbot set-api-key <slug>` for any metered chatbot.
+Operational measurement note for M20: let M18's `sw chatbot usage` accumulate real numbers across both the cortex and openrouter chatbots before settling on M20's default `daily_budget_usd` / `session_budget_usd` shapes. We want real cost-per-conversation data, not invented defaults.
 
 After M20: real client live. Auto-mode content ingestion, condensation pipeline, operational hours, and OAuth-style plugin linking all come after that.
 
@@ -418,17 +418,32 @@ No caching of the provider lookup in this milestone — direct DB reads. If prof
 
 ### Milestone 18: Cost accounting (foundation, no enforcement)
 
-**Target Completion:** TBD
-**Status:** 🔴 Not started
+**Target Completion:** 20 May 2026
+**Status:** ✅ Complete (20 May 2026, v0.14.0)
 **Priority:** High — foundation for M20 budget caps
 
-Records `tokens_in`, `tokens_out`, `cost_usd_estimate` on every assistant `messages` row. Cost computed from `provider_models` pricing × token counts. Denormalises `chatbot_id` onto `messages` so daily-spend queries don't require a join through `sessions`. Adapter contract update: every adapter returns `{ tokens_in, tokens_out }` on chat response.
+Records `tokens_in`, `tokens_out`, `cost_usd_estimate` on every assistant `messages` row. Cost computed from `provider_models` pricing × token counts. Denormalises `chatbot_id` onto `messages` so daily-spend queries don't require a join through `sessions`.
 
 CLI: `sw chatbot usage <slug> [--since 24h]` shows running totals.
 
 **No enforcement.** Just observability. Run for a week or two before turning caps on (M20) so we measure real cost shapes against real workloads before guessing at sensible defaults.
 
 **Honesty about accuracy:** the recorded cost is an *estimate* — ground truth is the customer's Anthropic/OpenRouter invoice. Our number runs slightly under (no system overhead). Close enough for caps; documented for customer-facing reconciliation.
+
+**Shipped at 0.14.0:**
+- `migrations/0003_messages_cost.js` — additive: adds `messages.chatbot_id INT UNSIGNED NOT NULL` (backfilled from `sessions.chatbot_id` mid-migration, then tightened + FK CASCADE + composite index on `(chatbot_id, created_at)`), `tokens_in INT UNSIGNED NULL`, `tokens_out INT UNSIGNED NULL`, `cost_usd_estimate DECIMAL(10,6) NOT NULL DEFAULT 0`, `cache_creation_input_tokens INT UNSIGNED NULL`, `cache_read_input_tokens INT UNSIGNED NULL`.
+- `src/services/cost.ts` — `computeCostUsd` (four-bucket: uncached input × 1.0, cache write × 1.25, cache read × 0.10, output × output_price; Anthropic multipliers as named constants with future-configurable comment), `getChatbotUsage`, `parseSinceDuration`. 11 unit tests for the formula + 6 for the duration parser.
+- `ResolvedModel.providerModel` — joined `provider_models` row exposed alongside the provider on every `resolveModel` call. Chat path reads pricing from here without a second query.
+- `appendMessage` signature change — now `(db, sessionId, role, content, opts)` with `opts.chatbotId` required and tokens/cost/cache fields optional. All call sites updated.
+- Chat path persists tokens + computed cost on the assistant row at insert time. User rows carry `chatbot_id` only (tokens/cost stay at NULL/0). 2 new integration tests cover the metered (full formula) and unmetered (cost = 0) paths.
+- CLI `sw chatbot usage <slug> [-s|--since <duration>]` — aggregates token + USD totals over the chosen window. Cache lines appear when non-zero (always zero today; populates post-M20). Warns if the chatbot's current model row has NULL pricing on a metered provider (silent under-counting case).
+- `src/testing/db.ts::setTestChatbotApiKey` — encrypts + sets a chatbot key for tests that need the metered path. Reused by M19+ tests.
+- Anthropic prompt-caching **substrate** in place: schema columns + four-bucket cost formula handle non-NULL cache values correctly. The adapter-side wiring (sending `cache_control` markers, parsing cache stats) is a named follow-up post-M20.
+
+**Resolved during execution:**
+- Token attribution: **assistant row only.** User rows always have `tokens_in / tokens_out = NULL` and `cost_usd_estimate = 0`. Aggregate cost is a one-liner against `chatbot_id`.
+- Cache multipliers: hardcoded Anthropic constants in `cost.ts` with a block comment naming the future-configurable shape (per-provider columns when OpenAI/Google/etc. ship caching with different multipliers). The user's preference (configurable shape over magic numbers, even when v1 ships hardcoded values) is captured in memory.
+- `--since` parser: relative-only (`Ns`/`Nm`/`Nh`/`Nd`), single-unit. No ISO timestamps; no `1h30m` compound. Operators can settle for a slightly bigger window when they want finer slicing.
 
 ### Milestone 19: Admin HTTP API + bearer-token auth
 

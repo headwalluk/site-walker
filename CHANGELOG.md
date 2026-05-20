@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-05-20
+
+The third SaaS-pivot milestone (M18). Records token counts + USD cost estimate on every assistant message row, ships a `sw chatbot usage` CLI, and pre-adds the schema substrate for Anthropic prompt caching ahead of the post-M20 wiring milestone. Foundation-only — no enforcement of caps (that lands in M20).
+
+### Added
+- **`messages.chatbot_id INT UNSIGNED NOT NULL`** (denormalised from `sessions.chatbot_id`) plus composite index `(chatbot_id, created_at)`. Daily-spend SUM queries now scan the index directly without joining through `sessions`. Backfilled in the migration from existing rows.
+- **`messages.tokens_in / tokens_out INT UNSIGNED NULL`** — populated on the assistant row from the adapter's `tokensUsed.prompt / .completion`. NULL when the adapter didn't report (today's user rows always).
+- **`messages.cost_usd_estimate DECIMAL(10,6) NOT NULL DEFAULT 0`** — USD estimate computed at insert time via `src/services/cost.ts`. NOT NULL so `SUM(cost_usd_estimate)` is COALESCE-free. 0 for user rows and unmetered-provider turns.
+- **`messages.cache_creation_input_tokens / cache_read_input_tokens INT UNSIGNED NULL`** — Anthropic prompt-caching substrate. Always NULL today; populated when the post-M20 milestone wires the OpenRouter adapter to send `cache_control` markers and parse cache stats from the response.
+- **`src/services/cost.ts::computeCostUsd`** — pure four-bucket cost calculator: uncached input × 1.0, cache write × 1.25, cache read × 0.10, output × output-price. Anthropic cache multipliers as named constants with a block comment naming the future-configurable shape (per-provider columns once OpenAI/Google ship caching with different multipliers).
+- **`src/services/cost.ts::getChatbotUsage`** — DB aggregation helper returning `{ messageCount, tokensIn, tokensOut, costUsd, cacheCreationTokens, cacheReadTokens }` over an optional time window.
+- **`src/services/cost.ts::parseSinceDuration`** — relative-only duration parser (`Ns`/`Nm`/`Nh`/`Nd`). Single-unit; malformed input rejected with a clear error.
+- **`ResolvedModel.providerModel`** — the joined `provider_models` row is now exposed alongside the provider on every `resolveModel` call, so the chat path reads pricing for cost computation without a second query.
+- **CLI `sw chatbot usage <slug> [-s|--since <duration>]`** — aggregate token + USD totals. Defaults to all-time when `--since` is omitted. Cache lines surface only when non-zero. Warns when the chatbot's current model row has NULL pricing on a metered provider (silent under-counting).
+- **`src/testing/db.ts::setTestChatbotApiKey`** — encrypts a plaintext key via the loaded `SW_ENCRYPTION_KEY` and writes the three `chatbots.provider_api_key_*` columns. Used by the M18 metered-cost-recording test; M19+ tests will reuse it.
+
+### Changed
+- **`appendMessage` signature**: now takes `(db, sessionId, role, content, opts)` where `opts.chatbotId` is required (column is NOT NULL) and `opts.tokensIn / tokensOut / costUsd / cacheCreationTokens / cacheReadTokens` are optional. All call sites updated (chat path + tests).
+- **`Message` interface** gains the six new columns. DECIMAL pricing comes back from mysql2 as a string (`cost_usd_estimate: string`).
+- **Chat path** (`src/services/chat.ts`): after the adapter returns, computes USD cost from the resolved provider model's pricing and persists tokens + cost on the assistant row. User rows carry `chatbot_id` only.
+- **`dev-notes/02-data-model.md`**: `messages` table re-documented with the six new columns, the new composite index, and the cost-attribution convention (assistant rows carry tokens/cost, user rows don't).
+- **`dev-notes/10-saas-shape.md`**: post-M20 deferred list adds **Anthropic prompt caching** — substrate already shipped in M18; remaining work is adapter-side (`cache_control` marker injection, response-side cache-stat parsing, model gating, minimum-prefix-length threshold).
+- **`docs/cli-sw.md`** gets a `sw chatbot usage` section with the output format, duration parser, cache lines, and under-counting warning.
+
+### Tests
+189/189 pass (up from 181). 11 cost-helper unit tests, 6 duration-parser tests, 2 chat-path cost-recording integration tests added. Existing 11 sessions/chatbot tests updated for the new `appendMessage` opts shape.
+
+### What this enables, what it doesn't
+**Enables:** observability into per-chatbot spend over arbitrary windows (`sw chatbot usage acme-corp --since 7d`). Operators can see cost shapes before deciding budget caps.
+
+**Doesn't enforce:** budget caps remain M20. Today's cost numbers are observability-only; chat turns never get rejected because of cost.
+
+**Doesn't yet measure cache hits:** the cache columns stay NULL until the post-M20 cache-wiring milestone teaches the OpenRouter adapter to send markers and parse cache stats. The cost formula already handles non-NULL cache values correctly, so when caching ships it will Just Work.
+
+**Honesty about the estimate:** the recorded cost runs slightly under the provider's invoiced amount (we don't count system-side overhead). For cap enforcement in M20 it's accurate enough; for customer-facing reconciliation, point at the provider's invoice.
+
 ## [0.13.1] - 2026-05-20
 
 Bugfix follow-up to 0.13.0. End-to-end validation against both backends — `cortex/qwen2:1.5b` (local Ollama, unmetered) and `openrouter/anthropic/claude-haiku-4.5` (BYO key, metered) — confirmed the M17 plumbing works.

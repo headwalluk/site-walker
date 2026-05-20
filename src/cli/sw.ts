@@ -49,7 +49,7 @@ import { loadEncryptionKey } from '../config/secrets.js';
 
 const program = new Command();
 
-program.name('sw').description('site-walker admin CLI').version('0.13.1');
+program.name('sw').description('site-walker admin CLI').version('0.14.0');
 
 // -----------------------------------------------------------------------------
 // secrets subgroup
