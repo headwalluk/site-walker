@@ -4,6 +4,7 @@ import type { ChatMessage, ProtocolAdapter } from '../providers/index.js';
 import type { Provider } from './providers.js';
 import { decrypt } from '../utils/crypto.js';
 import { loadEncryptionKey } from '../config/secrets.js';
+import { computeCostUsd } from './cost.js';
 import { estimateTokens } from '../utils/tokens.js';
 import { appendMessage, findSessionByToken, listMessages, type Message } from './sessions.js';
 import { defaultHeadroom, resolveModel, type ResolvedModel } from './models.js';
@@ -56,6 +57,16 @@ export interface RunChatResult {
 
 function historyToChatMessages(history: Message[]): ChatMessage[] {
   return history.map((m) => ({ role: m.role, content: m.content }));
+}
+
+/**
+ * `provider_models.input_per_million_usd` / `output_per_million_usd` are
+ * DECIMAL(10,6) — mysql2 returns them as strings to preserve precision.
+ * computeCostUsd takes numbers, so we convert here. NULL stays NULL (the
+ * unmetered signal).
+ */
+function parseNullableDecimal(value: string | null): number | null {
+  return value === null ? null : Number(value);
 }
 
 /**
@@ -162,7 +173,7 @@ export async function runChat(input: RunChatInput): Promise<RunChatResult> {
     }
   }
 
-  await appendMessage(db, session.id, 'user', trimmed);
+  await appendMessage(db, session.id, 'user', trimmed, { chatbotId: chatbot.id });
 
   const messages: ChatMessage[] = [
     { role: 'system', content: assembled.prompt },
@@ -183,7 +194,27 @@ export async function runChat(input: RunChatInput): Promise<RunChatResult> {
     throw new ChatError('model_error', (err as Error).message);
   }
 
-  const assistant = await appendMessage(db, session.id, 'assistant', response.reply);
+  // M18: record token + USD cost on the assistant row. Cache fields stay
+  // NULL until the post-M20 cache-marker wiring milestone teaches the
+  // OpenRouter adapter to surface them; today every row's cache cells are
+  // NULL and computeCostUsd degenerates to the two-bucket case.
+  const tokensIn = response.tokensUsed?.prompt ?? null;
+  const tokensOut = response.tokensUsed?.completion ?? null;
+  const inputPrice = parseNullableDecimal(resolved.providerModel.input_per_million_usd);
+  const outputPrice = parseNullableDecimal(resolved.providerModel.output_per_million_usd);
+  const costUsd = computeCostUsd({
+    tokensIn,
+    tokensOut,
+    inputPerMillionUsd: inputPrice,
+    outputPerMillionUsd: outputPrice,
+  });
+
+  const assistant = await appendMessage(db, session.id, 'assistant', response.reply, {
+    chatbotId: chatbot.id,
+    tokensIn,
+    tokensOut,
+    costUsd,
+  });
 
   const result: RunChatResult = { reply: response.reply, message_id: assistant.id };
   if (response.tokensUsed) {

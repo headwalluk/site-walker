@@ -318,6 +318,47 @@ Chatbot: acme-corp
 
 Fails with a clear error if `model_slug` no longer resolves (provider or model row missing from the registry).
 
+### `sw chatbot usage <slug> [-s|--since <duration>]`
+
+Aggregate token + USD cost totals for a chatbot. Costs and tokens are recorded per assistant message at chat time (since v0.14.0 / M18). Defaults to all-time when `--since` is omitted; otherwise narrows to the relative window.
+
+```
+$ ./bin/sw chatbot usage headwall-devx
+Usage for chatbot "headwall-devx" (period: all-time):
+  Messages:        47
+  Tokens in:       12480
+  Tokens out:      5821
+  Cost (USD est):  $0.041605
+
+$ ./bin/sw chatbot usage headwall-devx --since 24h
+Usage for chatbot "headwall-devx" (period: last 24h (since 2026-05-19T18:00:00.000Z)):
+  Messages:        12
+  Tokens in:       3200
+  Tokens out:      1490
+  Cost (USD est):  $0.010650
+```
+
+`--since` accepts relative durations only: `Ns` (seconds), `Nm` (minutes), `Nh` (hours), `Nd` (days). Single-unit form — `1h30m` is not supported (aggregate to the slightly bigger `2h` window instead). Malformed values are rejected with a clear error.
+
+**Cache lines** (post-M20 milestone surface — currently always 0 until Anthropic prompt-cache wiring lands):
+
+```
+  Cache writes:    1024 tokens
+  Cache reads:     8192 tokens
+```
+
+These appear only when at least one message in the window recorded non-zero cache activity.
+
+**Cost-under-counting warning.** If the chatbot's current `model_slug` resolves to a model row that has NULL pricing on a `metered` provider, the cost numbers above silently round to 0 for every metered turn. The CLI surfaces this:
+
+```
+  ⚠ Cost may be under-counted: chatbot's current model row "openrouter/anthropic/claude-haiku-4.5" has NULL pricing on metered provider "openrouter". Re-register the model with --input-price and --output-price to get accurate cost numbers going forward.
+```
+
+This only flags the chatbot's *current* configuration — historical messages stay at whatever cost was recorded when they were inserted. Going forward, fix the pricing and new messages will record accurately.
+
+The cost number is an **estimate**, not ground truth. The provider's invoice is authoritative; our number runs slightly under because system-side overhead at the provider isn't counted here. See `dev-notes/10-saas-shape.md` for the rationale.
+
 ---
 
 ## `sw provider`

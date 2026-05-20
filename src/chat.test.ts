@@ -3,10 +3,10 @@ import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import type { Knex } from 'knex';
 import { buildServer } from './server.js';
-import { addOrigin } from './services/chatbots.js';
+import { addOrigin, getChatbotBySlug } from './services/chatbots.js';
 import { createProvider, createProviderModel } from './services/providers.js';
 import { setChatbotGeoCountries, setChatbotGeoMode, type GeoChecker } from './services/geo.js';
-import { makeTestDb, seedAccountAndChatbot } from './testing/db.js';
+import { makeTestDb, seedAccountAndChatbot, setTestChatbotApiKey } from './testing/db.js';
 import type { Account } from './services/accounts.js';
 import type { ChatRequest, ChatResponse, ProtocolAdapter } from './providers/index.js';
 
@@ -238,6 +238,120 @@ test('POST /chat: 503 chatbot_api_key_missing when metered provider has no chatb
   });
   assert.equal(res.statusCode, 503);
   assert.equal(res.json().error, 'chatbot_api_key_missing');
+});
+
+test('POST /chat: M18 — unmetered provider records tokens but cost stays at 0', async (t) => {
+  const db = makeTestDb();
+  const fastify = await buildServer({
+    db,
+    logger: false,
+    adapterFactory: () => ({
+      protocol: 'ollama-native',
+      chat: async () => ({
+        reply: 'unmetered reply',
+        tokensUsed: { prompt: 200, completion: 80 },
+      }),
+    }),
+  });
+  const { slug, origin, account, providerName } = await setupChat(db);
+  t.after(() => cleanup(db, account, providerName, fastify));
+
+  const token = await mintSession(fastify, origin);
+  const res = await fastify.inject({
+    method: 'POST',
+    url: '/chat',
+    headers: { authorization: `Bearer ${token}` },
+    payload: { message: 'hi' },
+  });
+  assert.equal(res.statusCode, 200);
+
+  const chatbot = await getChatbotBySlug(db, slug);
+  assert.ok(chatbot);
+  const assistantRows = await db('messages')
+    .where({ chatbot_id: chatbot.id, role: 'assistant' })
+    .select('tokens_in', 'tokens_out', 'cost_usd_estimate');
+  assert.equal(assistantRows.length, 1);
+  assert.equal(assistantRows[0].tokens_in, 200);
+  assert.equal(assistantRows[0].tokens_out, 80);
+  // Unmetered → cost stays at the DB default 0, even with tokens recorded.
+  assert.equal(Number(assistantRows[0].cost_usd_estimate), 0);
+});
+
+test('POST /chat: M18 — metered provider records tokens and computed cost', async (t) => {
+  const db = makeTestDb();
+  const fastify = await buildServer({
+    db,
+    logger: false,
+    adapterFactory: () => ({
+      protocol: 'openrouter',
+      chat: async () => ({
+        reply: 'priced reply',
+        tokensUsed: { prompt: 100, completion: 50 },
+      }),
+    }),
+  });
+
+  // Bespoke setup: metered provider with pricing, chatbot with an api_key
+  // so the missing-key check doesn't fire.
+  const slug = uniqueSlug();
+  const origin = `https://${slug}.example.com`;
+  const providerName = `or-${slug}`;
+  const provider = await createProvider(db, {
+    name: providerName,
+    protocol: 'openrouter',
+    base_url: 'http://test.invalid',
+    is_local: false,
+    is_metered: true,
+  });
+  await createProviderModel(db, {
+    provider_id: provider.id,
+    model_slug: 'test-model',
+    context_window: 200000,
+    input_per_million_usd: 1.0,
+    output_per_million_usd: 5.0,
+  });
+  const { account, chatbot } = await seedAccountAndChatbot(db, slug);
+  await addOrigin(db, slug, origin);
+  await db('chatbots')
+    .where({ slug })
+    .update({ model_slug: `${providerName}/test-model` });
+  await setTestChatbotApiKey(db, chatbot.id, 'sk-test-fake-key');
+
+  t.after(async () => {
+    await fastify.close();
+    await db('accounts').where({ id: account.id }).del();
+    await db('providers').where({ name: providerName }).del();
+    await db.destroy();
+  });
+
+  const token = await mintSession(fastify, origin);
+  const res = await fastify.inject({
+    method: 'POST',
+    url: '/chat',
+    headers: { authorization: `Bearer ${token}` },
+    payload: { message: 'hi' },
+  });
+  assert.equal(res.statusCode, 200);
+
+  const assistantRows = await db('messages')
+    .where({ chatbot_id: chatbot.id, role: 'assistant' })
+    .select('tokens_in', 'tokens_out', 'cost_usd_estimate');
+  assert.equal(assistantRows.length, 1);
+  assert.equal(assistantRows[0].tokens_in, 100);
+  assert.equal(assistantRows[0].tokens_out, 50);
+  // 100 input × $1/M = $0.0001
+  // 50 output × $5/M = $0.00025
+  // Total = $0.00035
+  assert.equal(Number(assistantRows[0].cost_usd_estimate), 0.00035);
+
+  // The user row in the same session has tokens NULL and cost 0.
+  const userRows = await db('messages')
+    .where({ chatbot_id: chatbot.id, role: 'user' })
+    .select('tokens_in', 'tokens_out', 'cost_usd_estimate');
+  assert.equal(userRows.length, 1);
+  assert.equal(userRows[0].tokens_in, null);
+  assert.equal(userRows[0].tokens_out, null);
+  assert.equal(Number(userRows[0].cost_usd_estimate), 0);
 });
 
 test('POST /chat: 413 when total prompt exceeds context window with headroom', async (t) => {

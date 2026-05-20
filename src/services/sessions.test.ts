@@ -76,9 +76,9 @@ test('appendMessage + listMessages preserves insertion order and bumps last_acti
   // MariaDB DATETIME has 1-second resolution by default; wait so the bump is visible.
   await new Promise((r) => setTimeout(r, 1100));
 
-  await appendMessage(db, session.id, 'user', 'hello');
-  await appendMessage(db, session.id, 'assistant', 'hi there');
-  await appendMessage(db, session.id, 'user', 'how are you?');
+  await appendMessage(db, session.id, 'user', 'hello', { chatbotId: chatbot.id });
+  await appendMessage(db, session.id, 'assistant', 'hi there', { chatbotId: chatbot.id });
+  await appendMessage(db, session.id, 'user', 'how are you?', { chatbotId: chatbot.id });
 
   const messages = await listMessages(db, session.id);
   assert.equal(messages.length, 3);
@@ -136,7 +136,7 @@ test('listSessions: filters by chatbot + applies limit + orders by last_active_a
   const aSession = await createSession(db, a.id);
   // Make A's session newer than B's by appending a message after B's session.
   const bSession = await createSession(db, b.id);
-  await appendMessage(db, aSession.id, 'user', 'A is newer now');
+  await appendMessage(db, aSession.id, 'user', 'A is newer now', { chatbotId: a.id });
 
   const both = await listSessions(db, { limit: 50 });
   assert.ok(both.length >= 2);

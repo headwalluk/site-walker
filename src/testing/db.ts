@@ -1,5 +1,7 @@
 import knex, { type Knex } from 'knex';
 import { env } from '../config/env.js';
+import { loadEncryptionKey } from '../config/secrets.js';
+import { encrypt } from '../utils/crypto.js';
 import { createAccount, type Account } from '../services/accounts.js';
 import { createChatbot, type Chatbot } from '../services/chatbots.js';
 
@@ -47,4 +49,23 @@ export async function seedAccountAndChatbot(
     persona: opts.persona ?? null,
   });
   return { account, chatbot };
+}
+
+/**
+ * Encrypt `plainKey` with the loaded `SW_ENCRYPTION_KEY` and write the three
+ * `chatbots.provider_api_key_*` columns. Used by tests that need to exercise
+ * the metered-provider chat path (which fails loud without a key).
+ */
+export async function setTestChatbotApiKey(
+  db: Knex,
+  chatbotId: number,
+  plainKey: string,
+): Promise<void> {
+  const masterKey = loadEncryptionKey();
+  const secret = encrypt(plainKey, masterKey);
+  await db('chatbots').where({ id: chatbotId }).update({
+    provider_api_key_ciphertext: secret.ciphertext,
+    provider_api_key_nonce: secret.nonce,
+    provider_api_key_auth_tag: secret.authTag,
+  });
 }

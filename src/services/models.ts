@@ -2,7 +2,7 @@ import type { Knex } from 'knex';
 import { NormalisedParametersSchema, parseModelSlug } from '../providers/index.js';
 import type { NormalisedParameters } from '../providers/index.js';
 import { getChatbotBySlug, type Chatbot } from './chatbots.js';
-import { findProviderModel, type Provider } from './providers.js';
+import { findProviderModel, type Provider, type ProviderModel } from './providers.js';
 
 export interface ResolvedModel {
   chatbotId: number;
@@ -11,6 +11,13 @@ export interface ResolvedModel {
   modelSlug: string;
   /** DB-loaded provider row (name, protocol, base_url, is_local, is_metered). */
   provider: Provider;
+  /**
+   * DB-loaded provider_models row. Carries `context_window`, pricing, and
+   * `is_available`. M18's chat path reads pricing from here to compute the
+   * USD cost estimate for each assistant turn; no extra query needed since
+   * `findProviderModel` already joined both rows.
+   */
+  providerModel: ProviderModel;
   /** The model portion after the slash, what the adapter passes to the API. */
   model: string;
   parameters: NormalisedParameters;
@@ -112,6 +119,7 @@ export async function resolveModel(db: Knex, chatbot: Chatbot): Promise<Resolved
     chatbotSlug: chatbot.slug,
     modelSlug: chatbot.model_slug,
     provider: found.provider,
+    providerModel: found.model,
     model: modelPart,
     parameters,
     contextWindow: chatbot.model_context_window ?? found.model.context_window,

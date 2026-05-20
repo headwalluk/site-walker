@@ -23,6 +23,9 @@ import {
 import { findSessionByTokenOrId, listMessages, listSessions } from '../services/sessions.js';
 import { assemblePrompt, loadDiskBlocks } from '../services/system-blocks.js';
 import { resolveModel, setContextWindow, setModel, setParameters } from '../services/models.js';
+import { getChatbotUsage, parseSinceDuration } from '../services/cost.js';
+import { findProviderModel } from '../services/providers.js';
+import { parseModelSlug } from '../providers/index.js';
 import { listProviderModels } from '../providers/list-models.js';
 import { DEFAULT_OPENROUTER_BASE_URL } from '../providers/openrouter.js';
 import {
@@ -514,6 +517,76 @@ chatbot
       console.log(`  model:                ${resolved.model}`);
       console.log(`  parameters:           ${JSON.stringify(resolved.parameters)}`);
       console.log(`  model_context_window: ${resolved.contextWindow ?? '(unset)'}`);
+    } finally {
+      await db.destroy();
+    }
+  });
+
+chatbot
+  .command('usage')
+  .description('aggregate token + USD cost totals for a chatbot, optionally over a recent window')
+  .argument('<slug>', 'chatbot slug')
+  .option(
+    '-s, --since <duration>',
+    'relative window — Ns / Nm / Nh / Nd. Defaults to all-time when omitted.',
+  )
+  .action(async (slug: string, opts: { since?: string }) => {
+    try {
+      const chatbotRow = await getChatbotBySlug(db, slug);
+      if (!chatbotRow) {
+        console.error(`Chatbot not found: slug="${slug}"`);
+        process.exitCode = 1;
+        return;
+      }
+
+      let since: Date | undefined;
+      let periodLabel = 'all-time';
+      if (opts.since) {
+        try {
+          since = parseSinceDuration(opts.since);
+          periodLabel = `last ${opts.since} (since ${since.toISOString()})`;
+        } catch (err) {
+          console.error((err as Error).message);
+          process.exitCode = 1;
+          return;
+        }
+      }
+
+      const usage = await getChatbotUsage(db, chatbotRow.id, since);
+
+      console.log(`Usage for chatbot "${slug}" (period: ${periodLabel}):`);
+      console.log(`  Messages:        ${usage.messageCount}`);
+      console.log(`  Tokens in:       ${usage.tokensIn}`);
+      console.log(`  Tokens out:      ${usage.tokensOut}`);
+      console.log(`  Cost (USD est):  $${usage.costUsd.toFixed(6)}`);
+
+      if (usage.cacheReadTokens > 0 || usage.cacheCreationTokens > 0) {
+        console.log('');
+        console.log(`  Cache writes:    ${usage.cacheCreationTokens} tokens`);
+        console.log(`  Cache reads:     ${usage.cacheReadTokens} tokens`);
+      }
+
+      // Warn when the chatbot's current model is on a metered provider but
+      // has NULL pricing — cost computation silently yields 0 in that case,
+      // so the totals above under-count actual spend at the provider.
+      if (chatbotRow.model_slug) {
+        const { provider: providerName, model: modelPart } = parseModelSlug(chatbotRow.model_slug);
+        const found = await findProviderModel(db, providerName, modelPart);
+        if (
+          found &&
+          found.provider.is_metered &&
+          (found.model.input_per_million_usd === null ||
+            found.model.output_per_million_usd === null)
+        ) {
+          console.log('');
+          console.log(
+            `  ⚠ Cost may be under-counted: chatbot's current model row ` +
+              `"${providerName}/${modelPart}" has NULL pricing on metered provider ` +
+              `"${providerName}". Re-register the model with --input-price and ` +
+              `--output-price to get accurate cost numbers going forward.`,
+          );
+        }
+      }
     } finally {
       await db.destroy();
     }

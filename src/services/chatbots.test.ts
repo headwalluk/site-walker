@@ -271,8 +271,8 @@ test('deleteChatbot cascades to origins, sessions, and messages', async (t) => {
 
   await addOrigin(db, slug, `https://${slug}.example.com`);
   const session = await createSession(db, chatbot.id);
-  await appendMessage(db, session.id, 'user', 'hi');
-  await appendMessage(db, session.id, 'assistant', 'hello');
+  await appendMessage(db, session.id, 'user', 'hi', { chatbotId: chatbot.id });
+  await appendMessage(db, session.id, 'assistant', 'hello', { chatbotId: chatbot.id });
 
   const counts = await deleteChatbot(db, slug);
   assert.equal(counts.origins, 1);

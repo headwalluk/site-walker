@@ -15,9 +15,40 @@ export type MessageRole = 'user' | 'assistant';
 export interface Message {
   id: number;
   session_id: number;
+  /** Denormalised from sessions for fast daily-spend SUM queries (M18). */
+  chatbot_id: number;
   role: MessageRole;
   content: string;
+  /** Prompt-side tokens reported by the adapter. NULL when adapter didn't report. */
+  tokens_in: number | null;
+  /** Completion-side tokens reported by the adapter. NULL when adapter didn't report. */
+  tokens_out: number | null;
+  /** USD cost estimate. DECIMAL → mysql2 returns string. 0.000000 for user rows and unmetered providers. */
+  cost_usd_estimate: string;
+  /** Anthropic prompt-cache writes. NULL until the post-M20 caching milestone wires it. */
+  cache_creation_input_tokens: number | null;
+  /** Anthropic prompt-cache reads. NULL until the post-M20 caching milestone wires it. */
+  cache_read_input_tokens: number | null;
   created_at: Date;
+}
+
+export interface AppendMessageOpts {
+  /**
+   * Chatbot id for the denormalised `messages.chatbot_id` column. Required
+   * because the column is NOT NULL; caller computes it from the same
+   * resolution that picked the session.
+   */
+  chatbotId: number;
+  /** Prompt-side tokens (the adapter's `tokensUsed.prompt`). */
+  tokensIn?: number | null;
+  /** Completion-side tokens (the adapter's `tokensUsed.completion`). */
+  tokensOut?: number | null;
+  /** USD cost estimate; column defaults to 0 if omitted. */
+  costUsd?: number;
+  /** Anthropic prompt-cache writes (post-M20 milestone surface). */
+  cacheCreationTokens?: number | null;
+  /** Anthropic prompt-cache reads (post-M20 milestone surface). */
+  cacheReadTokens?: number | null;
 }
 
 function generateToken(): string {
@@ -112,15 +143,31 @@ export async function listMessages(db: Knex, sessionId: number): Promise<Message
 /**
  * Append a turn to a session and bump `last_active_at` in the same transaction
  * so retention sweeps and the message list never disagree.
+ *
+ * `opts.chatbotId` is required (the column is NOT NULL). Token + cost +
+ * cache fields are optional — user-message rows typically pass none of them
+ * (NULL tokens, default 0 cost); assistant-message rows pass everything the
+ * adapter + cost helper produced.
  */
 export async function appendMessage(
   db: Knex,
   sessionId: number,
   role: MessageRole,
   content: string,
+  opts: AppendMessageOpts,
 ): Promise<Message> {
   return db.transaction(async (trx) => {
-    const [id] = await trx('messages').insert({ session_id: sessionId, role, content });
+    const [id] = await trx('messages').insert({
+      session_id: sessionId,
+      chatbot_id: opts.chatbotId,
+      role,
+      content,
+      tokens_in: opts.tokensIn ?? null,
+      tokens_out: opts.tokensOut ?? null,
+      cost_usd_estimate: opts.costUsd ?? 0,
+      cache_creation_input_tokens: opts.cacheCreationTokens ?? null,
+      cache_read_input_tokens: opts.cacheReadTokens ?? null,
+    });
     await trx('sessions').where({ id: sessionId }).update({ last_active_at: trx.fn.now() });
     const row = await trx<Message>('messages').where({ id }).first();
     if (!row) {

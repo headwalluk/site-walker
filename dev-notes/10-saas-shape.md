@@ -258,6 +258,7 @@ After M20 the real client is live. Things explicitly deferred until after that:
 - **Operational hours / schedule.** Plugin-side enforcement may carry it for v1.
 - **OAuth-style plugin linking** to replace pre-shared keys.
 - **Customer-facing dashboard.** Lives in WC MyAccount via `site-walker-for-woo`; not in this repo.
+- **Anthropic prompt caching** (via OpenRouter). M18 already shipped the substrate — `messages.cache_creation_input_tokens` / `cache_read_input_tokens` columns and a four-bucket `computeCostUsd` that handles cache write-premium (1.25×) and read-discount (0.10×) per Anthropic's published multipliers. The remaining work is the adapter side: send `cache_control` markers on the system-blocks prefix (and possibly the head of conversation history), parse cache stats from the response into the new columns. Gating by model (Anthropic-family only on OpenRouter today); skip when the prefix is below Anthropic's minimum-cacheable threshold (1024 tokens for Sonnet/Haiku, 2048 for Opus). Expected savings: ~70-80% on input billing for chatbots with stable system blocks and many conversations per cache window.
 
 The old M9 (history trimming), M11 (rate limiting + Redis), M12 (prompt-injection handling), M13 (conversation review/retention), M14 (production deployment), M15 (friendlier CLI errors) are still real but renumber-deferred. They surface as concrete work when the M16–M20 cut has been measured against a real customer.
 

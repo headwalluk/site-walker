@@ -157,20 +157,29 @@ Indexes:
 
 ## `messages`
 
-Conversation log. Append-only at M16 (no edits, no deletes except via session cascade).
+Conversation log. Append-only (no edits, no deletes except via session/chatbot/account cascade). Token + cost columns added in M18 (v0.14.0); cache-token columns reserve substrate for the post-M20 Anthropic prompt-caching milestone.
 
-| Column         | Type                          | Constraints                          | Notes                                                                |
-|----------------|-------------------------------|--------------------------------------|----------------------------------------------------------------------|
-| `id`           | `BIGINT UNSIGNED`             | PK, AUTO_INCREMENT                   | Highest-volume table — BIGINT.                                       |
-| `session_id`   | `BIGINT UNSIGNED`             | NOT NULL, FK → `sessions.id` ON DELETE CASCADE | |
-| `role`         | `ENUM('user', 'assistant')`   | NOT NULL                             | No system messages persisted — system blocks are reassembled per-request from disk + `chatbots.persona`. |
-| `content`      | `TEXT`                        | NOT NULL                             | The message body, trimmed and length-capped (`MAX_MESSAGE_CHARS = 8000`) at the chat-service layer for user role. |
-| `created_at`   | `TIMESTAMP`                   | NOT NULL, DEFAULT CURRENT_TIMESTAMP  |                                                                      |
+| Column                          | Type                          | Constraints                                                  | Notes                                                                                              |
+|---------------------------------|-------------------------------|--------------------------------------------------------------|----------------------------------------------------------------------------------------------------|
+| `id`                            | `BIGINT UNSIGNED`             | PK, AUTO_INCREMENT                                           | Highest-volume table — BIGINT.                                                                     |
+| `session_id`                    | `BIGINT UNSIGNED`             | NOT NULL, FK → `sessions.id` ON DELETE CASCADE               |                                                                                                    |
+| `chatbot_id`                    | `INT UNSIGNED`                | NOT NULL, FK → `chatbots.id` ON DELETE CASCADE               | M18 denormalisation from `sessions.chatbot_id` — keeps daily-spend SUM queries off the sessions join. |
+| `role`                          | `ENUM('user', 'assistant')`   | NOT NULL                                                     | No system messages persisted — system blocks are reassembled per-request from disk + `chatbots.persona`. |
+| `content`                       | `TEXT`                        | NOT NULL                                                     | The message body, trimmed and length-capped (`MAX_MESSAGE_CHARS = 8000`) at the chat-service layer for user role. |
+| `tokens_in`                     | `INT UNSIGNED`                | NULL                                                         | Prompt-side tokens the adapter reported. NULL = adapter didn't report (today's user rows always; assistant rows always have a value because both adapters populate it). |
+| `tokens_out`                    | `INT UNSIGNED`                | NULL                                                         | Completion-side tokens. Same NULL semantics.                                                       |
+| `cost_usd_estimate`             | `DECIMAL(10,6)`               | NOT NULL, DEFAULT 0                                          | USD estimate computed at insert time via `src/services/cost.ts`. 0 for user rows and unmetered providers. NOT NULL so daily-spend SUM queries are COALESCE-free. |
+| `cache_creation_input_tokens`   | `INT UNSIGNED`                | NULL                                                         | Anthropic prompt-cache writes (post-M20 milestone surface). NULL until that work ships.            |
+| `cache_read_input_tokens`       | `INT UNSIGNED`                | NULL                                                         | Anthropic prompt-cache reads (post-M20 milestone surface). NULL until that work ships.             |
+| `created_at`                    | `TIMESTAMP`                   | NOT NULL, DEFAULT CURRENT_TIMESTAMP                          |                                                                                                    |
 
 Indexes:
-- `(session_id, created_at)` composite — supports `GET /messages` (history rehydrate, ordered ascending) and `runChat` history load
+- `(session_id, created_at)` composite — supports `GET /messages` (history rehydrate, ordered ascending) and `runChat` history load.
+- `(chatbot_id, created_at)` composite (M18) — supports `sw chatbot usage` daily-spend SUM queries scoped to a chatbot + time window.
 
-**M18 will add** (not in the M16 greenfield): `chatbot_id INT UNSIGNED NOT NULL` (denormalised for fast daily-spend queries — see [`10-saas-shape.md`](10-saas-shape.md)), `tokens_in INT UNSIGNED NULL`, `tokens_out INT UNSIGNED NULL`, `cost_usd_estimate DECIMAL(10,6) NOT NULL DEFAULT 0`.
+**Cost attribution convention.** Token + cost values are recorded on the **assistant row only** — the assistant turn is what "caused" the LLM call. User rows always have `tokens_in = NULL`, `tokens_out = NULL`, `cost_usd_estimate = 0`. Aggregate cost across a chatbot is a one-liner: `SELECT SUM(cost_usd_estimate) FROM messages WHERE chatbot_id = ?`.
+
+**Cache columns are NULL today.** The post-M20 milestone wires the OpenRouter adapter to send Anthropic `cache_control` markers and parse cache stats from the response; until then every row's cache cells are NULL and `computeCostUsd` degenerates to the two-bucket case (`tokensIn × input_price + tokensOut × output_price`).
 
 ---
 
