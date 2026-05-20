@@ -7,6 +7,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-05-20
+
+The second SaaS-pivot milestone (M17). Replaces the `site-walker.toml` provider registry with `providers` + `provider_models` tables in MariaDB, and adds AES-256-GCM-encrypted per-chatbot LLM provider API keys (bring-your-own-key, on the chatbot row, never on the provider). Master encryption key lives in `.env` as `SW_ENCRYPTION_KEY`. The TOML config path is deleted entirely — file, search-path resolver, 0600 gate, `SW_CONFIG` override, `smol-toml` dependency all gone. **Breaking** in two ways: any chatbot pointing at a previously-TOML provider needs the provider re-registered in the DB; any chatbot on a metered provider additionally needs `sw chatbot set-api-key` to be run before chat works.
+
+### Added
+- **`providers` + `provider_models` DB tables** (additive migration `0002_provider_registry.js`). `providers` carries name (UNIQUE), protocol, base_url, is_local, is_metered (default `!is_local`). `provider_models` carries provider_id (FK CASCADE), model_slug, context_window, `input_per_million_usd DECIMAL(10,6) NULL`, `output_per_million_usd DECIMAL(10,6) NULL`, is_available; UNIQUE on `(provider_id, model_slug)`.
+- **`chatbots.provider_api_key_ciphertext VARBINARY(255)` + `_nonce BINARY(12)` + `_auth_tag BINARY(16)`** — three columns rather than a single packed blob for schema readability; the AES-GCM auth tag is required for AEAD verification so it gets its own column. All three are either all NULL (no key set) or all non-NULL (decryptable).
+- **`SW_ENCRYPTION_KEY` env var** — base64-encoded 32-byte master key for the chatbot BYO encryption. Required for the API server to boot; fail-loud at startup if missing or wrong-length. The .env 0600 gate already protects it alongside `DB_PASSWORD`.
+- **`src/utils/crypto.ts`** — AES-256-GCM `encrypt()` / `decrypt()` / `generateMasterKey()` helpers. 13 round-trip + tamper-detection tests covering wrong-key, tampered-ciphertext, tampered-nonce, tampered-tag, wrong-length-key, wrong-length-nonce, wrong-length-tag, empty/long round-trips, and `generateMasterKey` randomness.
+- **`src/config/secrets.ts`** — `loadEncryptionKey()` boot-validator with `EncryptionKeyError`; module-scope cache + `resetEncryptionKeyCache()` for tests.
+- **`src/services/providers.ts`** — `createProvider`, `getProviderById/Name`, `listProviders`, `deleteProvider` (cascade counts), `createProviderModel`, `listProviderModelsForProvider`, `deleteProviderModel`, `findProviderModel` (the join `resolveModel` calls on every chat request).
+- **New `ChatError` code `chatbot_api_key_missing` (503)** — raised when the chatbot's resolved model points at a metered provider but the chatbot has no `provider_api_key_*` columns set. Surfaces the recovery command in the error message.
+- **CLI `sw secrets gen-key`** — prints a fresh base64 32-byte value to stdout (hint to stderr so the value alone is captureable). New `sw secrets` subgroup also primes the namespace for M19's `gen-provisioning-key`.
+- **CLI `sw chatbot set-api-key <slug>`** — reads the raw key from stdin only (refuses interactive TTY to avoid terminal echo), trims whitespace, encrypts, persists. Never echoes the key or ciphertext. 255-byte plaintext cap to match the column width.
+- **CLI `sw provider add/list/show/remove`** — full DB-backed surface. `add` defaults `base_url` to `https://openrouter.ai/api/v1` for `--protocol openrouter` and requires it for `ollama-native`. `remove` is `-f|--force` and cascades through `provider_models`.
+- **CLI `sw provider models discover|add|list|remove`** — `discover` is the renamed M8 live-discovery command (was `sw provider models <name>`); `add`/`list`/`remove` operate against the local DB registry. Discovery no longer sends an api_key (the BYO key only travels with the live chat path).
+
+### Changed
+- **`resolveModel` is now async and DB-backed.** `ResolvedModel.provider` carries the DB `Provider` row (id, name, protocol, base_url, is_local, is_metered). Effective `contextWindow` = chatbot override (`chatbots.model_context_window`) ?? `provider_models.context_window`.
+- **`setModel` validates against the DB.** Both the provider name and the specific model row must exist; typos surface at admin-set time, not on first chat request.
+- **Adapter signature: per-request instances.** `buildAdapter(provider, apiKey?)` is called once per chat request; the adapter holds the key for its lifetime and is thrown away. Openrouter adapter throws if metered + no `apiKey` is passed.
+- **`SUPPORTED_PROTOCOLS` narrowed to `['ollama-native', 'openrouter']`** — the two actually wired protocols. The dead `'anthropic' | 'openai-compatible'` branches are gone from `buildAdapter` and the listing function.
+- **`runChat` no longer takes a `registry` parameter.** Same for `buildServer({ db, ... })` — there's no more in-memory provider registry to thread through. The `500 server_misconfigured` case (registry missing) is gone with it.
+- **`docs/cli-sw.md`** — full rewrite of the `sw provider` section, new `sw secrets` and `sw chatbot set-api-key` sections, every TOML reference scrubbed.
+- **`docs/env.md`** — documents `SW_ENCRYPTION_KEY` (required, generation, format).
+- **`dev-notes/03-llm-providers.md`** — banner moved to past-tense ("superseded by M17, v0.13.0"); body kept as the historical M5/M6 TOML design reference.
+
+### Removed
+- **`site-walker.toml`** as a config concept. Deleted: `src/config/site-walker-config.ts` + its test, `templates/site-walker.toml.example`, `docs/site-walker-toml.md`, the `smol-toml` dependency, the `SW_CONFIG` env variable, the `xdgConfigHome` field on `RuntimeEnv`, and the 0600 gate code that was specific to the TOML path. The .env 0600 gate is unchanged.
+- **Provider-level `api_key` field.** Provider entries no longer carry credentials; every chatbot supplies its own.
+
+### Self-hoster recipe (post-upgrade)
+```
+# 0. Master encryption key — required for boot.
+./bin/sw secrets gen-key                         # paste the value into .env as SW_ENCRYPTION_KEY=...
+
+# 1. Re-register providers in the DB:
+./bin/sw provider add cortex --protocol ollama-native --base-url http://cortex.local:8000 --local
+./bin/sw provider models add cortex qwen2:1.5b --context-window 4096
+
+./bin/sw provider add openrouter --protocol openrouter
+./bin/sw provider models add openrouter anthropic/claude-haiku-4.5 \
+  --context-window 200000 --input-price 1.0 --output-price 5.0
+
+# 2. For each chatbot pointing at a metered provider, set its BYO key:
+echo "sk-or-..." | ./bin/sw chatbot set-api-key <chatbot-slug>
+
+# 3. Sanity-check the resolution:
+./bin/sw chatbot show-model <chatbot-slug>
+```
+
 ## [0.12.0] - 2026-05-20
 
 The first SaaS-pivot milestone (M16). Squashes the prototype-era migrations into a single greenfield schema, introduces `accounts` as the top-level entity that owns chatbots, and mechanically renames every "website" identifier to "chatbot" across the codebase. **Breaking** for anyone running the prototype — the schema is incompatible and there is no migration path; self-hoster recipe is at the end of this entry.

@@ -1,6 +1,6 @@
 {
   "name": "site-walker",
-  "version": "0.12.0",
+  "version": "0.13.0",
   "description": "A self-hosted, multi-tenant pre-sales chatbot API.",
   "private": true,
   "type": "module",

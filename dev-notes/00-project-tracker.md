@@ -1,9 +1,9 @@
 # site-walker — Project Tracker
 
 **Last Updated:** 20 May 2026
-**Current Version:** 0.12.0
-**Current Phase:** **SaaS pivot — execution.** v0.11.0 was the last prototype release; v0.12.0 lands M16 (the multi-tenant rename + accounts table). Remaining SaaS-pivot work is M17–M20 in [`10-saas-shape.md`](10-saas-shape.md). The pre-pivot deferred items (M7 finish, old M9/M11/M12/M13/M14/M15) stay renumber-deferred until after M20 ships and the first real customer surfaces what's actually missing.
-**Overall Progress (post-M16):** M1–M6 complete, M7 + M8 partial, M16 complete in v0.12.0 (schema squash + `accounts`/`chatbots` rename + new `sw account` CLI surface). Prototype proved the chat backbone, system-block model, and provider abstraction. The SaaS-pivot work picks up from a clean schema baseline.
+**Current Version:** 0.13.0
+**Current Phase:** **SaaS pivot — execution.** v0.11.0 was the last prototype release. v0.12.0 landed M16 (multi-tenant rename + accounts). v0.13.0 lands M17 (DB-backed provider registry + chatbot BYO keys; TOML config path deleted). Remaining SaaS-pivot work is M18–M20 in [`10-saas-shape.md`](10-saas-shape.md). The pre-pivot deferred items (M7 finish, old M9/M11/M12/M13/M14/M15) stay renumber-deferred until after M20.
+**Overall Progress (post-M17):** M1–M6 complete, M7 + M8 partial, M16 complete in v0.12.0, M17 complete in v0.13.0 (DB provider registry, BYO LLM keys, `SW_ENCRYPTION_KEY` boot, new `sw secrets` + `sw chatbot set-api-key` + `sw provider models add/list/remove/discover` CLI surface). SaaS-pivot work picks up from a DB-canonical config baseline.
 
 Vision and phasing live in [`../README.md`](../README.md). **Note:** README still markets the prototype-era "self-hosted multi-tenant API" framing; rewrite ships after M16 lands, not before, to avoid documenting vapourware. Stack and architecture decisions live in [`../CLAUDE.md`](../CLAUDE.md). Auth/session and data-model design live in companion docs in this directory. This file tracks the work.
 
@@ -16,14 +16,13 @@ Companion planning docs:
 
 ## Next up
 
-Post-M16, 2026-05-20. Picking up next in roughly this order:
+Post-M17, 2026-05-20. Picking up next in roughly this order:
 
-1. **M17 — DB provider registry + chatbot BYO keys + kill TOML.** Provider/model/pricing data moves to MariaDB. `chatbots.provider_api_key_*` encrypted-at-rest column with `SW_ENCRYPTION_KEY` in `.env`. `sw secrets gen-key` CLI command for the encryption key. Self-hoster's dev chatbot row will fail loud with `chatbot_api_key_missing` until its key is re-set after migration — acceptable interruption, pre-release.
-2. **M18 — Cost accounting (foundation, no enforcement).** Token + $ per message, `chatbot_id` denormalised onto `messages` for daily-spend query speed. `sw chatbot usage` CLI surface. Run for long enough to see real cost shapes before turning caps on.
-3. **M19 — Admin HTTP API + auth.** `admin_keys` table, provisioning-key vs account-admin-key distinction, full admin surface. Unblocks `site-walker-wp` from talking to the API for anything beyond chat itself. Resolve the open question on provisioning-key bootstrap (env var vs CLI-minted DB row vs first-boot auto-seed) before this lands.
-4. **M20 — Budget caps.** Daily + per-session enforcement at `/sessions/can-start`, `POST /sessions`, `POST /chat`. 402 error semantics. Optional `getBalance()` per adapter.
+1. **M18 — Cost accounting (foundation, no enforcement).** Token + $ per message, `chatbot_id` denormalised onto `messages` for daily-spend query speed. `sw chatbot usage` CLI surface. Run for long enough to see real cost shapes before turning caps on. The pricing columns added in M17 (`provider_models.input_per_million_usd` / `output_per_million_usd`) are the inputs.
+2. **M19 — Admin HTTP API + auth.** `admin_keys` table (account admin keys only, `account_id NOT NULL`). Provisioning surface is `SW_PROVISIONING_KEY` in `.env`, air-gapped from `admin_keys` — see the resolved decision in [`10-saas-shape.md`](10-saas-shape.md). Unblocks `site-walker-wp` from talking to the API for anything beyond chat itself.
+3. **M20 — Budget caps.** Daily + per-session enforcement at `/sessions/can-start`, `POST /sessions`, `POST /chat`. 402 error semantics. The session cap shape (soft-handoff at 80%, hard-cap → email capture) is sketched in [`11-budget-handoff.md`](11-budget-handoff.md); concrete design lands during the M20 pass.
 
-Before any of those: **recreate the dev `cortex` chatbot** on the M16 schema (`sw account create headwall && sw chatbot create cortex --account headwall && sw chatbot origins add cortex <origin> && sw chatbot set-model cortex cortex/qwen2:1.5b`). The squash wiped the prototype DB; the dev fixture has to be rebuilt before any local smoke-test.
+Before M18 starts: **rebuild the local dev fixture** to live on the v0.13.0 schema. Recipe in the v0.13.0 CHANGELOG entry — `sw secrets gen-key` → paste into `.env`, then `sw provider add cortex ...`, `sw provider models add cortex qwen2:1.5b ...`, similarly for openrouter, then `sw chatbot set-api-key <slug>` for any metered chatbot.
 
 After M20: real client live. Auto-mode content ingestion, condensation pipeline, operational hours, and OAuth-style plugin linking all come after that.
 
@@ -370,8 +369,8 @@ Code-side: mechanical rename pass across services, CLI, tests, docs. `sw chatbot
 
 ### Milestone 17: DB provider registry + chatbot BYO keys + kill TOML
 
-**Target Completion:** TBD
-**Status:** 🔴 Not started
+**Target Completion:** 20 May 2026
+**Status:** ✅ Complete (20 May 2026, v0.13.0)
 **Priority:** Critical — unblocks SaaS-style provider management and customer cost attribution
 
 Replaces `site-walker.toml` with `providers` + `provider_models` tables in MariaDB. Adds encrypted `provider_api_key_ciphertext` + `provider_api_key_nonce` columns on `chatbots` for bring-your-own-key. Master encryption key moves to `.env` as `SW_ENCRYPTION_KEY` (32 bytes base64). Boot fails loud if missing or wrong length. No provider-level API keys — every chatbot supplies its own. Chatbots without a key against a metered provider fail loud with `chatbot_api_key_missing`.
@@ -393,6 +392,29 @@ No caching of the provider lookup in this milestone — direct DB reads. If prof
 **Acceptance:** existing dev `cortex` Ollama provider + OpenRouter provider recreated via CLI; chat against both works end-to-end with a chatbot-level key set; deleting the TOML doesn't break anything.
 
 **Migration impact:** existing chatbot rows have NULL keys after migration → fail loud until `sw chatbot set-api-key` is run for each. Acceptable pre-release; we have one dev chatbot.
+
+**Shipped at 0.13.0:**
+- `migrations/0002_provider_registry.js` — additive: `providers` (id, name UNIQUE, protocol, base_url, is_local, is_metered) + `provider_models` (id, provider_id FK CASCADE, model_slug, context_window, input/output `DECIMAL(10,6)` pricing NULL, is_available; UNIQUE on (provider_id, model_slug)) + `chatbots.provider_api_key_ciphertext VARBINARY(255)` + `_nonce BINARY(12)` + `_auth_tag BINARY(16)`. Three encryption columns rather than a packed blob — the AES-GCM auth tag is required for AEAD verification.
+- `src/utils/crypto.ts` — AES-256-GCM `encrypt()` / `decrypt()` / `generateMasterKey()` helpers. 13 round-trip + tamper-detection tests.
+- `src/config/secrets.ts` — `loadEncryptionKey()` boot-validator; fail-loud with `sw secrets gen-key` hint. Module-scope cache.
+- `src/services/providers.ts` — full service layer (create/get/list/delete for providers and provider_models; `findProviderModel` does the join `resolveModel` uses on every chat request). `SUPPORTED_PROTOCOLS` narrowed to `['ollama-native', 'openrouter']`.
+- `resolveModel` async + DB-backed. Effective context window = chatbot override (`chatbots.model_context_window`) ?? `provider_models.context_window`.
+- Adapter signature: per-request instances via `buildAdapter(provider, apiKey?)`. Openrouter adapter throws when metered + no key.
+- `ChatError('chatbot_api_key_missing')` (503) for metered provider + no chatbot key.
+- CLI:
+  - `sw secrets gen-key` (prints base64 32-byte value; hint to stderr).
+  - `sw chatbot set-api-key <slug>` (stdin-only; refuses TTY; never echoes raw key or ciphertext; 255-byte plaintext cap).
+  - `sw provider add <name> --protocol <p> [--base-url <url>] [--local] [--metered/--no-metered]` (defaults `base_url` to OpenRouter's well-known URL).
+  - `sw provider list/show/remove` (DB-backed; `remove` cascades through `provider_models` with `-f|--force`).
+  - `sw provider models discover|add|list|remove` (`discover` is the renamed M8 live-query; `add/list/remove` operate against the DB registry).
+- Deleted: `src/config/site-walker-config.ts` + test, `templates/site-walker.toml.example`, `docs/site-walker-toml.md`, `smol-toml` dep, `SW_CONFIG` env handling, `xdgConfigHome` field on `RuntimeEnv`, the TOML-specific 0600 gate path.
+- Docs: `docs/cli-sw.md` gains `sw secrets`, `sw chatbot set-api-key`, full `sw provider` rewrite. `docs/env.md` documents `SW_ENCRYPTION_KEY`. `README.md` + `docs/system-blocks.md` drop the dead TOML link. `dev-notes/03-llm-providers.md` banner is past-tense.
+- 170 tests pass. Format + lint clean.
+
+**Resolved during execution:**
+- AES-GCM auth tag gets its own `BINARY(16)` column rather than being appended to the ciphertext — schema-readable, and the cost is one DB column.
+- `is_metered` defaults to `!is_local` at insert time but is always explicitly overridable. CLI exposes both `--metered` and `--no-metered` flags.
+- Discovery (`sw provider models discover`) no longer sends an api_key on the HTTP request. The BYO key only travels with the live chat path, and the `/models` endpoints on both supported protocols are public anyway.
 
 ### Milestone 18: Cost accounting (foundation, no enforcement)
 
