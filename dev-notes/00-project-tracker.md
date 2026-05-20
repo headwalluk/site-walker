@@ -1,9 +1,9 @@
 # site-walker — Project Tracker
 
 **Last Updated:** 20 May 2026
-**Current Version:** 0.13.0
-**Current Phase:** **SaaS pivot — execution.** v0.11.0 was the last prototype release. v0.12.0 landed M16 (multi-tenant rename + accounts). v0.13.0 lands M17 (DB-backed provider registry + chatbot BYO keys; TOML config path deleted). Remaining SaaS-pivot work is M18–M20 in [`10-saas-shape.md`](10-saas-shape.md). The pre-pivot deferred items (M7 finish, old M9/M11/M12/M13/M14/M15) stay renumber-deferred until after M20.
-**Overall Progress (post-M17):** M1–M6 complete, M7 + M8 partial, M16 complete in v0.12.0, M17 complete in v0.13.0 (DB provider registry, BYO LLM keys, `SW_ENCRYPTION_KEY` boot, new `sw secrets` + `sw chatbot set-api-key` + `sw provider models add/list/remove/discover` CLI surface). SaaS-pivot work picks up from a DB-canonical config baseline.
+**Current Version:** 0.13.1
+**Current Phase:** **SaaS pivot — execution.** v0.11.0 was the last prototype release. v0.12.0 landed M16 (multi-tenant rename + accounts). v0.13.0 lands M17 (DB-backed provider registry + chatbot BYO keys; TOML config path deleted). v0.13.1 patches the `sw provider add --local` flag-defaulting bug surfaced during end-to-end validation. Remaining SaaS-pivot work is M18–M20 in [`10-saas-shape.md`](10-saas-shape.md). The pre-pivot deferred items (M7 finish, old M9/M11/M12/M13/M14/M15) stay renumber-deferred until after M20.
+**Overall Progress (post-M17, v0.13.1):** M1–M6 complete, M7 + M8 partial, M16 complete in v0.12.0, M17 complete in v0.13.0. End-to-end validated against `cortex/qwen2:1.5b` (local Ollama) and `openrouter/anthropic/claude-haiku-4.5` (BYO key, metered); both adapters serve real traffic on `headwall-devx`. SaaS-pivot work picks up from a DB-canonical config baseline.
 
 Vision and phasing live in [`../README.md`](../README.md). **Note:** README still markets the prototype-era "self-hosted multi-tenant API" framing; rewrite ships after M16 lands, not before, to avoid documenting vapourware. Stack and architecture decisions live in [`../CLAUDE.md`](../CLAUDE.md). Auth/session and data-model design live in companion docs in this directory. This file tracks the work.
 

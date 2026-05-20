@@ -10,7 +10,7 @@ A self-hosted, multi-tenant pre-sales chatbot API.
 
 One site-walker instance serves many websites. Visitors talk to the bot through their website's own integration (a WordPress plugin, in the design case — that lives in a separate project). The bot answers from per-chatbot system blocks plus the running conversation, persisted server-side. No tools, no agents, no cross-session memory: a tight pre-sales Q&A bot you can point at your own infrastructure.
 
-Browser auth is by `Origin` allowlist + opaque session token. LLM backends are pluggable: Phase 1 ships an `ollama-native` adapter for self-hosting on a Raspberry Pi or laptop; cloud adapters (Anthropic, OpenRouter) land in Phase 2.
+Browser auth is by `Origin` allowlist + opaque session token. LLM backends are pluggable adapters configured per-chatbot via a DB-backed provider registry: `ollama-native` for self-hosted Ollama on the LAN, `openrouter` for everything cloud-side (Anthropic, OpenAI, Google, …). Each chatbot supplies its own provider API key, encrypted at rest with AES-256-GCM.
 
 ## Who it's for
 

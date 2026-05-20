@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.13.1] - 2026-05-20
+
+Bugfix follow-up to 0.13.0. End-to-end validation against both backends — `cortex/qwen2:1.5b` (local Ollama, unmetered) and `openrouter/anthropic/claude-haiku-4.5` (BYO key, metered) — confirmed the M17 plumbing works.
+
+### Fixed
+- **`sw provider add --local` no longer mis-stores `is_metered=true`.** The previous `--metered` / `--no-metered` flag pair triggered a commander.js quirk: `.option('--no-metered', ...)` makes the implicit `opts.metered` default to `true` when neither flag is passed, which bypassed `createProvider`'s `!is_local` fallback entirely. Replaced with two distinct affirmative flags so the action handler can detect "neither set" cleanly.
+
+### Changed
+- **`sw provider add` flag rename: `--no-metered` → `--unmetered`.** Mutually exclusive with `--metered`; passing both is rejected with a clear error. Defaults remain `!is_local` when neither is set.
+- `docs/cli-sw.md` flag table updated for the new naming.
+
+### Repair recipe (for an existing row that landed with the wrong value)
+```
+source .env ; mysql -u "${DB_USER}" -p"${DB_PASSWORD}" "${DB_NAME}" \
+  -e "UPDATE providers SET is_metered=0 WHERE name='<provider>';"
+```
+
 ## [0.13.0] - 2026-05-20
 
 The second SaaS-pivot milestone (M17). Replaces the `site-walker.toml` provider registry with `providers` + `provider_models` tables in MariaDB, and adds AES-256-GCM-encrypted per-chatbot LLM provider API keys (bring-your-own-key, on the chatbot row, never on the provider). Master encryption key lives in `.env` as `SW_ENCRYPTION_KEY`. The TOML config path is deleted entirely — file, search-path resolver, 0600 gate, `SW_CONFIG` override, `smol-toml` dependency all gone. **Breaking** in two ways: any chatbot pointing at a previously-TOML provider needs the provider re-registered in the DB; any chatbot on a metered provider additionally needs `sw chatbot set-api-key` to be run before chat works.
