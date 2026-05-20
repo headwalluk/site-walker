@@ -1,27 +1,28 @@
 # site-walker — Project Tracker
 
-**Last Updated:** 19 May 2026
-**Current Version:** 0.11.0
-**Current Phase:** **SaaS pivot — line in the sand.** v0.11.0 is the last prototype release. Everything from M16 onward targets a real-world multi-tenant SaaS billed via a WooCommerce site at `site-walker.net`, with a real client lined up to use it. New phasing M16–M20 is captured in [`10-saas-shape.md`](10-saas-shape.md). M7 + M8 remain partial as documented below; the old M9, M11, M12, M13, M14, M15 are still real work but renumber-deferred until after M20 ships and the first real customer has shaken out what's actually missing.
-**Overall Progress (pre-pivot):** M1–M6 complete, M7 + M8 partial, v0.11.0 shipped CORS + per-website geo-blocking. Side-by-side against cortex/qwen2 on the Pi, OpenRouter→Haiku is dramatically better — the expected separation between cheap dev and production-ready inference. The prototype proved the chat backbone, system-block model, and provider abstraction. SaaS work (M16+) builds on that.
+**Last Updated:** 20 May 2026
+**Current Version:** 0.12.0
+**Current Phase:** **SaaS pivot — execution.** v0.11.0 was the last prototype release; v0.12.0 lands M16 (the multi-tenant rename + accounts table). Remaining SaaS-pivot work is M17–M20 in [`10-saas-shape.md`](10-saas-shape.md). The pre-pivot deferred items (M7 finish, old M9/M11/M12/M13/M14/M15) stay renumber-deferred until after M20 ships and the first real customer surfaces what's actually missing.
+**Overall Progress (post-M16):** M1–M6 complete, M7 + M8 partial, M16 complete in v0.12.0 (schema squash + `accounts`/`chatbots` rename + new `sw account` CLI surface). Prototype proved the chat backbone, system-block model, and provider abstraction. The SaaS-pivot work picks up from a clean schema baseline.
 
 Vision and phasing live in [`../README.md`](../README.md). **Note:** README still markets the prototype-era "self-hosted multi-tenant API" framing; rewrite ships after M16 lands, not before, to avoid documenting vapourware. Stack and architecture decisions live in [`../CLAUDE.md`](../CLAUDE.md). Auth/session and data-model design live in companion docs in this directory. This file tracks the work.
 
 Companion planning docs:
 - [`01-auth-and-session-flow.md`](01-auth-and-session-flow.md) — origin allowlist, session-token lifecycle, endpoint shapes
-- [`02-data-model.md`](02-data-model.md) — schema sketch for `websites`, `website_origins`, `sessions`, `messages` (rename to `chatbots` lands in M16; this doc gets the schema delta then)
-- [`03-llm-providers.md`](03-llm-providers.md) — TOML provider registry, per-website model selection, protocol adapters, normalised parameters, context-window handling. **Superseded in M17 by DB-backed provider registry** ([`10-saas-shape.md`](10-saas-shape.md)).
+- [`02-data-model.md`](02-data-model.md) — **v1.0 schema reference** (rewritten in M16 — `accounts`, `chatbots`, `chatbot_origins`, `chatbot_geo_countries`, `sessions`, `messages`, `geo_modes`). [`db-schema-pre-m16.sql`](db-schema-pre-m16.sql) is the frozen v0.11.0 snapshot kept for reference.
+- [`03-llm-providers.md`](03-llm-providers.md) — TOML provider registry, per-chatbot model selection, protocol adapters, normalised parameters, context-window handling. **Superseded in M17 by DB-backed provider registry** ([`10-saas-shape.md`](10-saas-shape.md)).
 - [`10-saas-shape.md`](10-saas-shape.md) — SaaS architecture (four-repo topology, account model, BYO keys, admin HTTP API, M16–M20 phasing)
 
 ## Next up
 
-Post-pivot, 2026-05-19. Picking up next in roughly this order:
+Post-M16, 2026-05-20. Picking up next in roughly this order:
 
-1. **M16 — Multi-tenant + rename.** Migration `websites` → `chatbots`, `accounts` table, account ownership of chatbots. The only cheap moment to do the rename; once admin HTTP endpoints publish (M19), the name is part of our customer-facing contract. See [`10-saas-shape.md`](10-saas-shape.md).
-2. **M17 — DB provider registry + chatbot BYO keys + kill TOML.** Provider/model/pricing data moves to MariaDB. `chatbots.provider_api_key_*` encrypted-at-rest column with `SW_ENCRYPTION_KEY` in `.env`. `sw secrets gen-key` CLI command for the encryption key. Self-hoster's dev chatbot row will fail loud with `chatbot_api_key_missing` until its key is re-set after migration — acceptable interruption, pre-release.
-3. **M18 — Cost accounting (foundation, no enforcement).** Token + $ per message, `chatbot_id` denormalised onto `messages` for daily-spend query speed. `sw chatbot usage` CLI surface. Run for long enough to see real cost shapes before turning caps on.
-4. **M19 — Admin HTTP API + auth.** `admin_keys` table, provisioning-key vs account-admin-key distinction, full admin surface. Unblocks `site-walker-wp` from talking to the API for anything beyond chat itself.
-5. **M20 — Budget caps.** Daily + per-session enforcement at `/sessions/can-start`, `POST /sessions`, `POST /chat`. 402 error semantics. Optional `getBalance()` per adapter.
+1. **M17 — DB provider registry + chatbot BYO keys + kill TOML.** Provider/model/pricing data moves to MariaDB. `chatbots.provider_api_key_*` encrypted-at-rest column with `SW_ENCRYPTION_KEY` in `.env`. `sw secrets gen-key` CLI command for the encryption key. Self-hoster's dev chatbot row will fail loud with `chatbot_api_key_missing` until its key is re-set after migration — acceptable interruption, pre-release.
+2. **M18 — Cost accounting (foundation, no enforcement).** Token + $ per message, `chatbot_id` denormalised onto `messages` for daily-spend query speed. `sw chatbot usage` CLI surface. Run for long enough to see real cost shapes before turning caps on.
+3. **M19 — Admin HTTP API + auth.** `admin_keys` table, provisioning-key vs account-admin-key distinction, full admin surface. Unblocks `site-walker-wp` from talking to the API for anything beyond chat itself. Resolve the open question on provisioning-key bootstrap (env var vs CLI-minted DB row vs first-boot auto-seed) before this lands.
+4. **M20 — Budget caps.** Daily + per-session enforcement at `/sessions/can-start`, `POST /sessions`, `POST /chat`. 402 error semantics. Optional `getBalance()` per adapter.
+
+Before any of those: **recreate the dev `cortex` chatbot** on the M16 schema (`sw account create headwall && sw chatbot create cortex --account headwall && sw chatbot origins add cortex <origin> && sw chatbot set-model cortex cortex/qwen2:1.5b`). The squash wiped the prototype DB; the dev fixture has to be rebuilt before any local smoke-test.
 
 After M20: real client live. Auto-mode content ingestion, condensation pipeline, operational hours, and OAuth-style plugin linking all come after that.
 
@@ -319,8 +320,8 @@ After M20, the deferred prototype-era milestones (old M9, M11, M12, M13, M14, M1
 
 ### Milestone 16: Multi-tenant + rename (`websites` → `chatbots`)
 
-**Target Completion:** TBD
-**Status:** 🔴 Not started
+**Target Completion:** 20 May 2026
+**Status:** ✅ Complete (20 May 2026, v0.12.0)
 **Priority:** Critical — schema-affecting; everything downstream depends on the rename being done first
 
 Clean-break rebuild. The prototype database is wiped; historical migrations `0001`–`0005` are deleted from the repo and replaced with a single greenfield `0001_create_schema.js` capturing the v1.0 shape:
@@ -348,7 +349,23 @@ Code-side: mechanical rename pass across services, CLI, tests, docs. `sw chatbot
 - One chatbot → many origins (cross-brand sharing is a real use case).
 - Billing per-account, not per-chatbot.
 
-**Tactical heads-up for the M16 session:** ~113 tests reference `websites`/`website_id`/`Website` and need updating. Regex rename gets most of it; per-file review unavoidable. Boring but tedious — block out time.
+**Shipped at 0.12.0:**
+- `migrations/0001_create_schema.js` — single greenfield migration. Tables: `accounts` (CHAR(36) UUID PK), `geo_modes` (+3 seed rows), `chatbots` (renamed from `websites`, with `account_id` FK CASCADE + `geo_mode_id` FK RESTRICT), `chatbot_origins`, `sessions` (with `chatbot_id`), `messages` (unchanged), `chatbot_geo_countries`. utf8mb4_uca1400_ai_ci collation carried forward.
+- `src/services/accounts.ts` — `createAccount` (UUID via `crypto.randomUUID()`), `getAccountById`, `getAccountBySlug`, `listAccounts`, `deleteAccount` (returns full cascade counts: chatbots/origins/sessions/messages).
+- `src/services/chatbots.ts` (renamed from `websites.ts`) — mechanical rename pass; `createChatbot` now requires `account_id`.
+- `sw account` CLI subgroup: `create`, `list`, `show`, `delete -f|--force`.
+- `sw chatbot create <slug> --account <account-slug>` — required flag, no fallback.
+- `sw chatbot ...` is the only form — no `sw website ...` deprecation alias; the legacy `sw chatbot add-origin` alias (was kept through M7) is also gone.
+- `sw sessions list -c|--chatbot <slug>` (was `-w|--website`).
+- `src/testing/db.ts::seedAccountAndChatbot` — one-line fixture for the ~113 test refs.
+- `DEFAULT_DATA_DIR` → `data/chatbots/`; on-disk dir renamed in step.
+- `dev-notes/02-data-model.md` is now the v1.0 schema reference; `dev-notes/db-schema-pre-m16.sql` frozen as a forensic reference.
+- Doc rename pass across `dev-notes/01-auth-and-session-flow.md`, `dev-notes/04-system-blocks.md`, `docs/cli-sw.md` (new `sw account` section, `sw chatbot create` updated to show `--account`, legacy alias section removed), `docs/api-usage.md` (operator-setup list 4 → 5 steps), `README.md` (minimal touch).
+- 139 tests pass. Format + lint clean.
+
+**Resolved during execution:**
+- `accounts.id` is `CHAR(36)` UUID, generated via `crypto.randomUUID()`. `accounts.slug` stays as the CLI handle; UUID is what appears in admin HTTP routes (M19) and what WP/WC plugins store against customer records. `chatbots.id` stays `INT UNSIGNED` because chatbots are addressed by `slug` everywhere they appear externally — no second opaque identifier needed.
+- Test cleanup pattern: delete the `accounts` row in `t.after`, the chatbot + origins + sessions + messages + geo_countries cascade away. One line, one query.
 
 ### Milestone 17: DB provider registry + chatbot BYO keys + kill TOML
 

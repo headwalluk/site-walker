@@ -7,6 +7,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-05-20
+
+The first SaaS-pivot milestone (M16). Squashes the prototype-era migrations into a single greenfield schema, introduces `accounts` as the top-level entity that owns chatbots, and mechanically renames every "website" identifier to "chatbot" across the codebase. **Breaking** for anyone running the prototype — the schema is incompatible and there is no migration path; self-hoster recipe is at the end of this entry.
+
+### Added
+- **`accounts` table** as the top-level tenant entity. One account owns many chatbots; billing happens per-account (in WooCommerce, not here). `accounts.id` is `CHAR(36)` UUID (opaque, route-safe for M19, exposable to WP/WC for customer linking); `accounts.slug VARCHAR(64) UNIQUE` is the CLI handle. See `dev-notes/02-data-model.md` for the authoritative spec.
+- **`sw account` CLI subgroup**: `create`, `list`, `show`, `delete -f|--force`. Deleting an account cascades through every chatbot it owns (and origins/sessions/messages/geo_countries by transitive CASCADE).
+- **`src/services/accounts.ts`** — `createAccount`, `getAccountById`, `getAccountBySlug`, `listAccounts`, `deleteAccount` (returns full cascade counts).
+- **`src/testing/db.ts::seedAccountAndChatbot`** — single-call test fixture; tests clean up by deleting the account row, the chatbot cascades.
+- **`dev-notes/db-schema-pre-m16.sql`** — `mysqldump --no-data` of the v0.11.0 schema, checked in as a frozen reference for anyone forensically comparing the squash.
+
+### Changed
+- **`websites` → `chatbots`** rename (table + column + service file + TypeScript type + every test). `websites.id` stays `INT UNSIGNED` (chatbots are addressed by slug everywhere they appear externally — no need for a second opaque id). `chatbots.account_id CHAR(36) NOT NULL` FK + CASCADE.
+- **`website_origins` → `chatbot_origins`**, **`website_geo_countries` → `chatbot_geo_countries`**, **`sessions.website_id` → `sessions.chatbot_id`** (and matching index renames).
+- **Migrations squashed**: deleted `migrations/0001_create_websites.js`, `0002_create_website_origins.js`, `0003_create_sessions.js`, `0004_create_messages.js`, `0005_add_websites_persona.js`, `0006_add_geo_blocking.js`; replaced with a single `migrations/0001_create_schema.js` capturing the M16 shape (including the three `geo_modes` seed rows). Strict additive-only discipline resumes from `0002_*` onward.
+- **`sw chatbot create <slug>` now requires `--account <account-slug>`.** No fallback, no default-account auto-seed, no friendly auto-create. Self-hosters run `sw account create` once and put every chatbot under it.
+- **`sw sessions list` flag rename**: `-w|--website` → `-c|--chatbot`.
+- **`DEFAULT_DATA_DIR`** for per-chatbot system blocks moved from `data/websites/` to `data/chatbots/`. The on-disk directory is renamed in step.
+- **Service-layer + type renames** flow through everywhere: `Website` → `Chatbot`, `WebsiteOrigin` → `ChatbotOrigin`, `WebsiteGeoPolicy` → `ChatbotGeoPolicy`, `loadWebsiteGeoPolicy` → `loadChatbotGeoPolicy`, `setWebsiteGeoMode` → `setChatbotGeoMode`, `setWebsiteGeoCountries` → `setChatbotGeoCountries`, `getWebsiteGeoSummary` → `getChatbotGeoSummary`, `anyWebsiteHasGeoMode` → `anyChatbotHasGeoMode`, `findWebsiteByOrigin` → `findChatbotByOrigin`, `validateRegistryAgainstWebsites` → `validateRegistryAgainstChatbots`, etc.
+- **Docs**: `dev-notes/02-data-model.md` rewritten as the v1.0 schema reference. `dev-notes/01-auth-and-session-flow.md` + `dev-notes/04-system-blocks.md` updated for the rename. `docs/cli-sw.md` gains an `sw account` section and scopes `sw chatbot create` to require `--account`; the legacy `sw website add-origin` alias section is gone. `docs/api-usage.md` operator-setup list grows from 4 → 5 steps (account creation is step 1). `README.md` got a light touch — full README rewrite ships post-M16.
+- **No deprecation aliases anywhere.** `sw website ...` commands don't print a "use `sw chatbot ...`" hint — `commander.js` surfaces an "unknown command" error. Clean break.
+
+### Removed
+- Migrations `0001`–`0006` (squashed into `0001_create_schema.js`).
+- `sw website add-origin <slug> <origin>` alias (the canonical form `sw chatbot origins add <slug> <origin>` is the only form).
+- Pre-M16 prototype DB state — squashing the migrations effectively wipes any v0.11.0 database. The cortex/qwen2 smoke-test conversations accumulated through M6/M8 are gone with it; the user confirmed this is acceptable.
+
+### Tests
+139/139 pass. Test fixtures rewritten to use `seedAccountAndChatbot(db, slug)` from `src/testing/db.ts` so every chatbot-needing test creates its owning account in one line.
+
+### Self-hoster recipe (post-upgrade)
+```
+DROP DATABASE site_walker;
+CREATE DATABASE site_walker CHARACTER SET utf8mb4 COLLATE utf8mb4_uca1400_ai_ci;
+npm run migrate
+./bin/sw account create <account-slug> --name "<readable name>"
+./bin/sw chatbot create <chatbot-slug> --account <account-slug>
+./bin/sw chatbot origins add <chatbot-slug> <origin>
+./bin/sw chatbot set-model <chatbot-slug> <provider>/<model>
+```
+
 ## [0.11.0] - 2026-05-18
 
 ### Added
