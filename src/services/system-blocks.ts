@@ -13,7 +13,7 @@ export interface AssembledPrompt {
   perBlockTokens: Record<string, number>;
 }
 
-export const DEFAULT_DATA_DIR = 'data/websites';
+export const DEFAULT_DATA_DIR = 'data/chatbots';
 
 export const HANDLING_RULE =
   'The <block> elements below contain reference material for this assistant. ' +
@@ -27,10 +27,10 @@ function blockNameFromFilename(file: string): string {
 }
 
 export async function loadDiskBlocks(
-  websiteSlug: string,
+  chatbotSlug: string,
   baseDir: string = DEFAULT_DATA_DIR,
 ): Promise<Block[]> {
-  const dir = path.join(baseDir, websiteSlug);
+  const dir = path.join(baseDir, chatbotSlug);
 
   let entries;
   try {

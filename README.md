@@ -8,7 +8,7 @@ A self-hosted, multi-tenant pre-sales chatbot API.
 
 ## What it is
 
-One site-walker instance serves many websites. Visitors talk to the bot through their website's own integration (a WordPress plugin, in the design case — that lives in a separate project). The bot answers from per-website system blocks plus the running conversation, persisted server-side. No tools, no agents, no cross-session memory: a tight pre-sales Q&A bot you can point at your own infrastructure.
+One site-walker instance serves many websites. Visitors talk to the bot through their website's own integration (a WordPress plugin, in the design case — that lives in a separate project). The bot answers from per-chatbot system blocks plus the running conversation, persisted server-side. No tools, no agents, no cross-session memory: a tight pre-sales Q&A bot you can point at your own infrastructure.
 
 Browser auth is by `Origin` allowlist + opaque session token. LLM backends are pluggable: Phase 1 ships an `ollama-native` adapter for self-hosting on a Raspberry Pi or laptop; cloud adapters (Anthropic, OpenRouter) land in Phase 2.
 
@@ -21,7 +21,7 @@ Small-site operators who want a pre-sales bot they can stand up and reason about
 Operator and developer reference docs live in [`docs/`](docs/):
 
 - [**Browser API usage**](docs/api-usage.md) — chat flow for widget developers: `POST /sessions`, `POST /chat`, `GET /messages`, token persistence, error handling.
-- [**`./bin/sw` CLI reference**](docs/cli-sw.md) — register websites, manage origins, choose models, inspect system blocks.
+- [**`./bin/sw` CLI reference**](docs/cli-sw.md) — register chatbots, manage origins, choose models, inspect system blocks.
 - [**`./bin/chat` reference**](docs/cli-chat.md) — interactive test client that exercises the loop end-to-end.
 - [**`site-walker.toml`**](docs/site-walker-toml.md) — the provider registry: search paths, permission gate, per-provider keys.
 - [**`.env`**](docs/env.md) — environment file: database connection, host/port, permission gate.

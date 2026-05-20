@@ -3,9 +3,10 @@ import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import type { Knex } from 'knex';
 import { buildServer } from './server.js';
-import { createWebsite, addOrigin } from './services/websites.js';
-import { setWebsiteGeoCountries, setWebsiteGeoMode, type GeoChecker } from './services/geo.js';
-import { makeTestDb } from './testing/db.js';
+import { addOrigin } from './services/chatbots.js';
+import { setChatbotGeoCountries, setChatbotGeoMode, type GeoChecker } from './services/geo.js';
+import { makeTestDb, seedAccountAndChatbot } from './testing/db.js';
+import type { Account } from './services/accounts.js';
 import type { ProviderEntry, ProviderRegistry } from './config/site-walker-config.js';
 import type { ChatRequest, ChatResponse, ProtocolAdapter } from './providers/index.js';
 
@@ -40,7 +41,7 @@ function makeFakeAdapter(opts: FakeAdapterOpts = {}): ProtocolAdapter {
   };
 }
 
-async function makeChatWebsite(
+async function setupChat(
   db: Knex,
   patch: Partial<{
     model_slug: string | null;
@@ -48,20 +49,20 @@ async function makeChatWebsite(
     persona: string | null;
     welcome_message: string | null;
   }> = {},
-): Promise<{ slug: string; origin: string; token: string }> {
+): Promise<{ slug: string; origin: string; account: Account }> {
   const slug = uniqueSlug();
   const origin = `https://${slug}.example.com`;
-  await createWebsite(db, { slug, name: 'Test', persona: patch.persona ?? null });
+  const { account } = await seedAccountAndChatbot(db, slug, { persona: patch.persona ?? null });
   await addOrigin(db, slug, origin);
   const modelSlug = 'model_slug' in patch ? patch.model_slug : 'pi/test-model';
-  await db('websites')
+  await db('chatbots')
     .where({ slug })
     .update({
       model_slug: modelSlug,
       model_context_window: patch.model_context_window ?? null,
       welcome_message: patch.welcome_message ?? null,
     });
-  return { slug, origin, token: '' };
+  return { slug, origin, account };
 }
 
 type FastifyServer = Awaited<ReturnType<typeof buildServer>>;
@@ -129,10 +130,10 @@ test('POST /chat: 400 when message is missing or empty', async (t) => {
     registry: makeFakeRegistry(),
     adapterFactory: () => makeFakeAdapter(),
   });
-  const { slug, origin } = await makeChatWebsite(db);
+  const { origin, account } = await setupChat(db);
   t.after(async () => {
     await fastify.close();
-    await db('websites').where({ slug }).del();
+    await db('accounts').where({ id: account.id }).del();
     await db.destroy();
   });
 
@@ -164,10 +165,10 @@ test('POST /chat: 400 when message exceeds the size cap', async (t) => {
     registry: makeFakeRegistry(),
     adapterFactory: () => makeFakeAdapter(),
   });
-  const { slug, origin } = await makeChatWebsite(db);
+  const { origin, account } = await setupChat(db);
   t.after(async () => {
     await fastify.close();
-    await db('websites').where({ slug }).del();
+    await db('accounts').where({ id: account.id }).del();
     await db.destroy();
   });
 
@@ -184,7 +185,7 @@ test('POST /chat: 400 when message exceeds the size cap', async (t) => {
   assert.equal(res.json().error, 'message_too_long');
 });
 
-test('POST /chat: 503 when website has no model configured', async (t) => {
+test('POST /chat: 503 when chatbot has no model configured', async (t) => {
   const db = makeTestDb();
   const fastify = await buildServer({
     db,
@@ -192,10 +193,10 @@ test('POST /chat: 503 when website has no model configured', async (t) => {
     registry: makeFakeRegistry(),
     adapterFactory: () => makeFakeAdapter(),
   });
-  const { slug, origin } = await makeChatWebsite(db, { model_slug: null });
+  const { origin, account } = await setupChat(db, { model_slug: null });
   t.after(async () => {
     await fastify.close();
-    await db('websites').where({ slug }).del();
+    await db('accounts').where({ id: account.id }).del();
     await db.destroy();
   });
 
@@ -219,13 +220,13 @@ test('POST /chat: 413 when total prompt exceeds context window with headroom', a
     registry: makeFakeRegistry(),
     adapterFactory: () => makeFakeAdapter(),
   });
-  const { slug, origin } = await makeChatWebsite(db, {
+  const { origin, account } = await setupChat(db, {
     model_context_window: 200,
     persona: 'A '.repeat(500), // ~330 tokens by the estimator
   });
   t.after(async () => {
     await fastify.close();
-    await db('websites').where({ slug }).del();
+    await db('accounts').where({ id: account.id }).del();
     await db.destroy();
   });
 
@@ -252,10 +253,10 @@ test('POST /chat: happy path persists both turns and returns the reply', async (
     registry: makeFakeRegistry(),
     adapterFactory: () => makeFakeAdapter({ reply: 'I help with widgets.', capture }),
   });
-  const { slug, origin } = await makeChatWebsite(db);
+  const { origin, account } = await setupChat(db);
   t.after(async () => {
     await fastify.close();
-    await db('websites').where({ slug }).del();
+    await db('accounts').where({ id: account.id }).del();
     await db.destroy();
   });
 
@@ -301,10 +302,10 @@ test('POST /chat: adapter failure returns 502 and leaves user msg persisted with
     registry: makeFakeRegistry(),
     adapterFactory: () => makeFakeAdapter({ throwError: new Error('upstream blew up') }),
   });
-  const { slug, origin } = await makeChatWebsite(db);
+  const { origin, account } = await setupChat(db);
   t.after(async () => {
     await fastify.close();
-    await db('websites').where({ slug }).del();
+    await db('accounts').where({ id: account.id }).del();
     await db.destroy();
   });
 
@@ -346,10 +347,10 @@ test('POST /chat: second turn includes prior history in the adapter request', as
       },
     }),
   });
-  const { slug, origin } = await makeChatWebsite(db);
+  const { origin, account } = await setupChat(db);
   t.after(async () => {
     await fastify.close();
-    await db('websites').where({ slug }).del();
+    await db('accounts').where({ id: account.id }).del();
     await db.destroy();
   });
 
@@ -388,10 +389,10 @@ test('POST /chat: second turn includes prior history in the adapter request', as
 test('POST /chat: 500 when buildServer was constructed without a registry', async (t) => {
   const db = makeTestDb();
   const fastify = await buildServer({ db, logger: false });
-  const { slug, origin } = await makeChatWebsite(db);
+  const { origin, account } = await setupChat(db);
   t.after(async () => {
     await fastify.close();
-    await db('websites').where({ slug }).del();
+    await db('accounts').where({ id: account.id }).del();
     await db.destroy();
   });
 
@@ -419,12 +420,12 @@ test('POST /sessions: 403 geo_blocked when blocklist matches the visitor country
     logger: false,
     geoChecker: fakeGeoChecker({ '203.0.113.10': 'RU' }),
   });
-  const { slug, origin } = await makeChatWebsite(db);
-  await setWebsiteGeoMode(db, slug, 'blocklist');
-  await setWebsiteGeoCountries(db, slug, ['RU', 'CN']);
+  const { slug, origin, account } = await setupChat(db);
+  await setChatbotGeoMode(db, slug, 'blocklist');
+  await setChatbotGeoCountries(db, slug, ['RU', 'CN']);
   t.after(async () => {
     await fastify.close();
-    await db('websites').where({ slug }).del();
+    await db('accounts').where({ id: account.id }).del();
     await db.destroy();
   });
 
@@ -448,12 +449,12 @@ test('POST /sessions: allowlist permits the listed country and rejects others', 
       '203.0.113.21': 'US',
     }),
   });
-  const { slug, origin } = await makeChatWebsite(db);
-  await setWebsiteGeoMode(db, slug, 'allowlist');
-  await setWebsiteGeoCountries(db, slug, ['GB']);
+  const { slug, origin, account } = await setupChat(db);
+  await setChatbotGeoMode(db, slug, 'allowlist');
+  await setChatbotGeoCountries(db, slug, ['GB']);
   t.after(async () => {
     await fastify.close();
-    await db('websites').where({ slug }).del();
+    await db('accounts').where({ id: account.id }).del();
     await db.destroy();
   });
 
@@ -482,12 +483,12 @@ test('GET /sessions/can-start: returns { ok: true } when geo allows', async (t) 
     logger: false,
     geoChecker: fakeGeoChecker({ '203.0.113.30': 'GB' }),
   });
-  const { slug, origin } = await makeChatWebsite(db);
-  await setWebsiteGeoMode(db, slug, 'allowlist');
-  await setWebsiteGeoCountries(db, slug, ['GB']);
+  const { slug, origin, account } = await setupChat(db);
+  await setChatbotGeoMode(db, slug, 'allowlist');
+  await setChatbotGeoCountries(db, slug, ['GB']);
   t.after(async () => {
     await fastify.close();
-    await db('websites').where({ slug }).del();
+    await db('accounts').where({ id: account.id }).del();
     await db.destroy();
   });
 
@@ -508,12 +509,12 @@ test('GET /sessions/can-start: 403 geo_blocked when policy denies (mints nothing
     logger: false,
     geoChecker: fakeGeoChecker({ '203.0.113.40': 'RU' }),
   });
-  const { slug, origin } = await makeChatWebsite(db);
-  await setWebsiteGeoMode(db, slug, 'blocklist');
-  await setWebsiteGeoCountries(db, slug, ['RU']);
+  const { slug, origin, account } = await setupChat(db);
+  await setChatbotGeoMode(db, slug, 'blocklist');
+  await setChatbotGeoCountries(db, slug, ['RU']);
   t.after(async () => {
     await fastify.close();
-    await db('websites').where({ slug }).del();
+    await db('accounts').where({ id: account.id }).del();
     await db.destroy();
   });
 
@@ -528,8 +529,8 @@ test('GET /sessions/can-start: 403 geo_blocked when policy denies (mints nothing
 
   // Verify no session was minted as a side effect.
   const sessionCount = await db('sessions')
-    .join('websites', 'websites.id', 'sessions.website_id')
-    .where('websites.slug', slug)
+    .join('chatbots', 'chatbots.id', 'sessions.chatbot_id')
+    .where('chatbots.slug', slug)
     .count<{ n: number }[]>({ n: '*' });
   assert.equal(Number(sessionCount[0].n), 0);
 });
@@ -573,10 +574,10 @@ test('POST /chat: 403 geo_blocked rejects after session is minted', async (t) =>
       '203.0.113.51': 'RU',
     }),
   });
-  const { slug, origin } = await makeChatWebsite(db);
+  const { slug, origin, account } = await setupChat(db);
   t.after(async () => {
     await fastify.close();
-    await db('websites').where({ slug }).del();
+    await db('accounts').where({ id: account.id }).del();
     await db.destroy();
   });
 
@@ -590,8 +591,8 @@ test('POST /chat: 403 geo_blocked rejects after session is minted', async (t) =>
   const token = sessionRes.json().session_token;
 
   // Now flip the policy to a blocklist that includes RU, and call /chat from RU.
-  await setWebsiteGeoMode(db, slug, 'blocklist');
-  await setWebsiteGeoCountries(db, slug, ['RU']);
+  await setChatbotGeoMode(db, slug, 'blocklist');
+  await setChatbotGeoCountries(db, slug, ['RU']);
 
   const chatRes = await fastify.inject({
     method: 'POST',
@@ -614,10 +615,10 @@ test('GET /messages: 403 geo_blocked when policy denies', async (t) => {
       '203.0.113.61': 'RU',
     }),
   });
-  const { slug, origin } = await makeChatWebsite(db);
+  const { slug, origin, account } = await setupChat(db);
   t.after(async () => {
     await fastify.close();
-    await db('websites').where({ slug }).del();
+    await db('accounts').where({ id: account.id }).del();
     await db.destroy();
   });
 
@@ -629,8 +630,8 @@ test('GET /messages: 403 geo_blocked when policy denies', async (t) => {
   });
   const token = sessionRes.json().session_token;
 
-  await setWebsiteGeoMode(db, slug, 'blocklist');
-  await setWebsiteGeoCountries(db, slug, ['RU']);
+  await setChatbotGeoMode(db, slug, 'blocklist');
+  await setChatbotGeoCountries(db, slug, ['RU']);
 
   const res = await fastify.inject({
     method: 'GET',

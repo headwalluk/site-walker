@@ -38,7 +38,7 @@ export interface RuntimeEnv {
    * Path to the MaxMind GeoIP2 / GeoLite2 country database file. When set,
    * the server loads it at boot and the geo-blocking feature is available.
    * When unset, geo-blocking can only operate in `allowall` mode — startup
-   * refuses to continue if any website has a stricter mode configured.
+   * refuses to continue if any chatbot has a stricter mode configured.
    */
   readonly geoipDbPath: string | undefined;
 }

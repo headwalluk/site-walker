@@ -2,8 +2,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { buildServer } from './server.js';
-import { createWebsite, addOrigin } from './services/websites.js';
-import { makeTestDb } from './testing/db.js';
+import { addOrigin } from './services/chatbots.js';
+import { makeTestDb, seedAccountAndChatbot } from './testing/db.js';
 import { VERSION } from './utils/version.js';
 
 function uniqueSlug(): string {
@@ -152,15 +152,15 @@ test('POST /sessions: mints a token and returns welcome for an allowed origin', 
   const slug = uniqueSlug();
   const origin = `https://${slug}.example.com`;
 
-  await createWebsite(db, { slug, name: 'Test' });
+  const { account } = await seedAccountAndChatbot(db, slug);
   await addOrigin(db, slug, origin);
   // Set a custom welcome so we can verify it's returned.
-  await db('websites').where({ slug }).update({ welcome_message: 'Greetings, traveller.' });
+  await db('chatbots').where({ slug }).update({ welcome_message: 'Greetings, traveller.' });
 
   const fastify = await buildServer({ db, logger: false });
   t.after(async () => {
     await fastify.close();
-    await db('websites').where({ slug }).del();
+    await db('accounts').where({ id: account.id }).del();
     await db.destroy();
   });
 
@@ -175,18 +175,18 @@ test('POST /sessions: mints a token and returns welcome for an allowed origin', 
   assert.match(body.session_token, /^[0-9a-f]{64}$/);
 });
 
-test('POST /sessions: falls back to default welcome when websites.welcome_message is NULL', async (t) => {
+test('POST /sessions: falls back to default welcome when chatbots.welcome_message is NULL', async (t) => {
   const db = makeTestDb();
   const slug = uniqueSlug();
   const origin = `https://${slug}.example.com`;
 
-  await createWebsite(db, { slug, name: 'Test' });
+  const { account } = await seedAccountAndChatbot(db, slug);
   await addOrigin(db, slug, origin);
 
   const fastify = await buildServer({ db, logger: false });
   t.after(async () => {
     await fastify.close();
-    await db('websites').where({ slug }).del();
+    await db('accounts').where({ id: account.id }).del();
     await db.destroy();
   });
 
@@ -234,13 +234,13 @@ test('CORS: OPTIONS preflight from a registered origin echoes Access-Control-All
   const slug = uniqueSlug();
   const origin = `https://${slug}.example.com`;
 
-  await createWebsite(db, { slug, name: 'Test' });
+  const { account } = await seedAccountAndChatbot(db, slug);
   await addOrigin(db, slug, origin);
 
   const fastify = await buildServer({ db, logger: false });
   t.after(async () => {
     await fastify.close();
-    await db('websites').where({ slug }).del();
+    await db('accounts').where({ id: account.id }).del();
     await db.destroy();
   });
 
@@ -295,13 +295,13 @@ test('CORS: POST /sessions actual response carries Access-Control-Allow-Origin f
   const slug = uniqueSlug();
   const origin = `https://${slug}.example.com`;
 
-  await createWebsite(db, { slug, name: 'Test' });
+  const { account } = await seedAccountAndChatbot(db, slug);
   await addOrigin(db, slug, origin);
 
   const fastify = await buildServer({ db, logger: false });
   t.after(async () => {
     await fastify.close();
-    await db('websites').where({ slug }).del();
+    await db('accounts').where({ id: account.id }).del();
     await db.destroy();
   });
 
@@ -337,13 +337,13 @@ test('POST /sessions then GET /messages returns an empty message list', async (t
   const slug = uniqueSlug();
   const origin = `https://${slug}.example.com`;
 
-  await createWebsite(db, { slug, name: 'Test' });
+  const { account } = await seedAccountAndChatbot(db, slug);
   await addOrigin(db, slug, origin);
 
   const fastify = await buildServer({ db, logger: false });
   t.after(async () => {
     await fastify.close();
-    await db('websites').where({ slug }).del();
+    await db('accounts').where({ id: account.id }).del();
     await db.destroy();
   });
 

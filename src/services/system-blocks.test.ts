@@ -6,7 +6,7 @@ import path from 'node:path';
 import { HANDLING_RULE, assemblePrompt, loadDiskBlocks, type Block } from './system-blocks.js';
 import { estimateTokens } from '../utils/tokens.js';
 
-async function makeWebsiteDir(): Promise<{ baseDir: string; slug: string; siteDir: string }> {
+async function makeChatbotDir(): Promise<{ baseDir: string; slug: string; siteDir: string }> {
   const baseDir = await mkdtemp(path.join(tmpdir(), 'sw-blocks-'));
   const slug = 'test-site';
   const siteDir = path.join(baseDir, slug);
@@ -14,7 +14,7 @@ async function makeWebsiteDir(): Promise<{ baseDir: string; slug: string; siteDi
   return { baseDir, slug, siteDir };
 }
 
-test('loadDiskBlocks: missing website directory returns []', async (t) => {
+test('loadDiskBlocks: missing chatbot directory returns []', async (t) => {
   const baseDir = await mkdtemp(path.join(tmpdir(), 'sw-blocks-'));
   t.after(() => rm(baseDir, { recursive: true, force: true }));
   const blocks = await loadDiskBlocks('does-not-exist', baseDir);
@@ -22,14 +22,14 @@ test('loadDiskBlocks: missing website directory returns []', async (t) => {
 });
 
 test('loadDiskBlocks: empty directory returns []', async (t) => {
-  const { baseDir, slug } = await makeWebsiteDir();
+  const { baseDir, slug } = await makeChatbotDir();
   t.after(() => rm(baseDir, { recursive: true, force: true }));
   const blocks = await loadDiskBlocks(slug, baseDir);
   assert.deepEqual(blocks, []);
 });
 
 test('loadDiskBlocks: single block', async (t) => {
-  const { baseDir, slug, siteDir } = await makeWebsiteDir();
+  const { baseDir, slug, siteDir } = await makeChatbotDir();
   t.after(() => rm(baseDir, { recursive: true, force: true }));
   await writeFile(path.join(siteDir, 'COMPANY.md'), 'we sell widgets', 'utf8');
   const blocks = await loadDiskBlocks(slug, baseDir);
@@ -37,7 +37,7 @@ test('loadDiskBlocks: single block', async (t) => {
 });
 
 test('loadDiskBlocks: multiple blocks in alphabetical filename order', async (t) => {
-  const { baseDir, slug, siteDir } = await makeWebsiteDir();
+  const { baseDir, slug, siteDir } = await makeChatbotDir();
   t.after(() => rm(baseDir, { recursive: true, force: true }));
   await writeFile(path.join(siteDir, 'PRODUCTS.md'), 'p', 'utf8');
   await writeFile(path.join(siteDir, 'COMPANY.md'), 'c', 'utf8');
@@ -50,7 +50,7 @@ test('loadDiskBlocks: multiple blocks in alphabetical filename order', async (t)
 });
 
 test('loadDiskBlocks: ignores non-.md files', async (t) => {
-  const { baseDir, slug, siteDir } = await makeWebsiteDir();
+  const { baseDir, slug, siteDir } = await makeChatbotDir();
   t.after(() => rm(baseDir, { recursive: true, force: true }));
   await writeFile(path.join(siteDir, 'COMPANY.md'), 'c', 'utf8');
   await writeFile(path.join(siteDir, 'NOTES.txt'), 'not loaded', 'utf8');
@@ -63,7 +63,7 @@ test('loadDiskBlocks: ignores non-.md files', async (t) => {
 });
 
 test('loadDiskBlocks: skips empty / whitespace-only .md files', async (t) => {
-  const { baseDir, slug, siteDir } = await makeWebsiteDir();
+  const { baseDir, slug, siteDir } = await makeChatbotDir();
   t.after(() => rm(baseDir, { recursive: true, force: true }));
   await writeFile(path.join(siteDir, 'COMPANY.md'), 'c', 'utf8');
   await writeFile(path.join(siteDir, 'EMPTY.md'), '', 'utf8');
@@ -76,7 +76,7 @@ test('loadDiskBlocks: skips empty / whitespace-only .md files', async (t) => {
 });
 
 test('loadDiskBlocks: PERSONA.md on disk is skipped with console.error', async (t) => {
-  const { baseDir, slug, siteDir } = await makeWebsiteDir();
+  const { baseDir, slug, siteDir } = await makeChatbotDir();
   t.after(() => rm(baseDir, { recursive: true, force: true }));
   await writeFile(path.join(siteDir, 'PERSONA.md'), 'stray persona on disk', 'utf8');
   await writeFile(path.join(siteDir, 'COMPANY.md'), 'c', 'utf8');

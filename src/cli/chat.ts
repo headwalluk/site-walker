@@ -3,7 +3,7 @@ import { createInterface } from 'node:readline/promises';
 import { stdin, stdout } from 'node:process';
 import { db } from '../db/index.js';
 import { env } from '../config/env.js';
-import { getWebsiteBySlug } from '../services/websites.js';
+import { getChatbotBySlug } from '../services/chatbots.js';
 
 interface ChatOpts {
   origin?: string;
@@ -27,11 +27,11 @@ interface ChatSuccess {
 }
 
 async function firstOriginForSlug(slug: string): Promise<string | null> {
-  const row = await db('website_origins')
-    .join('websites', 'websites.id', 'website_origins.website_id')
-    .where('websites.slug', slug)
-    .orderBy('website_origins.id', 'asc')
-    .first('website_origins.origin');
+  const row = await db('chatbot_origins')
+    .join('chatbots', 'chatbots.id', 'chatbot_origins.chatbot_id')
+    .where('chatbots.slug', slug)
+    .orderBy('chatbot_origins.id', 'asc')
+    .first('chatbot_origins.origin');
   return row ? (row.origin as string) : null;
 }
 
@@ -61,16 +61,16 @@ async function run(slug: string, opts: ChatOpts): Promise<void> {
 
   let origin = opts.origin;
   if (!origin) {
-    const website = await getWebsiteBySlug(db, slug);
-    if (!website) {
-      console.error(`Website not found: slug="${slug}"`);
+    const chatbot = await getChatbotBySlug(db, slug);
+    if (!chatbot) {
+      console.error(`Chatbot not found: slug="${slug}"`);
       process.exitCode = 1;
       return;
     }
     const looked = await firstOriginForSlug(slug);
     if (!looked) {
       console.error(
-        `No origins configured for "${slug}". Add one with: ./bin/sw website origins add ${slug} <https://example.com>`,
+        `No origins configured for "${slug}". Add one with: ./bin/sw chatbot origins add ${slug} <https://example.com>`,
       );
       process.exitCode = 1;
       return;
@@ -123,7 +123,7 @@ const program = new Command();
 program
   .name('chat')
   .description('interactive test client for site-walker (POST /sessions + POST /chat)')
-  .argument('<slug>', 'website slug to chat against')
+  .argument('<slug>', 'chatbot slug to chat against')
   .option(
     '--origin <url>',
     'Origin header to send (defaults to first allowlisted origin for the slug)',

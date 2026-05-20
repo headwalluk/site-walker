@@ -2,24 +2,23 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import {
-  anyWebsiteHasGeoMode,
+  anyChatbotHasGeoMode,
   checkGeoPolicy,
-  getWebsiteGeoSummary,
+  getChatbotGeoSummary,
   isValidGeoModeCode,
-  setWebsiteGeoCountries,
-  setWebsiteGeoMode,
+  setChatbotGeoCountries,
+  setChatbotGeoMode,
   type GeoChecker,
-  type WebsiteGeoPolicy,
+  type ChatbotGeoPolicy,
 } from './geo.js';
-import { createWebsite } from './websites.js';
-import { makeTestDb } from '../testing/db.js';
+import { makeTestDb, seedAccountAndChatbot } from '../testing/db.js';
 
 function uniqueSlug(): string {
   return `test-${randomUUID().slice(0, 8)}`;
 }
 
-function policy(modeCode: WebsiteGeoPolicy['modeCode'], codes: string[]): WebsiteGeoPolicy {
-  return { websiteId: 1, modeCode, countries: new Set(codes.map((c) => c.toUpperCase())) };
+function policy(modeCode: ChatbotGeoPolicy['modeCode'], codes: string[]): ChatbotGeoPolicy {
+  return { chatbotId: 1, modeCode, countries: new Set(codes.map((c) => c.toUpperCase())) };
 }
 
 const fakeChecker = (mapping: Record<string, string | null>): GeoChecker => ({
@@ -123,101 +122,100 @@ test('isValidGeoModeCode: discriminates valid vs invalid codes', () => {
   assert.equal(isValidGeoModeCode(''), false);
 });
 
-test('setWebsiteGeoMode + getWebsiteGeoSummary roundtrip', async (t) => {
+test('setChatbotGeoMode + getChatbotGeoSummary roundtrip', async (t) => {
   const db = makeTestDb();
   const slug = uniqueSlug();
+  const { account } = await seedAccountAndChatbot(db, slug, { name: 'Geo Test' });
   t.after(async () => {
-    await db('websites').where({ slug }).del();
+    await db('accounts').where({ id: account.id }).del();
     await db.destroy();
   });
 
-  await createWebsite(db, { slug, name: 'Geo Test' });
-
-  let summary = await getWebsiteGeoSummary(db, slug);
+  let summary = await getChatbotGeoSummary(db, slug);
   assert.equal(summary.modeCode, 'allowall');
   assert.deepEqual(summary.countries, []);
 
-  await setWebsiteGeoMode(db, slug, 'blocklist');
-  summary = await getWebsiteGeoSummary(db, slug);
+  await setChatbotGeoMode(db, slug, 'blocklist');
+  summary = await getChatbotGeoSummary(db, slug);
   assert.equal(summary.modeCode, 'blocklist');
 });
 
-test('setWebsiteGeoMode: rejects unknown mode code', async (t) => {
+test('setChatbotGeoMode: rejects unknown mode code', async (t) => {
   const db = makeTestDb();
   t.after(async () => {
     await db.destroy();
   });
   await assert.rejects(
-    () => setWebsiteGeoMode(db, 'no-such-slug', 'banhammer'),
+    () => setChatbotGeoMode(db, 'no-such-slug', 'banhammer'),
     /Invalid geo mode/,
   );
 });
 
-test('setWebsiteGeoMode: throws on unknown slug', async (t) => {
+test('setChatbotGeoMode: throws on unknown slug', async (t) => {
   const db = makeTestDb();
   t.after(async () => {
     await db.destroy();
   });
   await assert.rejects(
-    () => setWebsiteGeoMode(db, 'no-such-slug', 'blocklist'),
-    /Website not found/,
+    () => setChatbotGeoMode(db, 'no-such-slug', 'blocklist'),
+    /Chatbot not found/,
   );
 });
 
-test('setWebsiteGeoCountries: atomic replace + uppercases + dedupes', async (t) => {
+test('setChatbotGeoCountries: atomic replace + uppercases + dedupes', async (t) => {
   const db = makeTestDb();
   const slug = uniqueSlug();
+  const { account } = await seedAccountAndChatbot(db, slug, { name: 'Geo Test' });
   t.after(async () => {
-    await db('websites').where({ slug }).del();
+    await db('accounts').where({ id: account.id }).del();
     await db.destroy();
   });
 
-  await createWebsite(db, { slug, name: 'Geo Test' });
-  await setWebsiteGeoCountries(db, slug, ['gb', 'US', 'gb', '  fr  ']);
-  let summary = await getWebsiteGeoSummary(db, slug);
+  await setChatbotGeoCountries(db, slug, ['gb', 'US', 'gb', '  fr  ']);
+  let summary = await getChatbotGeoSummary(db, slug);
   assert.deepEqual(summary.countries.sort(), ['FR', 'GB', 'US']);
 
   // Atomic replace.
-  await setWebsiteGeoCountries(db, slug, ['JP']);
-  summary = await getWebsiteGeoSummary(db, slug);
+  await setChatbotGeoCountries(db, slug, ['JP']);
+  summary = await getChatbotGeoSummary(db, slug);
   assert.deepEqual(summary.countries, ['JP']);
 
   // Empty clears.
-  await setWebsiteGeoCountries(db, slug, []);
-  summary = await getWebsiteGeoSummary(db, slug);
+  await setChatbotGeoCountries(db, slug, []);
+  summary = await getChatbotGeoSummary(db, slug);
   assert.deepEqual(summary.countries, []);
 });
 
-test('setWebsiteGeoCountries: rejects invalid codes', async (t) => {
+test('setChatbotGeoCountries: rejects invalid codes', async (t) => {
   const db = makeTestDb();
   const slug = uniqueSlug();
+  const { account } = await seedAccountAndChatbot(db, slug, { name: 'Geo Test' });
   t.after(async () => {
-    await db('websites').where({ slug }).del();
+    await db('accounts').where({ id: account.id }).del();
     await db.destroy();
   });
 
-  await createWebsite(db, { slug, name: 'Geo Test' });
   await assert.rejects(
-    () => setWebsiteGeoCountries(db, slug, ['GB', 'GBR']),
+    () => setChatbotGeoCountries(db, slug, ['GB', 'GBR']),
     /Invalid country code/,
   );
-  await assert.rejects(() => setWebsiteGeoCountries(db, slug, ['12']), /Invalid country code/);
+  await assert.rejects(() => setChatbotGeoCountries(db, slug, ['12']), /Invalid country code/);
 });
 
-test('anyWebsiteHasGeoMode: false when all allowall, true when any other', async (t) => {
+test('anyChatbotHasGeoMode: false when all allowall, true when any other', async (t) => {
   const db = makeTestDb();
   const slug = uniqueSlug();
+  const { account } = await seedAccountAndChatbot(db, slug, { name: 'Geo Test' });
   t.after(async () => {
-    await db('websites').where({ slug }).del();
+    await db('accounts').where({ id: account.id }).del();
     await db.destroy();
   });
 
-  await createWebsite(db, { slug, name: 'Geo Test' });
-  // Note: other websites in the dev DB may already be on non-allowall modes;
+  // Note: other chatbots in the dev DB may already be on non-allowall modes;
   // this test asserts the function returns true when *our* row is set.
-  await setWebsiteGeoMode(db, slug, 'blocklist');
-  assert.equal(await anyWebsiteHasGeoMode(db), true);
+  await setChatbotGeoMode(db, slug, 'blocklist');
+  assert.equal(await anyChatbotHasGeoMode(db), true);
 
-  await setWebsiteGeoMode(db, slug, 'allowall');
+  await setChatbotGeoMode(db, slug, 'allowall');
   // Don't assert false unconditionally — depends on shared DB state.
 });

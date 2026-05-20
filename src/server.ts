@@ -3,12 +3,12 @@ import fastifySwagger from '@fastify/swagger';
 import fastifySwaggerUi from '@fastify/swagger-ui';
 import fastifyCors from '@fastify/cors';
 import type { Knex } from 'knex';
-import { findWebsiteByOrigin } from './services/websites.js';
+import { findChatbotByOrigin } from './services/chatbots.js';
 import { createSession, findSessionByToken, listMessages } from './services/sessions.js';
 import { ChatError, runChat, type AdapterFactory } from './services/chat.js';
 import {
   checkGeoPolicy,
-  loadWebsiteGeoPolicy,
+  loadChatbotGeoPolicy,
   type CheckGeoResult,
   type GeoChecker,
 } from './services/geo.js';
@@ -32,17 +32,17 @@ export interface BuildServerOpts {
   adapterFactory?: AdapterFactory;
   /**
    * Country lookup for geo-blocking. Pass `null` to skip lookups entirely
-   * (only safe when every website is in `allowall` mode — production code
+   * (only safe when every chatbot is in `allowall` mode — production code
    * checks for this at boot). Tests inject a stub.
    */
   geoChecker?: GeoChecker | null;
 }
 
 /**
- * Phase 1 capacity check is a stub. M11 wires real per-IP and per-website
+ * Phase 1 capacity check is a stub. M11 wires real per-IP and per-chatbot
  * rate limits via Redis here.
  */
-function hasCapacity(_websiteId: number): boolean {
+function hasCapacity(_chatbotId: number): boolean {
   return true;
 }
 
@@ -204,11 +204,11 @@ const errorResponseSchema = {
 
 async function enforceGeo(
   db: Knex,
-  websiteId: number,
+  chatbotId: number,
   ip: string,
   checker: GeoChecker | null,
 ): Promise<CheckGeoResult> {
-  const policy = await loadWebsiteGeoPolicy(db, websiteId);
+  const policy = await loadChatbotGeoPolicy(db, chatbotId);
   return checkGeoPolicy(policy, ip, checker, { isProduction: runtimeEnv.isProduction });
 }
 
@@ -260,8 +260,8 @@ export async function buildServer(opts: BuildServerOpts): Promise<FastifyInstanc
     staticCSP: true,
   });
 
-  // CORS reuses the per-website origin allowlist as its single source of
-  // truth: any Origin registered against any website via `sw website origins
+  // CORS reuses the per-chatbot origin allowlist as its single source of
+  // truth: any Origin registered against any chatbot via `sw chatbot origins
   // add` is an allowed CORS origin. Unregistered origins get no CORS header
   // and the browser blocks the response. Non-browser callers (curl, ./bin/chat,
   // server-to-server) send no Origin header and bypass this layer entirely.
@@ -269,8 +269,8 @@ export async function buildServer(opts: BuildServerOpts): Promise<FastifyInstanc
     origin: async (origin: string | undefined) => {
       if (!origin) return false;
       try {
-        const website = await findWebsiteByOrigin(db, origin);
-        return website !== null;
+        const chatbot = await findChatbotByOrigin(db, origin);
+        return chatbot !== null;
       } catch {
         return false;
       }
@@ -368,8 +368,8 @@ export async function buildServer(opts: BuildServerOpts): Promise<FastifyInstanc
         tags: ['sessions'],
         summary: 'Mint a session token',
         description:
-          "Verifies the request `Origin` header against the calling website's " +
-          "allowlist and returns an opaque session token plus the website's " +
+          "Verifies the request `Origin` header against the calling chatbot's " +
+          "allowlist and returns an opaque session token plus the chatbot's " +
           'welcome message. The token is carried as `Authorization: Bearer ...` ' +
           'on subsequent calls.',
         headers: {
@@ -380,7 +380,7 @@ export async function buildServer(opts: BuildServerOpts): Promise<FastifyInstanc
               type: 'string',
               description:
                 "The browser's `Origin` header (scheme + host, no path). " +
-                "Must be on the calling website's allowlist.",
+                "Must be on the calling chatbot's allowlist.",
               examples: ['https://www.acme-corp.example'],
             },
           },
@@ -408,23 +408,23 @@ export async function buildServer(opts: BuildServerOpts): Promise<FastifyInstanc
         return reply.status(400).send({ error: 'origin_required' });
       }
 
-      let website = null;
+      let chatbot = null;
       try {
-        website = await findWebsiteByOrigin(db, origin);
+        chatbot = await findChatbotByOrigin(db, origin);
       } catch {
         // Malformed origin — treat as not allowed.
       }
-      if (!website) {
+      if (!chatbot) {
         return reply.status(403).send({ error: 'origin_not_allowed' });
       }
 
-      const geo = await enforceGeo(db, website.id, req.ip, geoChecker);
+      const geo = await enforceGeo(db, chatbot.id, req.ip, geoChecker);
       if (!geo.allowed) {
         req.log.info(
           {
             ip: req.ip,
             country: geo.country,
-            slug: website.slug,
+            slug: chatbot.slug,
             mode: geo.mode,
             reason: geo.reason,
           },
@@ -433,14 +433,14 @@ export async function buildServer(opts: BuildServerOpts): Promise<FastifyInstanc
         return reply.status(403).send({ error: 'geo_blocked' });
       }
 
-      if (!hasCapacity(website.id)) {
+      if (!hasCapacity(chatbot.id)) {
         return reply.status(503).send({ error: 'capacity_exceeded' });
       }
 
-      const session = await createSession(db, website.id);
+      const session = await createSession(db, chatbot.id);
       return reply.status(201).send({
         session_token: session.token,
-        welcome_message: website.welcome_message ?? DEFAULT_WELCOME,
+        welcome_message: chatbot.welcome_message ?? DEFAULT_WELCOME,
       });
     },
   );
@@ -484,23 +484,23 @@ export async function buildServer(opts: BuildServerOpts): Promise<FastifyInstanc
         return reply.status(400).send({ error: 'origin_required' });
       }
 
-      let website = null;
+      let chatbot = null;
       try {
-        website = await findWebsiteByOrigin(db, origin);
+        chatbot = await findChatbotByOrigin(db, origin);
       } catch {
         // Malformed origin — treat as not allowed.
       }
-      if (!website) {
+      if (!chatbot) {
         return reply.status(403).send({ error: 'origin_not_allowed' });
       }
 
-      const geo = await enforceGeo(db, website.id, req.ip, geoChecker);
+      const geo = await enforceGeo(db, chatbot.id, req.ip, geoChecker);
       if (!geo.allowed) {
         req.log.info(
           {
             ip: req.ip,
             country: geo.country,
-            slug: website.slug,
+            slug: chatbot.slug,
             mode: geo.mode,
             reason: geo.reason,
           },
@@ -509,7 +509,7 @@ export async function buildServer(opts: BuildServerOpts): Promise<FastifyInstanc
         return reply.status(403).send({ error: 'geo_blocked' });
       }
 
-      if (!hasCapacity(website.id)) {
+      if (!hasCapacity(chatbot.id)) {
         return reply.status(503).send({ error: 'capacity_exceeded' });
       }
 
@@ -563,13 +563,13 @@ export async function buildServer(opts: BuildServerOpts): Promise<FastifyInstanc
       if (!session) {
         return reply.status(401).send({ error: 'invalid_token' });
       }
-      const geo = await enforceGeo(db, session.website_id, req.ip, geoChecker);
+      const geo = await enforceGeo(db, session.chatbot_id, req.ip, geoChecker);
       if (!geo.allowed) {
         req.log.info(
           {
             ip: req.ip,
             country: geo.country,
-            websiteId: session.website_id,
+            chatbotId: session.chatbot_id,
             mode: geo.mode,
             reason: geo.reason,
           },
@@ -591,7 +591,7 @@ export async function buildServer(opts: BuildServerOpts): Promise<FastifyInstanc
         description:
           'Requires `Authorization: Bearer <session_token>`. Body is a JSON object ' +
           'with a single `message` string (1–8000 chars, trimmed). The server ' +
-          "persists the user message, calls the configured LLM with the website's " +
+          "persists the user message, calls the configured LLM with the chatbot's " +
           'system blocks + history, persists the assistant reply, and returns just ' +
           'the new reply. Use `GET /messages` to rehydrate the full conversation.',
         security: [{ bearerAuth: [] }],
@@ -643,13 +643,13 @@ export async function buildServer(opts: BuildServerOpts): Promise<FastifyInstanc
       if (!session) {
         return reply.status(401).send({ error: 'invalid_token' });
       }
-      const geo = await enforceGeo(db, session.website_id, req.ip, geoChecker);
+      const geo = await enforceGeo(db, session.chatbot_id, req.ip, geoChecker);
       if (!geo.allowed) {
         req.log.info(
           {
             ip: req.ip,
             country: geo.country,
-            websiteId: session.website_id,
+            chatbotId: session.chatbot_id,
             mode: geo.mode,
             reason: geo.reason,
           },

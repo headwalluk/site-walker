@@ -8,7 +8,7 @@ Scope: Phase 1 (Milestones 2, 3, 6). Capacity / rate-limit details are stubbed h
 
 ## Why not API keys for browser traffic
 
-The original plan in earlier draft tracker had `POST /chat` authed by per-website API key. We pivoted away because:
+The original plan in earlier draft tracker had `POST /chat` authed by per-chatbot API key. We pivoted away because:
 
 - An API key embedded in browser JavaScript is publicly visible. Anyone reading the page source can copy it. So it provides no real authentication — at best it's an identifier for rate-limiting.
 - The `Origin` header, by contrast, is browser-controlled and cannot be set by JS in a different origin. It's the genuine signal of "which website is this request coming from."
@@ -22,9 +22,9 @@ API keys aren't dead — they'll be needed for any future server-to-server chann
 
 1. Visitor lands on a customer's website (which has the WordPress plugin installed).
 2. Plugin's JavaScript calls `POST /sessions` to our API. The browser sends the `Origin` header automatically.
-3. Our API checks the `Origin` against `website_origins` for any registered website. If match: mint a session token, persist a row in `sessions`, return `201 { session_token, welcome_message }`. If no match: `403`.
+3. Our API checks the `Origin` against `chatbot_origins` for any registered chatbot. If match: mint a session token, persist a row in `sessions`, return `201 { session_token, welcome_message }`. If no match: `403`.
 4. Browser stashes the session token in `localStorage` keyed by widget instance.
-5. On user input, browser calls `POST /chat` with `Authorization: Bearer <token>` and `{ message }`. API resolves the token to a session + website, appends the user message, runs the LLM, persists the assistant reply, returns `200 { reply, message_id }`.
+5. On user input, browser calls `POST /chat` with `Authorization: Bearer <token>` and `{ message }`. API resolves the token to a session + chatbot, appends the user message, runs the LLM, persists the assistant reply, returns `200 { reply, message_id }`.
 6. On page reload (with a token still in `localStorage`), browser calls `GET /messages` with the same bearer token to rehydrate the visible transcript.
 
 ---
@@ -33,10 +33,10 @@ API keys aren't dead — they'll be needed for any future server-to-server chann
 
 ### POST /sessions
 
-Creates a new chat session for the calling website.
+Creates a new chat session for the calling chatbot.
 
 **Required headers**
-- `Origin` — must exactly match a row in `website_origins`. Browsers set this automatically on cross-origin requests.
+- `Origin` — must exactly match a row in `chatbot_origins`. Browsers set this automatically on cross-origin requests.
 
 **Request body** — empty.
 
@@ -50,7 +50,7 @@ Creates a new chat session for the calling website.
 - `503 Service Unavailable` — capacity exceeded. **Phase 1: never returned** (the check is a no-op stub). M11 wires real capacity logic.
 
 **Side effects**
-- Inserts a row into `sessions` with `website_id`, `token`, `created_at`, `last_active_at`.
+- Inserts a row into `sessions` with `chatbot_id`, `token`, `created_at`, `last_active_at`.
 
 ### POST /chat
 
@@ -105,7 +105,7 @@ Returns the full conversation for the session bound to the bearer token.
 
 ## Origin matching rules
 
-- **Exact string match** between request `Origin` header and `website_origins.origin` column. No suffix or wildcard matching in v1.
+- **Exact string match** between request `Origin` header and `chatbot_origins.origin` column. No suffix or wildcard matching in v1.
 - `https://example.com` and `https://www.example.com` are different origins. Operators register both if both should work.
 - Standard ports are omitted from `Origin` per HTTP spec (so `https://example.com` not `https://example.com:443`). Store the form the browser sends.
 - Trailing slash never appears in `Origin`; reject (or normalise away) trailing slashes when admins add origins via the CLI.
@@ -130,7 +130,7 @@ Returns the full conversation for the session bound to the bearer token.
 
 ## Welcome message
 
-- Per-website field on `websites.welcome_message`. Settable via `sw website set-welcome <slug> <message>` (lands in M7).
+- Per-chatbot field on `chatbots.welcome_message`. Settable via `sw chatbot set-welcome <slug> <message>` (lands in M7).
 - Returned in the `POST /sessions` response so the widget can render it immediately.
 - **Not** injected into the LLM context — it's a UI greeting, not a tone-setter. System blocks do tone-setting (M4).
 - Defaults to something reasonable if NULL — `"Hi! How can I help?"` or similar. Pick when M2 schema lands.
@@ -147,7 +147,7 @@ verify origin → check capacity → mint token + insert session row
                       stub returns "yes, fine" in Phase 1
 ```
 
-In Phase 1 the check is a function that returns true unconditionally. M11 replaces it with the real check (Redis counters, per-website and global limits). Wiring it now means M11 is a body-swap, not a structural change.
+In Phase 1 the check is a function that returns true unconditionally. M11 replaces it with the real check (Redis counters, per-chatbot and global limits). Wiring it now means M11 is a body-swap, not a structural change.
 
 Same idea for `POST /chat` — Phase 1 has no rate limit, Phase 2 wires Redis into the same hook point.
 

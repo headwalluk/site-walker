@@ -5,75 +5,80 @@ import { db } from '../db/index.js';
 assertEnvFilePermissions();
 import {
   addOrigin,
-  createWebsite,
-  deleteWebsite,
-  getWebsiteBySlug,
+  createChatbot,
+  deleteChatbot,
+  getChatbotBySlug,
   listOrigins,
-  listWebsites,
+  listChatbots,
   removeOrigin,
   setPersona,
   setWelcomeMessage,
-} from '../services/websites.js';
+} from '../services/chatbots.js';
+import {
+  createAccount,
+  deleteAccount,
+  getAccountBySlug,
+  listAccounts,
+} from '../services/accounts.js';
 import { findSessionByTokenOrId, listMessages, listSessions } from '../services/sessions.js';
 import { assemblePrompt, loadDiskBlocks } from '../services/system-blocks.js';
 import { resolveModel, setContextWindow, setModel, setParameters } from '../services/models.js';
 import { loadConfig } from '../config/site-walker-config.js';
 import { listProviderModels } from '../providers/list-models.js';
 import {
-  getWebsiteGeoSummary,
-  setWebsiteGeoCountries,
-  setWebsiteGeoMode,
+  getChatbotGeoSummary,
+  setChatbotGeoCountries,
+  setChatbotGeoMode,
 } from '../services/geo.js';
 import { readPersonaTemplate } from '../utils/templates.js';
 
 const program = new Command();
 
-program.name('sw').description('site-walker admin CLI').version('0.10.0');
+program.name('sw').description('site-walker admin CLI').version('0.11.0');
 
-const website = program.command('website').description('manage websites');
+// -----------------------------------------------------------------------------
+// account subgroup
+// -----------------------------------------------------------------------------
 
-website
+const account = program.command('account').description('manage accounts (own chatbots)');
+
+account
   .command('create')
-  .argument('<slug>', 'URL-safe slug, e.g. acme-corp')
+  .argument('<slug>', 'URL-safe slug, e.g. headwall')
   .option('-n, --name <name>', 'human-readable name (defaults to slug)')
   .action(async (slug: string, opts: { name?: string }) => {
     try {
-      const persona = await readPersonaTemplate();
-      const row = await createWebsite(db, { slug, name: opts.name ?? slug, persona });
-      console.log(`Created website: id=${row.id} slug=${row.slug} name="${row.name}"`);
-      console.log(`Persona seeded from templates/PERSONA.md (${persona.length} chars).`);
+      const row = await createAccount(db, { slug, name: opts.name ?? slug });
+      console.log(`Created account: id=${row.id} slug=${row.slug} name="${row.name}"`);
     } finally {
       await db.destroy();
     }
   });
 
-website
+account
   .command('list')
-  .description('list all websites (slug, name, model, origin count)')
+  .description('list all accounts (slug, name, chatbot count)')
   .action(async () => {
     try {
-      const rows = await listWebsites(db);
+      const rows = await listAccounts(db);
       if (rows.length === 0) {
-        console.log('(no websites)');
+        console.log('(no accounts)');
         return;
       }
-      const counts = await db('website_origins')
-        .select('website_id')
-        .count<{ website_id: number; n: string | number }[]>({ n: '*' })
-        .groupBy('website_id');
-      const countByWebsiteId = new Map<number, number>(
-        counts.map((r) => [r.website_id, Number(r.n)]),
+      const counts = await db('chatbots')
+        .select('account_id')
+        .count<{ account_id: string; n: string | number }[]>({ n: '*' })
+        .groupBy('account_id');
+      const countByAccountId = new Map<string, number>(
+        counts.map((r) => [r.account_id, Number(r.n)]),
       );
       const slugW = Math.max(4, ...rows.map((r) => r.slug.length));
       const nameW = Math.max(4, ...rows.map((r) => r.name.length));
-      console.log(
-        `${'slug'.padEnd(slugW)}  ${'name'.padEnd(nameW)}  ${'model'.padEnd(28)}  origins`,
-      );
+      console.log(`${'slug'.padEnd(slugW)}  ${'name'.padEnd(nameW)}  chatbots  id`);
       for (const r of rows) {
-        const model = r.model_slug ?? '(unset)';
-        const origins = countByWebsiteId.get(r.id) ?? 0;
+        const n = countByAccountId.get(r.id) ?? 0;
         console.log(
-          `${r.slug.padEnd(slugW)}  ${r.name.padEnd(nameW)}  ${model.padEnd(28)}  ${origins}`,
+          `${r.slug.padEnd(slugW)}  ${r.name.padEnd(nameW)}  ${String(n).padStart(8)}  ${r.id}`,
         );
       }
     } finally {
@@ -81,14 +86,14 @@ website
     }
   });
 
-website
+account
   .command('show')
-  .argument('<slug>', 'website slug')
+  .argument('<slug>', 'account slug')
   .action(async (slug: string) => {
     try {
-      const row = await getWebsiteBySlug(db, slug);
+      const row = await getAccountBySlug(db, slug);
       if (!row) {
-        console.error(`Website not found: slug="${slug}"`);
+        console.error(`Account not found: slug="${slug}"`);
         process.exitCode = 1;
         return;
       }
@@ -98,38 +103,149 @@ website
     }
   });
 
-website
-  .command('add-origin')
-  .description('alias for `sw website origins add <slug> <origin>`')
-  .argument('<slug>', 'website slug')
-  .argument('<origin>', 'origin URL (scheme + host only, e.g. https://example.com)')
-  .action(async (slug: string, origin: string) => {
+account
+  .command('delete')
+  .description('delete an account and CASCADE through all its chatbots + sessions + messages')
+  .argument('<slug>', 'account slug')
+  .option('-f, --force', 'required — irreversible; cascades to every chatbot the account owns')
+  .action(async (slug: string, opts: { force?: boolean }) => {
     try {
-      const row = await addOrigin(db, slug, origin);
-      console.log(`Added origin id=${row.id} origin="${row.origin}" to website slug="${slug}"`);
+      if (!opts.force) {
+        console.error(
+          `Refusing to delete account "${slug}" without --force.\n` +
+            `Pass -f|--force to confirm. This cascades to every chatbot, every session, every message.`,
+        );
+        process.exitCode = 1;
+        return;
+      }
+      const counts = await deleteAccount(db, slug);
+      console.log(
+        `Deleted account slug="${slug}". Cascaded: ${counts.chatbots} chatbot(s), ` +
+          `${counts.origins} origin(s), ${counts.sessions} session(s), ${counts.messages} message(s).`,
+      );
     } finally {
       await db.destroy();
     }
   });
 
-website
+// -----------------------------------------------------------------------------
+// chatbot subgroup (was: website)
+// -----------------------------------------------------------------------------
+
+const chatbot = program.command('chatbot').description('manage chatbots');
+
+chatbot
+  .command('create')
+  .argument('<slug>', 'URL-safe slug, e.g. acme-corp')
+  .requiredOption('-a, --account <slug>', 'account slug that will own this chatbot')
+  .option('-n, --name <name>', 'human-readable name (defaults to slug)')
+  .action(async (slug: string, opts: { account: string; name?: string }) => {
+    try {
+      const account = await getAccountBySlug(db, opts.account);
+      if (!account) {
+        console.error(
+          `Account not found: slug="${opts.account}". ` +
+            `Create one first with: sw account create ${opts.account}`,
+        );
+        process.exitCode = 1;
+        return;
+      }
+      const persona = await readPersonaTemplate();
+      const row = await createChatbot(db, {
+        account_id: account.id,
+        slug,
+        name: opts.name ?? slug,
+        persona,
+      });
+      console.log(
+        `Created chatbot: id=${row.id} slug=${row.slug} name="${row.name}" ` +
+          `account="${account.slug}"`,
+      );
+      console.log(`Persona seeded from templates/PERSONA.md (${persona.length} chars).`);
+    } finally {
+      await db.destroy();
+    }
+  });
+
+chatbot
+  .command('list')
+  .description('list all chatbots (slug, name, account, model, origin count)')
+  .action(async () => {
+    try {
+      const rows = await listChatbots(db);
+      if (rows.length === 0) {
+        console.log('(no chatbots)');
+        return;
+      }
+      const counts = await db('chatbot_origins')
+        .select('chatbot_id')
+        .count<{ chatbot_id: number; n: string | number }[]>({ n: '*' })
+        .groupBy('chatbot_id');
+      const countByChatbotId = new Map<number, number>(
+        counts.map((r) => [r.chatbot_id, Number(r.n)]),
+      );
+      const accountSlugById = new Map<string, string>(
+        (await db('accounts').select('id', 'slug')).map((r) => [r.id as string, r.slug as string]),
+      );
+      const slugW = Math.max(4, ...rows.map((r) => r.slug.length));
+      const nameW = Math.max(4, ...rows.map((r) => r.name.length));
+      const acctW = Math.max(
+        7,
+        ...rows.map((r) => (accountSlugById.get(r.account_id) ?? '').length),
+      );
+      console.log(
+        `${'slug'.padEnd(slugW)}  ${'name'.padEnd(nameW)}  ${'account'.padEnd(acctW)}  ` +
+          `${'model'.padEnd(28)}  origins`,
+      );
+      for (const r of rows) {
+        const model = r.model_slug ?? '(unset)';
+        const origins = countByChatbotId.get(r.id) ?? 0;
+        const acct = accountSlugById.get(r.account_id) ?? '(orphaned)';
+        console.log(
+          `${r.slug.padEnd(slugW)}  ${r.name.padEnd(nameW)}  ${acct.padEnd(acctW)}  ` +
+            `${model.padEnd(28)}  ${origins}`,
+        );
+      }
+    } finally {
+      await db.destroy();
+    }
+  });
+
+chatbot
+  .command('show')
+  .argument('<slug>', 'chatbot slug')
+  .action(async (slug: string) => {
+    try {
+      const row = await getChatbotBySlug(db, slug);
+      if (!row) {
+        console.error(`Chatbot not found: slug="${slug}"`);
+        process.exitCode = 1;
+        return;
+      }
+      console.log(JSON.stringify(row, null, 2));
+    } finally {
+      await db.destroy();
+    }
+  });
+
+chatbot
   .command('delete')
-  .description('delete a website and everything that references it (cascade)')
-  .argument('<slug>', 'website slug')
+  .description('delete a chatbot and everything that references it (cascade)')
+  .argument('<slug>', 'chatbot slug')
   .option('-f, --force', 'required — irreversible, deletes origins/sessions/messages too')
   .action(async (slug: string, opts: { force?: boolean }) => {
     try {
       if (!opts.force) {
         console.error(
-          `Refusing to delete website "${slug}" without --force.\n` +
+          `Refusing to delete chatbot "${slug}" without --force.\n` +
             `Pass -f|--force to confirm. This cascades to origins, sessions, and messages.`,
         );
         process.exitCode = 1;
         return;
       }
-      const counts = await deleteWebsite(db, slug);
+      const counts = await deleteChatbot(db, slug);
       console.log(
-        `Deleted website slug="${slug}". Cascaded: ${counts.origins} origin(s), ` +
+        `Deleted chatbot slug="${slug}". Cascaded: ${counts.origins} origin(s), ` +
           `${counts.sessions} session(s), ${counts.messages} message(s).`,
       );
     } finally {
@@ -137,12 +253,12 @@ website
     }
   });
 
-website
+chatbot
   .command('set-welcome')
   .description(
     'set the welcome message returned by POST /sessions (empty string clears to default)',
   )
-  .argument('<slug>', 'website slug')
+  .argument('<slug>', 'chatbot slug')
   .argument('<message>', 'welcome message text; empty string clears back to the default')
   .action(async (slug: string, message: string) => {
     try {
@@ -159,13 +275,13 @@ website
     }
   });
 
-const origins = website
+const origins = chatbot
   .command('origins')
-  .description("manage a website's origin allowlist (list/add/remove)");
+  .description("manage a chatbot's origin allowlist (list/add/remove)");
 
 origins
   .command('list')
-  .argument('<slug>', 'website slug')
+  .argument('<slug>', 'chatbot slug')
   .action(async (slug: string) => {
     try {
       const rows = await listOrigins(db, slug);
@@ -185,12 +301,12 @@ origins
 
 origins
   .command('add')
-  .argument('<slug>', 'website slug')
+  .argument('<slug>', 'chatbot slug')
   .argument('<origin>', 'origin URL (scheme + host only, e.g. https://example.com)')
   .action(async (slug: string, origin: string) => {
     try {
       const row = await addOrigin(db, slug, origin);
-      console.log(`Added origin id=${row.id} origin="${row.origin}" to website slug="${slug}"`);
+      console.log(`Added origin id=${row.id} origin="${row.origin}" to chatbot slug="${slug}"`);
     } finally {
       await db.destroy();
     }
@@ -198,8 +314,8 @@ origins
 
 origins
   .command('remove')
-  .argument('<slug>', 'website slug')
-  .argument('<origin-or-id>', 'origin URL or numeric website_origins.id')
+  .argument('<slug>', 'chatbot slug')
+  .argument('<origin-or-id>', 'origin URL or numeric chatbot_origins.id')
   .action(async (slug: string, ref: string) => {
     try {
       const row = await removeOrigin(db, slug, ref);
@@ -209,10 +325,10 @@ origins
     }
   });
 
-website
+chatbot
   .command('set-persona')
-  .argument('<slug>', 'website slug')
-  .argument('<persona-text>', 'persona text to store on the website')
+  .argument('<slug>', 'chatbot slug')
+  .argument('<persona-text>', 'persona text to store on the chatbot')
   .action(async (slug: string, personaText: string) => {
     try {
       const row = await setPersona(db, slug, personaText);
@@ -222,23 +338,23 @@ website
     }
   });
 
-website
+chatbot
   .command('set-model')
-  .argument('<slug>', 'website slug')
-  .argument('<model-slug>', 'provider/model, e.g. pi/qwen2:1.5b')
+  .argument('<slug>', 'chatbot slug')
+  .argument('<model-slug>', 'provider/model, e.g. cortex/qwen2:1.5b')
   .action(async (slug: string, modelSlug: string) => {
     try {
       const registry = await loadConfig();
       const row = await setModel(db, slug, modelSlug, registry);
-      console.log(`Set model_slug="${row.model_slug}" for website slug="${row.slug}".`);
+      console.log(`Set model_slug="${row.model_slug}" for chatbot slug="${row.slug}".`);
     } finally {
       await db.destroy();
     }
   });
 
-website
+chatbot
   .command('set-parameters')
-  .argument('<slug>', 'website slug')
+  .argument('<slug>', 'chatbot slug')
   .argument('<json>', 'JSON object of normalised parameters, e.g. \'{"temperature":0.7}\'')
   .action(async (slug: string, json: string) => {
     try {
@@ -250,16 +366,16 @@ website
       }
       const row = await setParameters(db, slug, parsed);
       console.log(
-        `Set model_parameters for website slug="${row.slug}": ${JSON.stringify(row.model_parameters)}`,
+        `Set model_parameters for chatbot slug="${row.slug}": ${JSON.stringify(row.model_parameters)}`,
       );
     } finally {
       await db.destroy();
     }
   });
 
-website
+chatbot
   .command('set-context-window')
-  .argument('<slug>', 'website slug')
+  .argument('<slug>', 'chatbot slug')
   .argument('<tokens>', 'declared context window, in tokens')
   .action(async (slug: string, tokens: string) => {
     try {
@@ -271,24 +387,24 @@ website
     }
   });
 
-website
+chatbot
   .command('show-model')
-  .argument('<slug>', 'website slug')
+  .argument('<slug>', 'chatbot slug')
   .action(async (slug: string) => {
     try {
-      const row = await getWebsiteBySlug(db, slug);
+      const row = await getChatbotBySlug(db, slug);
       if (!row) {
-        console.error(`Website not found: slug="${slug}"`);
+        console.error(`Chatbot not found: slug="${slug}"`);
         process.exitCode = 1;
         return;
       }
       if (!row.model_slug) {
-        console.log(`Website "${slug}" has no model_slug set.`);
+        console.log(`Chatbot "${slug}" has no model_slug set.`);
         return;
       }
       const registry = await loadConfig();
       const resolved = resolveModel(row, registry);
-      console.log(`Website: ${resolved.websiteSlug}`);
+      console.log(`Chatbot: ${resolved.chatbotSlug}`);
       console.log(`  model_slug:           ${resolved.modelSlug}`);
       console.log(
         `  provider:             ${resolved.provider.name} (${resolved.provider.protocol})`,
@@ -301,27 +417,27 @@ website
     }
   });
 
-website
+chatbot
   .command('set-geo-mode')
-  .description("set a website's geo-blocking mode (allowall|blocklist|allowlist)")
-  .argument('<slug>', 'website slug')
+  .description("set a chatbot's geo-blocking mode (allowall|blocklist|allowlist)")
+  .argument('<slug>', 'chatbot slug')
   .argument('<mode>', 'one of: allowall, blocklist, allowlist')
   .action(async (slug: string, mode: string) => {
     try {
-      const result = await setWebsiteGeoMode(db, slug, mode);
+      const result = await setChatbotGeoMode(db, slug, mode);
       console.log(`Set geo mode for slug="${slug}" to "${result.modeCode}".`);
       if (result.modeCode !== 'allowall') {
-        console.log('(Remember to populate the country list with `sw website set-geo-countries`.)');
+        console.log('(Remember to populate the country list with `sw chatbot set-geo-countries`.)');
       }
     } finally {
       await db.destroy();
     }
   });
 
-website
+chatbot
   .command('set-geo-countries')
-  .description("set a website's geo country list (comma-separated ISO codes; empty clears)")
-  .argument('<slug>', 'website slug')
+  .description("set a chatbot's geo country list (comma-separated ISO codes; empty clears)")
+  .argument('<slug>', 'chatbot slug')
   .argument('<codes>', 'comma-separated ISO 3166-1 alpha-2 codes (e.g. "GB,US,FR"); empty clears')
   .action(async (slug: string, codes: string) => {
     try {
@@ -329,7 +445,7 @@ website
         .split(',')
         .map((s) => s.trim())
         .filter((s) => s.length > 0);
-      const result = await setWebsiteGeoCountries(db, slug, list);
+      const result = await setChatbotGeoCountries(db, slug, list);
       if (result.countries.length === 0) {
         console.log(`Cleared geo country list for slug="${slug}".`);
       } else {
@@ -343,13 +459,13 @@ website
     }
   });
 
-website
+chatbot
   .command('show-geo')
-  .description("show a website's geo-blocking mode + country list")
-  .argument('<slug>', 'website slug')
+  .description("show a chatbot's geo-blocking mode + country list")
+  .argument('<slug>', 'chatbot slug')
   .action(async (slug: string) => {
     try {
-      const summary = await getWebsiteGeoSummary(db, slug);
+      const summary = await getChatbotGeoSummary(db, slug);
       console.log(`Geo policy for slug="${summary.slug}":`);
       console.log(`  mode:      ${summary.modeCode}`);
       if (summary.modeCode === 'allowall') {
@@ -363,6 +479,10 @@ website
       await db.destroy();
     }
   });
+
+// -----------------------------------------------------------------------------
+// provider subgroup
+// -----------------------------------------------------------------------------
 
 const provider = program.command('provider').description('inspect the provider registry (TOML)');
 
@@ -444,21 +564,25 @@ provider
     }
   });
 
-const blocks = program.command('blocks').description('inspect per-website system blocks');
+// -----------------------------------------------------------------------------
+// blocks subgroup
+// -----------------------------------------------------------------------------
+
+const blocks = program.command('blocks').description('inspect per-chatbot system blocks');
 
 blocks
   .command('list')
-  .argument('<slug>', 'website slug')
+  .argument('<slug>', 'chatbot slug')
   .action(async (slug: string) => {
     try {
-      const website = await getWebsiteBySlug(db, slug);
-      if (!website) {
-        console.error(`Website not found: slug="${slug}"`);
+      const chatbotRow = await getChatbotBySlug(db, slug);
+      if (!chatbotRow) {
+        console.error(`Chatbot not found: slug="${slug}"`);
         process.exitCode = 1;
         return;
       }
       const diskBlocks = await loadDiskBlocks(slug);
-      const assembled = assemblePrompt({ persona: website.persona, diskBlocks });
+      const assembled = assemblePrompt({ persona: chatbotRow.persona, diskBlocks });
 
       const names = Object.keys(assembled.perBlockTokens);
       if (names.length === 0) {
@@ -477,26 +601,30 @@ blocks
     }
   });
 
+// -----------------------------------------------------------------------------
+// sessions subgroup
+// -----------------------------------------------------------------------------
+
 const sessions = program
   .command('sessions')
   .description('read-only browse over sessions (dev/admin view; M13 brings a richer surface)');
 
 sessions
   .command('list')
-  .option('-w, --website <slug>', 'filter to a single website')
+  .option('-c, --chatbot <slug>', 'filter to a single chatbot')
   .option('-n, --limit <n>', 'maximum rows to return (default 20, max 200)')
-  .action(async (opts: { website?: string; limit?: string }) => {
+  .action(async (opts: { chatbot?: string; limit?: string }) => {
     try {
       const limit = opts.limit ? Number(opts.limit) : undefined;
-      const rows = await listSessions(db, { websiteSlug: opts.website, limit });
+      const rows = await listSessions(db, { chatbotSlug: opts.chatbot, limit });
       if (rows.length === 0) {
         console.log('(no sessions match)');
         return;
       }
-      const slugW = Math.max(7, ...rows.map((r) => r.website_slug.length));
+      const slugW = Math.max(7, ...rows.map((r) => r.chatbot_slug.length));
       const idW = Math.max(2, ...rows.map((r) => String(r.id).length));
       console.log(
-        `${'id'.padStart(idW)}  ${'website'.padEnd(slugW)}  token (prefix)     msgs  last_active`,
+        `${'id'.padStart(idW)}  ${'chatbot'.padEnd(slugW)}  token (prefix)     msgs  last_active`,
       );
       for (const r of rows) {
         const tokenPrefix = r.token.slice(0, 16) + '…';
@@ -505,7 +633,7 @@ sessions
             ? r.last_active_at.toISOString()
             : String(r.last_active_at);
         console.log(
-          `${String(r.id).padStart(idW)}  ${r.website_slug.padEnd(slugW)}  ${tokenPrefix}  ` +
+          `${String(r.id).padStart(idW)}  ${r.chatbot_slug.padEnd(slugW)}  ${tokenPrefix}  ` +
             `${String(r.message_count).padStart(4)}  ${lastActive}`,
         );
       }
@@ -525,13 +653,13 @@ sessions
         process.exitCode = 1;
         return;
       }
-      const website = await getWebsiteBySlug(
+      const chatbotRow = await getChatbotBySlug(
         db,
-        // session has website_id only; fetch slug for display.
-        (await db('websites').where({ id: session.website_id }).first('slug'))?.slug as string,
+        // session has chatbot_id only; fetch slug for display.
+        (await db('chatbots').where({ id: session.chatbot_id }).first('slug'))?.slug as string,
       );
       const messages = await listMessages(db, session.id);
-      console.log(`Session ${session.id} (website "${website?.slug ?? '?'}"):`);
+      console.log(`Session ${session.id} (chatbot "${chatbotRow?.slug ?? '?'}"):`);
       console.log(`  token:          ${session.token}`);
       console.log(`  created_at:     ${session.created_at.toISOString()}`);
       console.log(`  last_active_at: ${session.last_active_at.toISOString()}`);

@@ -3,7 +3,7 @@ import type { Knex } from 'knex';
 
 export interface Session {
   id: number;
-  website_id: number;
+  chatbot_id: number;
   token: string;
   summary: string | null;
   created_at: Date;
@@ -24,9 +24,9 @@ function generateToken(): string {
   return randomBytes(32).toString('hex');
 }
 
-export async function createSession(db: Knex, websiteId: number): Promise<Session> {
+export async function createSession(db: Knex, chatbotId: number): Promise<Session> {
   const token = generateToken();
-  const [id] = await db('sessions').insert({ website_id: websiteId, token });
+  const [id] = await db('sessions').insert({ chatbot_id: chatbotId, token });
   const row = await db<Session>('sessions').where({ id }).first();
   if (!row) {
     throw new Error(`createSession: insert succeeded but read-back failed for id=${id}`);
@@ -40,19 +40,19 @@ export async function findSessionByToken(db: Knex, token: string): Promise<Sessi
 }
 
 export interface SessionWithMeta extends Session {
-  website_slug: string;
+  chatbot_slug: string;
   message_count: number;
 }
 
 export interface ListSessionsOpts {
-  /** Filter to a single website slug. */
-  websiteSlug?: string;
+  /** Filter to a single chatbot slug. */
+  chatbotSlug?: string;
   /** Maximum rows returned. Defaults to 20; capped at 200. */
   limit?: number;
 }
 
 /**
- * Read-only browse over sessions. Joins through to `websites` for the slug
+ * Read-only browse over sessions. Joins through to `chatbots` for the slug
  * and aggregates `messages` for a count, so the operator-facing listing is
  * useful at a glance without N+1 round-trips. Most-recently-active first.
  */
@@ -62,26 +62,26 @@ export async function listSessions(
 ): Promise<SessionWithMeta[]> {
   const limit = Math.min(200, Math.max(1, opts.limit ?? 20));
   const query = db('sessions as s')
-    .join('websites as w', 'w.id', 's.website_id')
+    .join('chatbots as c', 'c.id', 's.chatbot_id')
     .leftJoin('messages as m', 'm.session_id', 's.id')
     .select<
       SessionWithMeta[]
-    >('s.id', 's.website_id', 's.token', 's.summary', 's.created_at', 's.last_active_at', { website_slug: 'w.slug' })
+    >('s.id', 's.chatbot_id', 's.token', 's.summary', 's.created_at', 's.last_active_at', { chatbot_slug: 'c.slug' })
     .count<{ message_count: string | number }[]>({ message_count: 'm.id' })
     .groupBy(
       's.id',
-      's.website_id',
+      's.chatbot_id',
       's.token',
       's.summary',
       's.created_at',
       's.last_active_at',
-      'w.slug',
+      'c.slug',
     )
     .orderBy('s.last_active_at', 'desc')
     .limit(limit);
 
-  if (opts.websiteSlug) {
-    query.andWhere('w.slug', opts.websiteSlug);
+  if (opts.chatbotSlug) {
+    query.andWhere('c.slug', opts.chatbotSlug);
   }
 
   const rows = (await query) as Array<SessionWithMeta & { message_count: string | number }>;

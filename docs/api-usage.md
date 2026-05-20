@@ -29,14 +29,15 @@ The base URL in development is `http://127.0.0.1:47830`. In production the insta
 
 ## Prerequisites — operator setup
 
-Before any widget loads, the operator running the site-walker instance has done four things via `./bin/sw`:
+Before any widget loads, the operator running the site-walker instance has done five things via `./bin/sw`:
 
-1. Registered a website (`sw website create <slug>`).
-2. Added the widget's host as an allowed origin (`sw website origins add <slug> https://www.example.com`).
-3. Pointed the website at an LLM (`sw website set-model <slug> openrouter/anthropic/claude-haiku-4.5`, or similar).
-4. Optionally set a welcome message (`sw website set-welcome <slug> "Hi! How can I help?"`).
+1. Created an account (`sw account create <slug>`). Every chatbot belongs to exactly one account.
+2. Registered a chatbot under it (`sw chatbot create <slug> --account <account-slug>`).
+3. Added the widget's host as an allowed origin (`sw chatbot origins add <slug> https://www.example.com`).
+4. Pointed the chatbot at an LLM (`sw chatbot set-model <slug> openrouter/anthropic/claude-haiku-4.5`, or similar).
+5. Optionally set a welcome message (`sw chatbot set-welcome <slug> "Hi! How can I help?"`).
 
-The first one of these the widget cares about is the **origin allowlist**. The browser sends an `Origin` header on requests automatically; site-walker accepts the session-creation request only if that `Origin` matches one of the website's registered origins. If you see `403 origin_not_allowed`, the operator hasn't added your host yet.
+The first one of these the widget cares about is the **origin allowlist**. The browser sends an `Origin` header on requests automatically; site-walker accepts the session-creation request only if that `Origin` matches one of the chatbot's registered origins. If you see `403 origin_not_allowed`, the operator hasn't added your host yet.
 
 ## Endpoint reference
 
@@ -59,7 +60,7 @@ Origin: https://www.acme-corp.example
 
 If the probe returns 200, a subsequent `POST /sessions` from the same browser will almost certainly succeed too. (Almost — the operator could change the policy between the two calls. Don't treat the probe as a guarantee, just an early signal.)
 
-> **Note on the name.** This route was originally `GET /sessions/preflight`. It was renamed to `/sessions/can-start` so the word "preflight" can refer unambiguously to the browser's CORS preflight (`OPTIONS`). The two are independent: every browser-facing route below also responds to CORS preflight automatically when the request's `Origin` is registered against any website.
+> **Note on the name.** This route was originally `GET /sessions/preflight`. It was renamed to `/sessions/can-start` so the word "preflight" can refer unambiguously to the browser's CORS preflight (`OPTIONS`). The two are independent: every browser-facing route below also responds to CORS preflight automatically when the request's `Origin` is registered against any chatbot.
 
 ### `POST /sessions` — mint a session
 
@@ -86,9 +87,9 @@ The token is opaque, 64 hex characters, and has no client-side expiry concept to
 | Status | `error` value         | Meaning                                                                          |
 | ------ | --------------------- | -------------------------------------------------------------------------------- |
 | 400    | `origin_required`     | The browser didn't send an `Origin` header. Unusual — most browsers always do.   |
-| 403    | `origin_not_allowed`  | Your host isn't on the website's allowlist. Operator action required.            |
-| 403    | `geo_blocked`         | The visitor's IP is in (blocklist mode) or out of (allowlist mode) the website's country list. Hide the chat affordance for this visitor. |
-| 503    | `capacity_exceeded`   | Per-IP / per-website rate limit reached. Phase 1 stub; lights up in M11.         |
+| 403    | `origin_not_allowed`  | Your host isn't on the chatbot's allowlist. Operator action required.            |
+| 403    | `geo_blocked`         | The visitor's IP is in (blocklist mode) or out of (allowlist mode) the chatbot's country list. Hide the chat affordance for this visitor. |
+| 503    | `capacity_exceeded`   | Per-IP / per-chatbot rate limit reached. Phase 1 stub; lights up in M11.         |
 
 ### `POST /chat` — send a user turn
 
@@ -127,10 +128,10 @@ The message is trimmed server-side and must be between 1 and 8000 characters aft
 | 400    | `message_too_long`      | `message` exceeds 8000 chars. `detail` carries `length` and `limit`.               |
 | 401    | `token_required`        | `Authorization` header missing.                                                    |
 | 401    | `invalid_token`         | Token isn't recognised. Drop the cached token and mint a fresh session.            |
-| 403    | `geo_blocked`           | The visitor's IP is no longer accepted by the website's geo policy (operator may have changed it mid-session). Drop the cached token; this visitor can't continue. |
-| 413    | `context_overflow`      | System prompt + history + new message exceeds the website's declared context window. `detail` carries `total_prompt_tokens`, `context_window`, `headroom_tokens`. Recoverable — see "Error handling" below. |
+| 403    | `geo_blocked`           | The visitor's IP is no longer accepted by the chatbot's geo policy (operator may have changed it mid-session). Drop the cached token; this visitor can't continue. |
+| 413    | `context_overflow`      | System prompt + history + new message exceeds the chatbot's declared context window. `detail` carries `total_prompt_tokens`, `context_window`, `headroom_tokens`. Recoverable — see "Error handling" below. |
 | 502    | `model_error`           | Upstream LLM call failed (rate limit, network, etc.). Retry after a delay.         |
-| 503    | `model_not_configured`  | Operator hasn't set a model for this website. Operator action required.            |
+| 503    | `model_not_configured`  | Operator hasn't set a model for this chatbot. Operator action required.            |
 
 When `model_error` fires, the user's message **is still persisted** in the session log. If you retry the same turn, you'll get duplicates server-side; consider showing an error UI instead of auto-retrying.
 
@@ -164,7 +165,7 @@ Authorization: Bearer e071b5ca42a16a8cdad993cee2d94a070960206f46b94506fc885d3325
 }
 ```
 
-Messages are ordered ascending by `created_at`. The welcome message is **not** part of this list — it's a property of the website, returned once by `POST /sessions`. If a visitor reloads the page, you'll see history without the welcome, and that's the intended behaviour.
+Messages are ordered ascending by `created_at`. The welcome message is **not** part of this list — it's a property of the chatbot, returned once by `POST /sessions`. If a visitor reloads the page, you'll see history without the welcome, and that's the intended behaviour.
 
 **Failure shapes:**
 
@@ -172,20 +173,20 @@ Messages are ordered ascending by `created_at`. The welcome message is **not** p
 | ------ | ----------------- | ------------------------------------------------------------------------ |
 | 401    | `token_required`  | Missing `Authorization`.                                                 |
 | 401    | `invalid_token`   | Token isn't recognised. Drop the cached token and start over.            |
-| 403    | `geo_blocked`     | The visitor's IP no longer fits the website's geo policy. Same handling as for `POST /chat` above. |
+| 403    | `geo_blocked`     | The visitor's IP no longer fits the chatbot's geo policy. Same handling as for `POST /chat` above. |
 
 ## CORS
 
-The chat API is designed to be called from a browser, so it speaks CORS. The rules are simple and they piggyback on the same per-website origin allowlist you've already set up:
+The chat API is designed to be called from a browser, so it speaks CORS. The rules are simple and they piggyback on the same per-chatbot origin allowlist you've already set up:
 
-- **An `Origin` registered with any website is an allowed CORS origin.** That's the single source of truth — there's no second "CORS origins" list. `sw website origins add <slug> https://www.example.com` is the only step.
+- **An `Origin` registered with any chatbot is an allowed CORS origin.** That's the single source of truth — there's no second "CORS origins" list. `sw chatbot origins add <slug> https://www.example.com` is the only step.
 - **The server echoes the request's `Origin` back** as `Access-Control-Allow-Origin`, with `Vary: Origin` so caches don't cross-pollinate.
 - **Unregistered origins get no CORS header.** The HTTP response itself looks normal (200, 403, etc. depending on the route's own logic), but the browser blocks JS from reading it. From the operator's perspective the API doesn't *leak* which origins are valid.
 - **Allowed methods:** `GET`, `POST`, `OPTIONS`. **Allowed headers:** `Content-Type`, `Authorization`. **Credentials:** not used (we authenticate with a Bearer token in `Authorization`, not cookies — don't set `credentials: 'include'` on your `fetch`).
 - **Preflight `OPTIONS` requests** are handled automatically. The browser sends them before any `POST /chat`, `POST /sessions`, or `GET /messages` because of the `Authorization` / `Content-Type: application/json` headers. The server returns a `204` with the allow headers above and a `Max-Age` of 600 seconds so the browser doesn't re-preflight on every turn.
 - **Non-browser callers** (curl, the `./bin/chat` CLI, server-to-server) don't send an `Origin` header and the CORS layer leaves them alone. Same code path, same response.
 
-If your browser console shows `Access-Control-Allow-Origin missing`, the fix is almost always the operator running `sw website origins add` for your widget's host. The server didn't 403 — it just didn't recognise the origin, so it didn't grant CORS.
+If your browser console shows `Access-Control-Allow-Origin missing`, the fix is almost always the operator running `sw chatbot origins add` for your widget's host. The server didn't 403 — it just didn't recognise the origin, so it didn't grant CORS.
 
 ## Putting it together
 
@@ -305,7 +306,7 @@ const STORAGE_KEY = `site-walker:${new URL(API_BASE).host}:session-token`;
 
 Trade-offs:
 
-- **localStorage** (recommended): persists across page reloads, tabs, and browser restarts. The conversation rehydrates via `GET /messages` next time the visitor lands on the page. Token is JavaScript-readable, but it's a session token tied to one website's allowlisted origin — not a credential that grants broader access.
+- **localStorage** (recommended): persists across page reloads, tabs, and browser restarts. The conversation rehydrates via `GET /messages` next time the visitor lands on the page. Token is JavaScript-readable, but it's a session token tied to one chatbot's allowlisted origin — not a credential that grants broader access.
 - **sessionStorage**: lost on tab close. Conversations don't survive a reload-and-comeback. Probably too aggressive for a pre-sales bot the visitor might revisit.
 - **Cookies**: site-walker doesn't currently set any. The session-token flow is intentionally cookie-free so there's no third-party-cookie story to manage.
 
@@ -316,12 +317,12 @@ If the visitor explicitly opts out of "remember this conversation" (privacy UI, 
 - **Message length cap:** 8000 characters after trimming. Enforce this in the widget too so you can give a friendly UI message instead of trusting the server's 400.
 - **Single conversation per session:** one session, one growing message log. There's no "new conversation" affordance built into the API; minting a fresh session token (e.g. by clearing `localStorage` and reloading) is how you start over.
 - **No streaming yet.** Each `POST /chat` is request-then-response. Show a "Thinking…" indicator during the in-flight period. Token streaming is on the roadmap.
-- **No client-controllable model.** The model is set per-website by the operator; widgets can't override it per session. Comparison testing today means swapping the website's model via `sw website set-model` between conversations.
+- **No client-controllable model.** The model is set per-chatbot by the operator; widgets can't override it per session. Comparison testing today means swapping the chatbot's model via `sw chatbot set-model` between conversations.
 - **No retention sweep yet.** Sessions and messages persist indefinitely. M13 will add retention + privacy controls.
 
 ## See also
 
-- [`cli-sw.md`](cli-sw.md) — the operator commands that set up a website before any widget loads.
+- [`cli-sw.md`](cli-sw.md) — the operator commands that set up a chatbot before any widget loads.
 - [`cli-chat.md`](cli-chat.md) — the terminal test client. Useful for exercising the same flow without a browser.
 - [`system-blocks.md`](system-blocks.md) — what the model is actually being shown alongside the conversation. Affects answer quality, not the API surface.
 - `/openapi.json` and `/docs` on a running instance — machine-readable reference + interactive Swagger UI for trying calls out.

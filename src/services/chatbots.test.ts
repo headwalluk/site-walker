@@ -3,151 +3,150 @@ import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import {
   addOrigin,
-  createWebsite,
-  deleteWebsite,
-  findWebsiteByOrigin,
-  getWebsiteBySlug,
+  createChatbot,
+  deleteChatbot,
+  findChatbotByOrigin,
+  getChatbotBySlug,
   listOrigins,
   normaliseOrigin,
   removeOrigin,
   setPersona,
   setWelcomeMessage,
-} from './websites.js';
+} from './chatbots.js';
+import { createAccount } from './accounts.js';
 import { appendMessage, createSession } from './sessions.js';
-import { makeTestDb } from '../testing/db.js';
+import { makeTestDb, seedAccountAndChatbot } from '../testing/db.js';
 
 function uniqueSlug(): string {
   return `test-${randomUUID().slice(0, 8)}`;
 }
 
-test('createWebsite + getWebsiteBySlug roundtrip', async (t) => {
+test('createChatbot + getChatbotBySlug roundtrip', async (t) => {
   const db = makeTestDb();
   const slug = uniqueSlug();
+  const { account } = await seedAccountAndChatbot(db, slug, { name: 'Test Site' });
   t.after(async () => {
-    await db('websites').where({ slug }).del();
+    await db('accounts').where({ id: account.id }).del();
     await db.destroy();
   });
 
-  const created = await createWebsite(db, { slug, name: 'Test Site' });
-  assert.equal(created.slug, slug);
-  assert.equal(created.name, 'Test Site');
-  assert.equal(created.welcome_message, null);
-  assert.equal(created.persona, null);
-  assert.equal(created.model_slug, null);
-
-  const fetched = await getWebsiteBySlug(db, slug);
-  assert.ok(fetched, 'expected fetched website');
-  assert.equal(fetched.id, created.id);
+  const fetched = await getChatbotBySlug(db, slug);
+  assert.ok(fetched, 'expected fetched chatbot');
+  assert.equal(fetched.slug, slug);
+  assert.equal(fetched.name, 'Test Site');
+  assert.equal(fetched.welcome_message, null);
+  assert.equal(fetched.persona, null);
+  assert.equal(fetched.model_slug, null);
+  assert.equal(fetched.account_id, account.id);
 });
 
-test('createWebsite rejects invalid slugs', async (t) => {
+test('createChatbot rejects invalid slugs', async (t) => {
   const db = makeTestDb();
+  const account = await createAccount(db, { slug: `bad-${randomUUID().slice(0, 8)}`, name: 'x' });
   t.after(async () => {
+    await db('accounts').where({ id: account.id }).del();
     await db.destroy();
   });
 
   await assert.rejects(
-    () => createWebsite(db, { slug: 'NotLowerCase', name: 'x' }),
+    () => createChatbot(db, { account_id: account.id, slug: 'NotLowerCase', name: 'x' }),
     /Invalid slug/,
   );
   await assert.rejects(
-    () => createWebsite(db, { slug: '-leading-hyphen', name: 'x' }),
+    () => createChatbot(db, { account_id: account.id, slug: '-leading-hyphen', name: 'x' }),
     /Invalid slug/,
   );
   await assert.rejects(
-    () => createWebsite(db, { slug: 'trailing-hyphen-', name: 'x' }),
+    () => createChatbot(db, { account_id: account.id, slug: 'trailing-hyphen-', name: 'x' }),
     /Invalid slug/,
   );
 });
 
-test('addOrigin + findWebsiteByOrigin', async (t) => {
+test('addOrigin + findChatbotByOrigin', async (t) => {
   const db = makeTestDb();
   const slug = uniqueSlug();
+  const { account } = await seedAccountAndChatbot(db, slug);
   t.after(async () => {
-    await db('websites').where({ slug }).del();
+    await db('accounts').where({ id: account.id }).del();
     await db.destroy();
   });
 
-  await createWebsite(db, { slug, name: 'Test' });
   const origin = `https://${slug}.example.com`;
   const added = await addOrigin(db, slug, origin);
   assert.equal(added.origin, origin);
 
-  const found = await findWebsiteByOrigin(db, origin);
-  assert.ok(found, 'expected to find website by origin');
+  const found = await findChatbotByOrigin(db, origin);
+  assert.ok(found, 'expected to find chatbot by origin');
   assert.equal(found.slug, slug);
 });
 
 test('addOrigin normalises host case and trailing slash', async (t) => {
   const db = makeTestDb();
   const slug = uniqueSlug();
+  const { account } = await seedAccountAndChatbot(db, slug);
   t.after(async () => {
-    await db('websites').where({ slug }).del();
+    await db('accounts').where({ id: account.id }).del();
     await db.destroy();
   });
 
-  await createWebsite(db, { slug, name: 'Test' });
   const raw = `https://${slug.toUpperCase()}.EXAMPLE.com/`;
   const added = await addOrigin(db, slug, raw);
   assert.equal(added.origin, `https://${slug.toLowerCase()}.example.com`);
 });
 
-test('addOrigin rejects when website slug does not exist', async (t) => {
+test('addOrigin rejects when chatbot slug does not exist', async (t) => {
   const db = makeTestDb();
   t.after(async () => {
     await db.destroy();
   });
 
   await assert.rejects(
-    () => addOrigin(db, 'no-such-website-xyz', 'https://example.com'),
-    /Website not found/,
+    () => addOrigin(db, 'no-such-chatbot-xyz', 'https://example.com'),
+    /Chatbot not found/,
   );
 });
 
-test('createWebsite persists supplied persona', async (t) => {
+test('createChatbot persists supplied persona', async (t) => {
   const db = makeTestDb();
   const slug = uniqueSlug();
-  t.after(async () => {
-    await db('websites').where({ slug }).del();
-    await db.destroy();
-  });
-
-  const created = await createWebsite(db, {
-    slug,
+  const { account } = await seedAccountAndChatbot(db, slug, {
     name: 'Persona Site',
     persona: 'be friendly and concise',
   });
-  assert.equal(created.persona, 'be friendly and concise');
+  t.after(async () => {
+    await db('accounts').where({ id: account.id }).del();
+    await db.destroy();
+  });
 
-  const fetched = await getWebsiteBySlug(db, slug);
+  const fetched = await getChatbotBySlug(db, slug);
   assert.equal(fetched?.persona, 'be friendly and concise');
 });
 
 test('setPersona updates the persona column', async (t) => {
   const db = makeTestDb();
   const slug = uniqueSlug();
+  const { account } = await seedAccountAndChatbot(db, slug, { persona: 'first' });
   t.after(async () => {
-    await db('websites').where({ slug }).del();
+    await db('accounts').where({ id: account.id }).del();
     await db.destroy();
   });
 
-  await createWebsite(db, { slug, name: 'Persona Site', persona: 'first' });
   const updated = await setPersona(db, slug, 'second');
   assert.equal(updated.persona, 'second');
 
-  const fetched = await getWebsiteBySlug(db, slug);
+  const fetched = await getChatbotBySlug(db, slug);
   assert.equal(fetched?.persona, 'second');
 });
 
-test('setPersona throws when website slug does not exist', async (t) => {
+test('setPersona throws when chatbot slug does not exist', async (t) => {
   const db = makeTestDb();
   t.after(async () => {
     await db.destroy();
   });
 
   await assert.rejects(
-    () => setPersona(db, 'no-such-website-xyz', 'whatever'),
-    /Website not found/,
+    () => setPersona(db, 'no-such-chatbot-xyz', 'whatever'),
+    /Chatbot not found/,
   );
 });
 
@@ -165,12 +164,11 @@ test('normaliseOrigin: pure-function cases', () => {
 test('setWelcomeMessage sets and clears the column', async (t) => {
   const db = makeTestDb();
   const slug = uniqueSlug();
+  const { account } = await seedAccountAndChatbot(db, slug);
   t.after(async () => {
-    await db('websites').where({ slug }).del();
+    await db('accounts').where({ id: account.id }).del();
     await db.destroy();
   });
-
-  await createWebsite(db, { slug, name: 'Welcome Site' });
 
   const set = await setWelcomeMessage(db, slug, 'Welcome, friend.');
   assert.equal(set.welcome_message, 'Welcome, friend.');
@@ -179,27 +177,27 @@ test('setWelcomeMessage sets and clears the column', async (t) => {
   assert.equal(cleared.welcome_message, null);
 });
 
-test('setWelcomeMessage throws when website slug does not exist', async (t) => {
+test('setWelcomeMessage throws when chatbot slug does not exist', async (t) => {
   const db = makeTestDb();
   t.after(async () => {
     await db.destroy();
   });
 
   await assert.rejects(
-    () => setWelcomeMessage(db, 'no-such-website-xyz', 'hi'),
-    /Website not found/,
+    () => setWelcomeMessage(db, 'no-such-chatbot-xyz', 'hi'),
+    /Chatbot not found/,
   );
 });
 
 test('listOrigins returns rows in insertion order', async (t) => {
   const db = makeTestDb();
   const slug = uniqueSlug();
+  const { account } = await seedAccountAndChatbot(db, slug);
   t.after(async () => {
-    await db('websites').where({ slug }).del();
+    await db('accounts').where({ id: account.id }).del();
     await db.destroy();
   });
 
-  await createWebsite(db, { slug, name: 'Origins Site' });
   await addOrigin(db, slug, `https://a.${slug}.example`);
   await addOrigin(db, slug, `https://b.${slug}.example`);
 
@@ -212,12 +210,12 @@ test('listOrigins returns rows in insertion order', async (t) => {
 test('removeOrigin matches by numeric id', async (t) => {
   const db = makeTestDb();
   const slug = uniqueSlug();
+  const { account } = await seedAccountAndChatbot(db, slug);
   t.after(async () => {
-    await db('websites').where({ slug }).del();
+    await db('accounts').where({ id: account.id }).del();
     await db.destroy();
   });
 
-  await createWebsite(db, { slug, name: 'Origins Site' });
   const added = await addOrigin(db, slug, `https://${slug}.example.com`);
   await addOrigin(db, slug, `https://other-${slug}.example.com`);
 
@@ -231,12 +229,12 @@ test('removeOrigin matches by numeric id', async (t) => {
 test('removeOrigin matches by origin string (normalised)', async (t) => {
   const db = makeTestDb();
   const slug = uniqueSlug();
+  const { account } = await seedAccountAndChatbot(db, slug);
   t.after(async () => {
-    await db('websites').where({ slug }).del();
+    await db('accounts').where({ id: account.id }).del();
     await db.destroy();
   });
 
-  await createWebsite(db, { slug, name: 'Origins Site' });
   await addOrigin(db, slug, `https://${slug}.example.com`);
 
   // Match via a slightly different casing — normaliseOrigin should align them.
@@ -249,50 +247,50 @@ test('removeOrigin matches by origin string (normalised)', async (t) => {
 test('removeOrigin throws when the ref does not match any origin', async (t) => {
   const db = makeTestDb();
   const slug = uniqueSlug();
+  const { account } = await seedAccountAndChatbot(db, slug);
   t.after(async () => {
-    await db('websites').where({ slug }).del();
+    await db('accounts').where({ id: account.id }).del();
     await db.destroy();
   });
 
-  await createWebsite(db, { slug, name: 'Origins Site' });
   await assert.rejects(
     () => removeOrigin(db, slug, 'https://nope.example.com'),
     /Origin not found/,
   );
 });
 
-test('deleteWebsite cascades to origins, sessions, and messages', async (t) => {
+test('deleteChatbot cascades to origins, sessions, and messages', async (t) => {
   const db = makeTestDb();
   const slug = uniqueSlug();
+  const { account, chatbot } = await seedAccountAndChatbot(db, slug, { name: 'Delete Site' });
   t.after(async () => {
-    // belt-and-braces in case the test fails before deleteWebsite runs
-    await db('websites').where({ slug }).del();
+    // belt-and-braces in case the test fails before deleteChatbot runs
+    await db('accounts').where({ id: account.id }).del();
     await db.destroy();
   });
 
-  const website = await createWebsite(db, { slug, name: 'Delete Site' });
   await addOrigin(db, slug, `https://${slug}.example.com`);
-  const session = await createSession(db, website.id);
+  const session = await createSession(db, chatbot.id);
   await appendMessage(db, session.id, 'user', 'hi');
   await appendMessage(db, session.id, 'assistant', 'hello');
 
-  const counts = await deleteWebsite(db, slug);
+  const counts = await deleteChatbot(db, slug);
   assert.equal(counts.origins, 1);
   assert.equal(counts.sessions, 1);
   assert.equal(counts.messages, 2);
 
-  assert.equal(await getWebsiteBySlug(db, slug), null);
-  const origins = await db('website_origins').where({ website_id: website.id });
+  assert.equal(await getChatbotBySlug(db, slug), null);
+  const origins = await db('chatbot_origins').where({ chatbot_id: chatbot.id });
   assert.equal(origins.length, 0);
-  const sessions = await db('sessions').where({ website_id: website.id });
+  const sessions = await db('sessions').where({ chatbot_id: chatbot.id });
   assert.equal(sessions.length, 0);
 });
 
-test('deleteWebsite throws when website slug does not exist', async (t) => {
+test('deleteChatbot throws when chatbot slug does not exist', async (t) => {
   const db = makeTestDb();
   t.after(async () => {
     await db.destroy();
   });
 
-  await assert.rejects(() => deleteWebsite(db, 'no-such-website-xyz'), /Website not found/);
+  await assert.rejects(() => deleteChatbot(db, 'no-such-chatbot-xyz'), /Chatbot not found/);
 });

@@ -34,8 +34,8 @@ export class MaxMindGeoChecker implements GeoChecker {
 
 export type GeoModeCode = 'allowall' | 'blocklist' | 'allowlist';
 
-export interface WebsiteGeoPolicy {
-  websiteId: number;
+export interface ChatbotGeoPolicy {
+  chatbotId: number;
   modeCode: GeoModeCode;
   /** ISO 3166-1 alpha-2 codes, upper-cased. */
   countries: ReadonlySet<string>;
@@ -55,34 +55,34 @@ export interface CheckGeoResult {
 }
 
 /**
- * Resolve a website's mode + country list. Two queries (one for the mode
+ * Resolve a chatbot's mode + country list. Two queries (one for the mode
  * code, one for the countries). Caller decides how often to call — Phase 1
  * does it per-request; if profiling later shows it's hot, M11's Redis cache
  * is the natural place to memoise.
  */
-export async function loadWebsiteGeoPolicy(db: Knex, websiteId: number): Promise<WebsiteGeoPolicy> {
-  const modeRow = await db('websites as w')
-    .join('geo_modes as g', 'g.id', 'w.geo_mode_id')
-    .where('w.id', websiteId)
+export async function loadChatbotGeoPolicy(db: Knex, chatbotId: number): Promise<ChatbotGeoPolicy> {
+  const modeRow = await db('chatbots as c')
+    .join('geo_modes as g', 'g.id', 'c.geo_mode_id')
+    .where('c.id', chatbotId)
     .first<{ code: string } | undefined>('g.code');
 
   if (!modeRow) {
-    throw new Error(`No geo policy resolved for website_id=${websiteId}`);
+    throw new Error(`No geo policy resolved for chatbot_id=${chatbotId}`);
   }
 
-  const codes = await db<{ country_code: string }>('website_geo_countries')
-    .where({ website_id: websiteId })
+  const codes = await db<{ country_code: string }>('chatbot_geo_countries')
+    .where({ chatbot_id: chatbotId })
     .pluck('country_code');
 
   return {
-    websiteId,
+    chatbotId,
     modeCode: modeRow.code as GeoModeCode,
     countries: new Set(codes.map((c) => c.toUpperCase())),
   };
 }
 
 /**
- * Pure policy decision. Caller supplies the policy (from `loadWebsiteGeoPolicy`)
+ * Pure policy decision. Caller supplies the policy (from `loadChatbotGeoPolicy`)
  * + the visitor's IP + a country lookup. Returns `{ allowed, country, mode }`.
  *
  * Unresolved IPs (private ranges, loopback, IPv6 link-local, malformed) are
@@ -90,7 +90,7 @@ export async function loadWebsiteGeoPolicy(db: Knex, websiteId: number): Promise
  * unknown-country can't be a loophole.
  */
 export function checkGeoPolicy(
-  policy: WebsiteGeoPolicy,
+  policy: ChatbotGeoPolicy,
   ip: string,
   checker: GeoChecker | null,
   opts: { isProduction: boolean },
@@ -139,38 +139,38 @@ export function isValidGeoModeCode(code: string): code is GeoModeCode {
 }
 
 /**
- * Update a website's geo mode by human-readable code.
+ * Update a chatbot's geo mode by human-readable code.
  * Throws on unknown slug or unknown mode code.
  */
-export async function setWebsiteGeoMode(
+export async function setChatbotGeoMode(
   db: Knex,
   slug: string,
   modeCode: string,
-): Promise<{ websiteId: number; modeCode: GeoModeCode }> {
+): Promise<{ chatbotId: number; modeCode: GeoModeCode }> {
   if (!isValidGeoModeCode(modeCode)) {
     throw new Error(
       `Invalid geo mode "${modeCode}". Expected one of: ${VALID_GEO_MODES.join(', ')}.`,
     );
   }
-  const website = await db<{ id: number }>('websites').where({ slug }).first('id');
-  if (!website) throw new Error(`Website not found: slug="${slug}"`);
+  const chatbot = await db<{ id: number }>('chatbots').where({ slug }).first('id');
+  if (!chatbot) throw new Error(`Chatbot not found: slug="${slug}"`);
   const mode = await db<{ id: number }>('geo_modes').where({ code: modeCode }).first('id');
   if (!mode) throw new Error(`geo_modes row missing for code="${modeCode}" — migration drift?`);
-  await db('websites').where({ id: website.id }).update({ geo_mode_id: mode.id });
-  return { websiteId: website.id, modeCode };
+  await db('chatbots').where({ id: chatbot.id }).update({ geo_mode_id: mode.id });
+  return { chatbotId: chatbot.id, modeCode };
 }
 
 /**
- * Atomically replace a website's geo country list. Pass an empty array to
+ * Atomically replace a chatbot's geo country list. Pass an empty array to
  * clear. Codes are upper-cased and validated as ISO 3166-1 alpha-2 shape
  * (two letters, no validation against the full ISO list — MaxMind silently
  * never matches non-existent codes anyway).
  */
-export async function setWebsiteGeoCountries(
+export async function setChatbotGeoCountries(
   db: Knex,
   slug: string,
   codes: readonly string[],
-): Promise<{ websiteId: number; countries: string[] }> {
+): Promise<{ chatbotId: number; countries: string[] }> {
   const normalised: string[] = [];
   const seen = new Set<string>();
   for (const raw of codes) {
@@ -185,41 +185,41 @@ export async function setWebsiteGeoCountries(
     }
   }
 
-  const website = await db<{ id: number }>('websites').where({ slug }).first('id');
-  if (!website) throw new Error(`Website not found: slug="${slug}"`);
+  const chatbot = await db<{ id: number }>('chatbots').where({ slug }).first('id');
+  if (!chatbot) throw new Error(`Chatbot not found: slug="${slug}"`);
 
   await db.transaction(async (trx) => {
-    await trx('website_geo_countries').where({ website_id: website.id }).del();
+    await trx('chatbot_geo_countries').where({ chatbot_id: chatbot.id }).del();
     if (normalised.length > 0) {
-      await trx('website_geo_countries').insert(
-        normalised.map((country_code) => ({ website_id: website.id, country_code })),
+      await trx('chatbot_geo_countries').insert(
+        normalised.map((country_code) => ({ chatbot_id: chatbot.id, country_code })),
       );
     }
   });
 
-  return { websiteId: website.id, countries: normalised };
+  return { chatbotId: chatbot.id, countries: normalised };
 }
 
 export interface GeoSummary {
-  websiteId: number;
+  chatbotId: number;
   slug: string;
   modeCode: GeoModeCode;
   countries: string[];
 }
 
 /** Human-friendly summary used by the CLI. */
-export async function getWebsiteGeoSummary(db: Knex, slug: string): Promise<GeoSummary> {
-  const row = await db('websites as w')
-    .join('geo_modes as g', 'g.id', 'w.geo_mode_id')
-    .where('w.slug', slug)
-    .first<{ id: number; slug: string; code: string } | undefined>('w.id', 'w.slug', 'g.code');
-  if (!row) throw new Error(`Website not found: slug="${slug}"`);
-  const codes = await db<{ country_code: string }>('website_geo_countries')
-    .where({ website_id: row.id })
+export async function getChatbotGeoSummary(db: Knex, slug: string): Promise<GeoSummary> {
+  const row = await db('chatbots as c')
+    .join('geo_modes as g', 'g.id', 'c.geo_mode_id')
+    .where('c.slug', slug)
+    .first<{ id: number; slug: string; code: string } | undefined>('c.id', 'c.slug', 'g.code');
+  if (!row) throw new Error(`Chatbot not found: slug="${slug}"`);
+  const codes = await db<{ country_code: string }>('chatbot_geo_countries')
+    .where({ chatbot_id: row.id })
     .orderBy('country_code', 'asc')
     .pluck('country_code');
   return {
-    websiteId: row.id,
+    chatbotId: row.id,
     slug: row.slug,
     modeCode: row.code as GeoModeCode,
     countries: codes.map((c) => c.toUpperCase()),
@@ -227,14 +227,14 @@ export async function getWebsiteGeoSummary(db: Knex, slug: string): Promise<GeoS
 }
 
 /**
- * Boot-time check: returns true iff any website is configured with a mode
+ * Boot-time check: returns true iff any chatbot is configured with a mode
  * other than `allowall`. If GEOIP_DB_PATH is unset (no checker loaded) but
  * this is true, startup should refuse to continue.
  */
-export async function anyWebsiteHasGeoMode(db: Knex): Promise<boolean> {
-  const row = await db('websites as w')
-    .join('geo_modes as g', 'g.id', 'w.geo_mode_id')
+export async function anyChatbotHasGeoMode(db: Knex): Promise<boolean> {
+  const row = await db('chatbots as c')
+    .join('geo_modes as g', 'g.id', 'c.geo_mode_id')
     .whereNot('g.code', 'allowall')
-    .first('w.id');
+    .first('c.id');
   return row !== undefined;
 }

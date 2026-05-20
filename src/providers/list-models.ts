@@ -63,7 +63,7 @@ async function listOpenRouterModels(
  * that don't expose a discovery endpoint throw with a clear message.
  *
  * The returned `id` is the model string the operator pastes after the
- * provider name into `sw website set-model <slug> <provider>/<id>`.
+ * provider name into `sw chatbot set-model <slug> <provider>/<id>`.
  */
 export async function listProviderModels(entry: ProviderEntry): Promise<ModelListing[]> {
   switch (entry.protocol) {

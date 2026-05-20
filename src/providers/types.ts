@@ -22,7 +22,7 @@ export interface ProtocolAdapter {
 }
 
 /**
- * Canonical per-website parameter schema (v1).
+ * Canonical per-chatbot parameter schema (v1).
  * Unknown keys are rejected (strict). New keys are added here only when a
  * concrete need arises; see dev-notes/03-llm-providers.md.
  */

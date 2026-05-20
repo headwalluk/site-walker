@@ -6,7 +6,7 @@ import { estimateTokens } from '../utils/tokens.js';
 import { appendMessage, findSessionByToken, listMessages, type Message } from './sessions.js';
 import { defaultHeadroom, resolveModel, type ResolvedModel } from './models.js';
 import { assemblePrompt, loadDiskBlocks } from './system-blocks.js';
-import { getWebsiteById } from './websites.js';
+import { getChatbotById } from './chatbots.js';
 
 export const MAX_MESSAGE_CHARS = 8000;
 
@@ -77,24 +77,24 @@ export async function runChat(input: RunChatInput): Promise<RunChatResult> {
     throw new ChatError('invalid_token', 'session token is invalid');
   }
 
-  const website = await getWebsiteById(db, session.website_id);
-  if (!website) {
+  const chatbot = await getChatbotById(db, session.chatbot_id);
+  if (!chatbot) {
     // Session FK CASCADE should prevent this, but stay defensive.
     throw new ChatError('invalid_token', 'session is orphaned');
   }
 
   let resolved: ResolvedModel;
   try {
-    resolved = resolveModel(website, registry);
+    resolved = resolveModel(chatbot, registry);
   } catch (err) {
     throw new ChatError('model_not_configured', (err as Error).message);
   }
 
   const diskBlocks = blocksBaseDir
-    ? await loadDiskBlocks(website.slug, blocksBaseDir)
-    : await loadDiskBlocks(website.slug);
+    ? await loadDiskBlocks(chatbot.slug, blocksBaseDir)
+    : await loadDiskBlocks(chatbot.slug);
   const assembled = assemblePrompt({
-    persona: website.persona,
+    persona: chatbot.persona,
     diskBlocks,
   });
 
