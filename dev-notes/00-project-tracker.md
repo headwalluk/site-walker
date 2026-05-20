@@ -1,30 +1,39 @@
 # site-walker — Project Tracker
 
-**Last Updated:** 18 May 2026
+**Last Updated:** 19 May 2026
 **Current Version:** 0.11.0
-**Current Phase:** Milestones 7 + 8 partially shipped. M7 is awaiting `db backup/restore` + `blocks rebuild`; M8 is awaiting the direct Anthropic / Gemini / OpenAI cluster (OpenRouter alone unblocks production-quality models today). 0.11.0 wires CORS against the per-website origin allowlist (`@fastify/cors`, dynamic origin resolver, no parallel config) and renames `GET /sessions/preflight` → `GET /sessions/can-start` so "preflight" can refer unambiguously to the browser's CORS `OPTIONS`. 0.10.0 was a between-milestone feature: per-website IP geo-blocking (MaxMind, lookup-table-driven modes). 0.9.1 was a patch — internal `process.env` consolidation behind `src/config/env.ts`, no visible change.
-**Overall Progress:** ~48% — M1–M6 complete (6 of 15), M7 + M8 partial. 0.9.0 shipped the OpenRouter protocol adapter + a generic model-discovery command (`sw provider models`); side-by-side against cortex/qwen2 on the Pi, OpenRouter→Haiku is dramatically better, which is the expected separation between cheap dev and production-ready inference. 0.8.0 expanded the admin CLI (website delete/set-welcome, origins subgroup, sessions browse). 0.7.0 was a between-milestone polish (GitHub move, HTML landing card, `/health`, OpenAPI 3 + Swagger UI). 0.6.0 shipped the Phase 1 deliverable (M6 chat endpoint + `./bin/chat`).
+**Current Phase:** **SaaS pivot — line in the sand.** v0.11.0 is the last prototype release. Everything from M16 onward targets a real-world multi-tenant SaaS billed via a WooCommerce site at `site-walker.net`, with a real client lined up to use it. New phasing M16–M20 is captured in [`10-saas-shape.md`](10-saas-shape.md). M7 + M8 remain partial as documented below; the old M9, M11, M12, M13, M14, M15 are still real work but renumber-deferred until after M20 ships and the first real customer has shaken out what's actually missing.
+**Overall Progress (pre-pivot):** M1–M6 complete, M7 + M8 partial, v0.11.0 shipped CORS + per-website geo-blocking. Side-by-side against cortex/qwen2 on the Pi, OpenRouter→Haiku is dramatically better — the expected separation between cheap dev and production-ready inference. The prototype proved the chat backbone, system-block model, and provider abstraction. SaaS work (M16+) builds on that.
 
-Vision and phasing live in [`../README.md`](../README.md). Stack and architecture decisions live in [`../CLAUDE.md`](../CLAUDE.md). Auth/session and data-model design live in companion docs in this directory. This file tracks the work.
+Vision and phasing live in [`../README.md`](../README.md). **Note:** README still markets the prototype-era "self-hosted multi-tenant API" framing; rewrite ships after M16 lands, not before, to avoid documenting vapourware. Stack and architecture decisions live in [`../CLAUDE.md`](../CLAUDE.md). Auth/session and data-model design live in companion docs in this directory. This file tracks the work.
 
 Companion planning docs:
 - [`01-auth-and-session-flow.md`](01-auth-and-session-flow.md) — origin allowlist, session-token lifecycle, endpoint shapes
-- [`02-data-model.md`](02-data-model.md) — schema sketch for `websites`, `website_origins`, `sessions`, `messages`
-- [`03-llm-providers.md`](03-llm-providers.md) — TOML provider registry, per-website model selection, protocol adapters, normalised parameters, context-window handling
+- [`02-data-model.md`](02-data-model.md) — schema sketch for `websites`, `website_origins`, `sessions`, `messages` (rename to `chatbots` lands in M16; this doc gets the schema delta then)
+- [`03-llm-providers.md`](03-llm-providers.md) — TOML provider registry, per-website model selection, protocol adapters, normalised parameters, context-window handling. **Superseded in M17 by DB-backed provider registry** ([`10-saas-shape.md`](10-saas-shape.md)).
+- [`10-saas-shape.md`](10-saas-shape.md) — SaaS architecture (four-repo topology, account model, BYO keys, admin HTTP API, M16–M20 phasing)
 
 ## Next up
 
-End-of-day 2026-05-18. Picking up next in roughly this order:
+Post-pivot, 2026-05-19. Picking up next in roughly this order:
 
-1. **Reverse proxy for `api.site-walker.net`** (operator-side, outside this repo). Dev proxy at `apix.site-walker.net` → `sentinel:47830` is already up via Apache on `nexus.headwall.co.uk` (IP-locked to the developer's home IP). Production `api.site-walker.net` is the open task: front Fastify on `47830` with Apache or nginx, DNS/cert work, no IP lock. Exercises the `trustProxy: true` + `X-Forwarded-For` plumbing that 0.10.0 wired in.
-2. **Back to the WordPress plugin** (separate repo). Flesh out the widget against the real API now that CORS (0.11.0) allows cross-origin calls. Exercising `GET /sessions/can-start` (renamed from `/sessions/preflight` in 0.11.0 so "preflight" can refer unambiguously to CORS `OPTIONS`) for the "should I show the chat affordance?" decision.
+1. **M16 — Multi-tenant + rename.** Migration `websites` → `chatbots`, `accounts` table, account ownership of chatbots. The only cheap moment to do the rename; once admin HTTP endpoints publish (M19), the name is part of our customer-facing contract. See [`10-saas-shape.md`](10-saas-shape.md).
+2. **M17 — DB provider registry + chatbot BYO keys + kill TOML.** Provider/model/pricing data moves to MariaDB. `chatbots.provider_api_key_*` encrypted-at-rest column with `SW_ENCRYPTION_KEY` in `.env`. `sw secrets gen-key` CLI command for the encryption key. Self-hoster's dev chatbot row will fail loud with `chatbot_api_key_missing` until its key is re-set after migration — acceptable interruption, pre-release.
+3. **M18 — Cost accounting (foundation, no enforcement).** Token + $ per message, `chatbot_id` denormalised onto `messages` for daily-spend query speed. `sw chatbot usage` CLI surface. Run for long enough to see real cost shapes before turning caps on.
+4. **M19 — Admin HTTP API + auth.** `admin_keys` table, provisioning-key vs account-admin-key distinction, full admin surface. Unblocks `site-walker-wp` from talking to the API for anything beyond chat itself.
+5. **M20 — Budget caps.** Daily + per-session enforcement at `/sessions/can-start`, `POST /sessions`, `POST /chat`. 402 error semantics. Optional `getBalance()` per adapter.
 
-Other deferred work, in the order it's likely to surface:
+After M20: real client live. Auto-mode content ingestion, condensation pipeline, operational hours, and OAuth-style plugin linking all come after that.
+
+In parallel with the above (operator-side, outside this repo):
+- **Reverse proxy for `api.site-walker.net`.** Dev proxy at `apix.site-walker.net` → `sentinel:47830` is already up via Apache on `nexus.headwall.co.uk` (IP-locked to the developer's home IP). Production `api.site-walker.net` needs DNS/cert work + no IP lock. Exercises the `trustProxy: true` + `X-Forwarded-For` plumbing that 0.10.0 wired in.
+
+Pre-pivot deferred work still real, now renumber-deferred until after M20:
 - **M7 finish**: `sw db backup/restore/list/prune`, `sw blocks rebuild` (the latter is really an M10 trigger).
-- **M11**: rate limiting + abuse heuristics (first Redis use). Geo-blocking already exposes `is_local` on the provider entry for this milestone to consume.
-- **M9**: history trimming. The 0.6.0 chat path currently refuses with `413 context_overflow` when the prompt + history busts the window; M9 turns that into graceful drop-old-turns or summarise-older-turns.
-- **M15**: friendlier CLI + boot error messages for non-developer operators. Raw knex/mysql2 stack traces today (e.g. `ER_DUP_ENTRY` on `sw website origins add`) are fine for the developer audience but unhelpful for a self-hoster.
-- **M14 follow-ups already noted**: gate `/docs` + `/openapi.json` on `NODE_ENV !== 'production'`; add request-body schemas to `POST /chat` with `attachValidation: true` so OpenAPI carries the body shape without breaking typed-error responses.
+- **M11 (renumber-deferred)**: rate limiting + abuse heuristics (first Redis use). `is_local` on the provider entry is consumed here. Also the natural home for any provider-registry caching M17 might prove necessary.
+- **M9 (renumber-deferred)**: history trimming. The 0.6.0 chat path currently refuses with `413 context_overflow` when the prompt + history busts the window; M9 turns that into graceful drop-old-turns or summarise-older-turns.
+- **M15 (renumber-deferred)**: friendlier CLI + boot error messages for non-developer operators. Self-hosters will see raw knex/mysql2 stack traces today.
+- **M14 follow-ups**: gate `/docs` + `/openapi.json` on `NODE_ENV !== 'production'`; add request-body schemas to `POST /chat` with `attachValidation: true` so OpenAPI carries the body shape without breaking typed-error responses.
 
 ---
 
@@ -294,14 +303,162 @@ Scope:
 
 ---
 
+## Phase 3 — SaaS
+
+Goal: turn the prototype into a multi-tenant SaaS billable via WooCommerce at `site-walker.net`, with a real client live on it. Full architecture in [`10-saas-shape.md`](10-saas-shape.md). Open-source self-hosting still supported; SaaS path adds an account layer + admin HTTP API on top.
+
+Done in this five-milestone block:
+- Customer accounts on top of chatbots.
+- Bring-your-own LLM provider keys, encrypted at rest.
+- Provider/model/pricing data hot-editable (in DB, not TOML).
+- Cost accounting per message.
+- Admin HTTP API for the `site-walker-wp` plugin and the `site-walker-for-woo` provisioning side.
+- Budget caps (daily + per-session).
+
+After M20, the deferred prototype-era milestones (old M9, M11, M12, M13, M14, M15) come back into focus — informed by what the first real customer actually trips over. Auto-mode content ingestion + condensation pipeline + operational hours are post-M20 too.
+
+### Milestone 16: Multi-tenant + rename (`websites` → `chatbots`)
+
+**Target Completion:** TBD
+**Status:** 🔴 Not started
+**Priority:** Critical — schema-affecting; everything downstream depends on the rename being done first
+
+Clean-break rebuild. The prototype database is wiped; historical migrations `0001`–`0005` are deleted from the repo and replaced with a single greenfield `0001_create_schema.js` capturing the v1.0 shape:
+
+- `accounts` (new top-level entity)
+- `chatbots` (renamed from `websites`, with `account_id` FK)
+- `chatbot_origins` (renamed from `website_origins`)
+- `sessions` (with `chatbot_id` FK, renamed from `website_id`)
+- `messages`
+- `chatbots.persona` (folded in — previously its own migration)
+- Geo-blocking columns from 0.10.0 (folded in)
+
+After M16, strict forward-only migration discipline resumes — additive migrations only from M17 onward. The squash is a one-time pre-release move; we can do it because nobody but us has ever run this schema and the user has confirmed the prototype chatbot is off.
+
+Code-side: mechanical rename pass across services, CLI, tests, docs. `sw chatbot ...` is the only form (no `sw website ...` deprecation aliases — no legacy to bridge). New `sw account create/list/delete` CLI surface. Rename `data/websites/<slug>/` → `data/chatbots/<slug>/` to keep on-disk paths consistent.
+
+**Why now and not later:** once admin HTTP endpoints (M19) publish, the name is part of the customer-facing contract. Renaming after that is breaking. Renaming now is purely internal churn.
+
+**Resolved decisions:**
+- Squash + clean-break migration (no rename-on-top, no backfill account needed) — agreed 2026-05-19.
+- **Dev DB content is being discarded as part of the squash** — the cortex/qwen2 test conversation logs accumulated through M6/M8 smoke testing go with it. Confirmed acceptable: nothing in there is a real customer interaction or otherwise worth preserving. `data/websites/cortex-test/` (or whatever local seed paths exist) get the same treatment.
+- `data/chatbots/<slug>/` directory rename for consistency — agreed 2026-05-19.
+- No deprecation aliases for `sw website ...` — no legacy to bridge.
+- One account → many chatbots ([`10-saas-shape.md`](10-saas-shape.md)).
+- One chatbot → many origins (cross-brand sharing is a real use case).
+- Billing per-account, not per-chatbot.
+
+**Tactical heads-up for the M16 session:** ~113 tests reference `websites`/`website_id`/`Website` and need updating. Regex rename gets most of it; per-file review unavoidable. Boring but tedious — block out time.
+
+### Milestone 17: DB provider registry + chatbot BYO keys + kill TOML
+
+**Target Completion:** TBD
+**Status:** 🔴 Not started
+**Priority:** Critical — unblocks SaaS-style provider management and customer cost attribution
+
+Replaces `site-walker.toml` with `providers` + `provider_models` tables in MariaDB. Adds encrypted `provider_api_key_ciphertext` + `provider_api_key_nonce` columns on `chatbots` for bring-your-own-key. Master encryption key moves to `.env` as `SW_ENCRYPTION_KEY` (32 bytes base64). Boot fails loud if missing or wrong length. No provider-level API keys — every chatbot supplies its own. Chatbots without a key against a metered provider fail loud with `chatbot_api_key_missing`.
+
+**Why DB-backed:** no API restart when adding/removing a provider+model+pricing combo. Multi-instance (PM2 cluster) deployments don't need TOML copied to every node. The 0600-gated security story moves from TOML to `.env`, which is already 0600-gated.
+
+**Why chatbot-level keys only, no fallback chain:** cost attribution is unambiguous. A leaked key compromises one customer, never us or another customer. Fail-loud over ambiguous fallback when a key is missing.
+
+CLI surface:
+- `sw provider add/list/show/remove`
+- `sw provider model add/list/remove`
+- `sw chatbot set-api-key <slug>` (reads from stdin)
+- `sw secrets gen-key` (generates an `SW_ENCRYPTION_KEY` value)
+
+Deleted: `src/config/site-walker-config.ts`, `smol-toml` dep, `templates/site-walker.toml.example`, the 0600 gate code in `src/utils/env.ts` for the TOML, the `SW_CONFIG` env override.
+
+No caching of the provider lookup in this milestone — direct DB reads. If profiling later proves it hot, M11's Redis work absorbs it.
+
+**Acceptance:** existing dev `cortex` Ollama provider + OpenRouter provider recreated via CLI; chat against both works end-to-end with a chatbot-level key set; deleting the TOML doesn't break anything.
+
+**Migration impact:** existing chatbot rows have NULL keys after migration → fail loud until `sw chatbot set-api-key` is run for each. Acceptable pre-release; we have one dev chatbot.
+
+### Milestone 18: Cost accounting (foundation, no enforcement)
+
+**Target Completion:** TBD
+**Status:** 🔴 Not started
+**Priority:** High — foundation for M20 budget caps
+
+Records `tokens_in`, `tokens_out`, `cost_usd_estimate` on every assistant `messages` row. Cost computed from `provider_models` pricing × token counts. Denormalises `chatbot_id` onto `messages` so daily-spend queries don't require a join through `sessions`. Adapter contract update: every adapter returns `{ tokens_in, tokens_out }` on chat response.
+
+CLI: `sw chatbot usage <slug> [--since 24h]` shows running totals.
+
+**No enforcement.** Just observability. Run for a week or two before turning caps on (M20) so we measure real cost shapes against real workloads before guessing at sensible defaults.
+
+**Honesty about accuracy:** the recorded cost is an *estimate* — ground truth is the customer's Anthropic/OpenRouter invoice. Our number runs slightly under (no system overhead). Close enough for caps; documented for customer-facing reconciliation.
+
+### Milestone 19: Admin HTTP API + bearer-token auth
+
+**Target Completion:** TBD
+**Status:** 🔴 Not started
+**Priority:** Critical — unblocks `site-walker-wp` (plugin) and `site-walker-for-woo` (provisioning) from doing anything beyond chat
+
+New `admin_keys` table. Two key types:
+- **Provisioning key** (one per deployment, `account_id IS NULL`): can create accounts and mint admin keys. Used by `site-walker-for-woo` when a WC subscription activates. Cannot access any account's contents.
+- **Account admin key** (one or more per account, `account_id NOT NULL`): full control of that account only. Used by `site-walker-wp` and by self-hoster CLIs that prefer HTTP to direct DB access.
+
+Keys hashed at rest; raw key returned exactly once at mint time (GitHub-PAT style). Bearer auth on all `/admin/*` routes. Scoped by the admin key's `account_id`.
+
+Endpoint surface (full list in [`10-saas-shape.md`](10-saas-shape.md)):
+
+```
+POST   /admin/accounts                          (provisioning only)
+POST   /admin/accounts/{id}/keys                (provisioning only)
+GET    /admin/chatbots
+POST   /admin/chatbots
+PATCH  /admin/chatbots/{id}
+POST   /admin/chatbots/{id}/origins
+PUT    /admin/chatbots/{id}/blocks/{name}
+PATCH  /admin/chatbots/{id}/api-key
+GET    /admin/chatbots/{id}/usage
+```
+
+Reuses the same service layer the CLI uses. OpenAPI schema augmented to cover the admin surface.
+
+CLI surface for the self-hoster path (parallel to the SaaS-path provisioning-key endpoints): `sw account create <slug>`, `sw account list`, `sw account add-admin-key <slug>` (inserts a hashed row, prints the raw key once), `sw account revoke-admin-key <key-id>`. Same service layer the HTTP routes call.
+
+### Milestone 20: Budget caps
+
+**Target Completion:** TBD
+**Status:** 🔴 Not started
+**Priority:** High — the "this can't ruin a customer's week" guarantee
+
+Per-chatbot caps:
+- `chatbots.daily_budget_usd` — NULL = no cap.
+- `chatbots.session_budget_usd` — NULL = no cap.
+
+Enforced at:
+- `GET /sessions/can-start` — returns `{ available: false, reason: 'budget_exhausted_daily' }`.
+- `POST /sessions` — hard 402 if daily cap already blown.
+- `POST /chat` — daily checked before completion; session checked *after* writing the assistant reply (so a one-message-over-cap visitor gets one final reply rather than being cut off mid-thought).
+
+Error codes: `budget_exhausted_daily`, `budget_exhausted_session`, both 402.
+
+CLI: `sw chatbot set-budget <slug> --daily 5.00 --session 0.50`.
+
+**Optional add-on:** `getBalance()` adapter method for providers that expose it (OpenRouter's `/key` endpoint; Anthropic returns null). CLI: `sw chatbot balance <slug>`. Read-only, never on the hot path.
+
+**Acceptance:** real client live on `api.site-walker.net`, with their own BYO Anthropic key, daily cap configured, chats working against their WP-installed `site-walker-wp` widget.
+
+---
+
 ## Open questions
 
 Tracked here alongside the milestone that resolves them, so they're visible in context.
 
+Resolved (kept for the record):
 - **M1 lib choices** — test framework (Jest vs node:test), CLI lib (commander.js vs alternative), `bin/chat` language (bash vs tiny Node). Resolved in M1.
 - **Per-website system-block format** — resolved in M4. Flat directory of `.md` files; persona in DB; constant handling rule; XML-tagged block wrappers. Full design in [`04-system-blocks.md`](04-system-blocks.md).
-- **History trimming strategy** — M9. Sliding window vs summarisation. Shapes session schema.
-- **"I don't know, contact us" boundaries** — M12. What topics force the bail-out path?
+- **Phase 3 architecture** — resolved 2026-05-19 in [`10-saas-shape.md`](10-saas-shape.md). Four-repo topology, WC-driven billing, BYO chatbot-level keys, DB-backed provider registry, M16–M20 phasing.
+
+Still open:
+- **History trimming strategy** — old M9 (renumber-deferred). Sliding window vs summarisation. Shapes session schema. Decide before this lands.
+- **"I don't know, contact us" boundaries** — old M12 (renumber-deferred). What topics force the bail-out path?
+- **Provisioning-key bootstrap mechanism** — M19. [`10-saas-shape.md`](10-saas-shape.md) currently says "env var, or seeded into `admin_keys` with `account_id IS NULL` on first boot" — pick one. Candidates: (a) `SW_PROVISIONING_KEY` in `.env` checked at request time (no DB row, no rotation story but no leak either); (b) `sw admin gen-provisioning-key` CLI that inserts a hashed row and prints the raw key once (rotatable, but boot needs a "is at least one provisioning key present?" check); (c) auto-seed on first `npm run migrate` and write the raw key to a file the operator must move. Decide before M19.
+- **Auto-mode content ingestion shape** — post-M20. Push-triggered vs scheduled cron; status surface (polling vs callbacks); per-run cost ceiling. Sketch in [`10-saas-shape.md`](10-saas-shape.md); full doc when this milestone is next-up.
 
 ---
 

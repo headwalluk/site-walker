@@ -1,5 +1,7 @@
 # LLM provider abstraction
 
+> **Superseded in M17 by the DB-backed provider registry described in [`10-saas-shape.md`](10-saas-shape.md).** This doc captures the M5/M6 TOML design as actually shipped in v0.11.0 — it remains accurate for the prototype but is **not** the forward-looking design. From M17 onward: `site-walker.toml` is deleted, `providers` + `provider_models` tables in MariaDB replace it, and provider-level API keys disappear in favour of per-chatbot BYO keys encrypted at rest. The slug grammar (`provider/model`), adapter interface, and normalised parameter schema described below carry forward unchanged.
+
 Design doc for how site-walker talks to multiple LLM providers and models. Settled 16 May 2026. Implementation lands in M5 and is consumed by M6 (chat endpoint) and M10 (system-blocks regeneration, which also calls an LLM).
 
 Companion to:

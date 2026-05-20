@@ -1,5 +1,7 @@
 # Data model
 
+> **Phase-1 snapshot — pre-SaaS pivot.** This doc reflects the schema as it stands at v0.11.0. The SaaS pivot (M16–M20, see [`10-saas-shape.md`](10-saas-shape.md)) adds `accounts`, `admin_keys`, `providers`, `provider_models` tables; renames `websites` → `chatbots` (and `website_origins` → `chatbot_origins`, `sessions.website_id` → `chatbot_id`); and adds columns on `messages` (`tokens_in`, `tokens_out`, `cost_usd_estimate`, denormalised `chatbot_id`) and on `chatbots` (`daily_budget_usd`, `session_budget_usd`, `provider_api_key_ciphertext`, `provider_api_key_nonce`). Until each milestone lands, [`10-saas-shape.md`](10-saas-shape.md) is the forward-looking source of truth; this doc gets re-expanded into the new shape as the migrations ship.
+
 Schema sketch for the Phase 1 tables. Settled 15 May 2026 alongside [`01-auth-and-session-flow.md`](01-auth-and-session-flow.md). Final migrations land in M2 (tenant tables) and M3 (session tables) — this doc is the design they should match.
 
 MariaDB syntax. Defaults to InnoDB, utf8mb4. Timestamps are `DATETIME` with `DEFAULT CURRENT_TIMESTAMP` where appropriate.
