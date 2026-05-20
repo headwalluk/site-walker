@@ -601,14 +601,25 @@ provider
     'endpoint root (required for ollama-native; defaults to https://openrouter.ai/api/v1 for openrouter)',
   )
   .option('--local', 'mark this provider as LAN-only (defaults is_metered to false)')
-  .option('--no-metered', 'force is_metered=false (Ollama or other free-tier provider)')
   .option('--metered', 'force is_metered=true (overrides the !is_local default)')
+  .option('--unmetered', 'force is_metered=false (Ollama or other free-tier provider)')
   .action(
     async (
       name: string,
-      opts: { protocol: string; baseUrl?: string; local?: boolean; metered?: boolean },
+      opts: {
+        protocol: string;
+        baseUrl?: string;
+        local?: boolean;
+        metered?: boolean;
+        unmetered?: boolean;
+      },
     ) => {
       try {
+        if (opts.metered && opts.unmetered) {
+          console.error('Pass either --metered or --unmetered, not both.');
+          process.exitCode = 1;
+          return;
+        }
         let baseUrl = opts.baseUrl;
         if (!baseUrl && opts.protocol === 'openrouter') {
           baseUrl = DEFAULT_OPENROUTER_BASE_URL;
@@ -621,12 +632,20 @@ provider
           process.exitCode = 1;
           return;
         }
+        // Resolve is_metered: explicit flag wins; otherwise let createProvider
+        // fall back to !is_local. Distinct flag names (not commander's --no-X
+        // auto-negate) so that omitting both leaves `is_metered` undefined
+        // here, rather than commander silently defaulting it to true.
+        let is_metered: boolean | undefined;
+        if (opts.metered) is_metered = true;
+        else if (opts.unmetered) is_metered = false;
+
         const row = await createProvider(db, {
           name,
           protocol: opts.protocol,
           base_url: baseUrl,
           is_local: opts.local ?? false,
-          is_metered: opts.metered,
+          is_metered,
         });
         console.log(
           `Created provider: id=${row.id} name=${row.name} protocol=${row.protocol} ` +

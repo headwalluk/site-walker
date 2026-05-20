@@ -343,7 +343,8 @@ Options:
 | `-p, --protocol <protocol>`  | **Required.** One of `ollama-native`, `openrouter`.                                           |
 | `-u, --base-url <url>`       | Endpoint root. Required for `ollama-native`. Defaults to `https://openrouter.ai/api/v1` for `openrouter`. |
 | `--local`                    | Marks the provider as LAN-only. Also defaults `is_metered` to false.                          |
-| `--metered` / `--no-metered` | Explicit override on the metered/unmetered default (`!is_local`).                             |
+| `--metered`                  | Force `is_metered=true` (overrides the `!is_local` default).                                  |
+| `--unmetered`                | Force `is_metered=false` (e.g. a free-tier cloud provider). Mutually exclusive with `--metered`. |
 
 `name` becomes the prefix in `model_slug` (`<name>/<model-id>`) — pick something short and URL-safe.
 
