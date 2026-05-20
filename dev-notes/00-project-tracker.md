@@ -413,11 +413,12 @@ CLI: `sw chatbot usage <slug> [--since 24h]` shows running totals.
 **Status:** 🔴 Not started
 **Priority:** Critical — unblocks `site-walker-wp` (plugin) and `site-walker-for-woo` (provisioning) from doing anything beyond chat
 
-New `admin_keys` table. Two key types:
-- **Provisioning key** (one per deployment, `account_id IS NULL`): can create accounts and mint admin keys. Used by `site-walker-for-woo` when a WC subscription activates. Cannot access any account's contents.
-- **Account admin key** (one or more per account, `account_id NOT NULL`): full control of that account only. Used by `site-walker-wp` and by self-hoster CLIs that prefer HTTP to direct DB access.
+Two credential surfaces, deliberately separated (full rationale in [`10-saas-shape.md`](10-saas-shape.md)):
 
-Keys hashed at rest; raw key returned exactly once at mint time (GitHub-PAT style). Bearer auth on all `/admin/*` routes. Scoped by the admin key's `account_id`.
+- **Provisioning key** — one per deployment, lives in `.env` as `SW_PROVISIONING_KEY`. Hashed at boot; constant-time compared against incoming bearer on `POST /admin/accounts*`. Used by `site-walker-for-woo` when a WC subscription activates. Not in the DB. Rotation = restart + WC-side update; cutover blip accepted. `sw secrets gen-provisioning-key` CLI helper for generation. Boot validation rejects empty/short values.
+- **Account admin key** — one or more per account, lives in the new `admin_keys` table with `account_id NOT NULL`. Hashed at rest; raw key returned exactly once at mint time (GitHub-PAT style). Used by `site-walker-wp` and by self-hoster CLIs that prefer HTTP to direct DB access. Scoped by `admin_keys.account_id`.
+
+The air-gap between the two storage surfaces is the load-bearing security decision here: a bug in `admin_keys`-management code cannot accidentally create a provisioning credential because provisioning keys aren't in that table. Do not consolidate.
 
 Endpoint surface (full list in [`10-saas-shape.md`](10-saas-shape.md)):
 
@@ -470,11 +471,11 @@ Resolved (kept for the record):
 - **M1 lib choices** — test framework (Jest vs node:test), CLI lib (commander.js vs alternative), `bin/chat` language (bash vs tiny Node). Resolved in M1.
 - **Per-website system-block format** — resolved in M4. Flat directory of `.md` files; persona in DB; constant handling rule; XML-tagged block wrappers. Full design in [`04-system-blocks.md`](04-system-blocks.md).
 - **Phase 3 architecture** — resolved 2026-05-19 in [`10-saas-shape.md`](10-saas-shape.md). Four-repo topology, WC-driven billing, BYO chatbot-level keys, DB-backed provider registry, M16–M20 phasing.
+- **Provisioning-key bootstrap mechanism** — resolved 2026-05-20. `SW_PROVISIONING_KEY` in `.env`, **not** in the `admin_keys` table. Air-gap chosen over single-code-path symmetry: a bug in `admin_keys`-touching code cannot accidentally create a provisioning credential. Full rationale + rotation procedure in [`10-saas-shape.md`](10-saas-shape.md). M19 implements: boot hash, constant-time-compare middleware, `sw secrets gen-provisioning-key` CLI, boot validation that rejects empty/short values.
 
 Still open:
 - **History trimming strategy** — old M9 (renumber-deferred). Sliding window vs summarisation. Shapes session schema. Decide before this lands.
 - **"I don't know, contact us" boundaries** — old M12 (renumber-deferred). What topics force the bail-out path?
-- **Provisioning-key bootstrap mechanism** — M19. [`10-saas-shape.md`](10-saas-shape.md) currently says "env var, or seeded into `admin_keys` with `account_id IS NULL` on first boot" — pick one. Candidates: (a) `SW_PROVISIONING_KEY` in `.env` checked at request time (no DB row, no rotation story but no leak either); (b) `sw admin gen-provisioning-key` CLI that inserts a hashed row and prints the raw key once (rotatable, but boot needs a "is at least one provisioning key present?" check); (c) auto-seed on first `npm run migrate` and write the raw key to a file the operator must move. Decide before M19.
 - **Auto-mode content ingestion shape** — post-M20. Push-triggered vs scheduled cron; status surface (polling vs callbacks); per-run cost ceiling. Sketch in [`10-saas-shape.md`](10-saas-shape.md); full doc when this milestone is next-up.
 
 ---
