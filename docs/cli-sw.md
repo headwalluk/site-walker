@@ -1,16 +1,17 @@
 # `sw` — site-walker admin CLI
 
-`./bin/sw` is the operator's CLI for everything that doesn't go through the HTTP API: registering chatbots, managing their origin allowlist, choosing models, inspecting system blocks and the provider registry.
+`./bin/sw` is the operator's CLI for everything that doesn't go through the HTTP API: registering accounts and chatbots, managing the provider registry, setting per-chatbot LLM keys, inspecting system blocks and sessions.
 
-It connects to the same MariaDB and reads the same `site-walker.toml` as the running API server, so its scope is the host it runs on.
+It talks to the same MariaDB the API server uses, so its scope is the host it runs on.
 
 ## Prerequisites
 
 - A reachable MariaDB with the schema migrated (`npm run migrate`).
 - A `.env` with `DB_*` populated (see [`env.md`](env.md)).
-- A `site-walker.toml` with at least one provider for any `sw chatbot set-model` / `sw provider list` use (see [`site-walker-toml.md`](site-walker-toml.md)).
+- `SW_ENCRYPTION_KEY` set in `.env` if any chatbot will use a metered provider (`./bin/sw secrets gen-key` generates a fresh value; required by the API server at boot regardless).
+- At least one provider registered via `sw provider add` before any chatbot can resolve its `model_slug`.
 
-The API server doesn't need to be running for `sw` to work — it operates directly against the database and the on-disk config.
+The API server doesn't need to be running for `sw` to work — it operates directly against the database.
 
 ## Synopsis
 
@@ -20,13 +21,33 @@ The API server doesn't need to be running for `sw` to work — it operates direc
 
 Top-level commands:
 
-| Command    | Purpose                                                       |
-| ---------- | ------------------------------------------------------------- |
-| `account`  | manage accounts (each owns one or more chatbots)              |
-| `chatbot`  | manage chatbots and their per-tenant configuration            |
-| `provider` | inspect the TOML-defined provider registry                    |
-| `blocks`   | inspect a chatbot's assembled system blocks                   |
-| `sessions` | read-only browse over sessions and their messages             |
+| Command    | Purpose                                                                |
+| ---------- | ---------------------------------------------------------------------- |
+| `secrets`  | manage env-resident master secrets (today: `gen-key` for SW_ENCRYPTION_KEY) |
+| `account`  | manage accounts (each owns one or more chatbots)                       |
+| `chatbot`  | manage chatbots and their per-tenant configuration                     |
+| `provider` | manage the DB-backed provider registry + live model discovery          |
+| `blocks`   | inspect a chatbot's assembled system blocks                            |
+| `sessions` | read-only browse over sessions and their messages                      |
+
+---
+
+## `sw secrets`
+
+Helpers for env-resident master secrets. Today this is just `SW_ENCRYPTION_KEY` (M17); `SW_PROVISIONING_KEY` for the admin HTTP surface lands in M19.
+
+### `sw secrets gen-key`
+
+Print a fresh base64-encoded 32-byte value to stdout. Paste into `.env` as `SW_ENCRYPTION_KEY=…`. The hint message goes to stderr so the value alone can be captured cleanly with `>` or piping.
+
+```
+$ ./bin/sw secrets gen-key
+M0cwQ3Z3RnRqV2dFL0RvajdIbVE5ZllYV1IxNkFkc0VxMnE5UjBseVZHST0=
+# Paste the value above into your .env as SW_ENCRYPTION_KEY=...
+# Treat the value like any other production secret — do not commit it.
+```
+
+The key encrypts `chatbots.provider_api_key_ciphertext` via AES-256-GCM. Once set, do not change it without re-running `sw chatbot set-api-key` for every chatbot that has a key — rotation is destructive (existing ciphertexts become unreadable). See [`env.md`](env.md) and the M17 design notes in `dev-notes/10-saas-shape.md` for the rotation rationale.
 
 ---
 
@@ -179,14 +200,33 @@ $ ./bin/sw chatbot set-persona acme-corp "$(cat data/chatbots/acme-corp/persona.
 
 ### `sw chatbot set-model <slug> <provider/model>`
 
-Point the chatbot at a `provider/model` slug. The provider part is looked up in `site-walker.toml`; if it's missing, the command refuses and lists known providers.
+Point the chatbot at a `provider/model` slug. Both halves are looked up in the DB-backed provider registry (`providers` × `provider_models`); if the slug doesn't resolve, the command refuses with a clear error that points at `sw provider add` and `sw provider models add`.
 
 ```
 $ ./bin/sw chatbot set-model acme-corp cortex/qwen2:1.5b
 Set model_slug="cortex/qwen2:1.5b" for chatbot slug="acme-corp".
 ```
 
-The model string is opaque to the CLI — typos surface on the first chat request, not here.
+Use `sw provider models discover <name>` to print copy-pasteable full slugs from a live provider.
+
+### `sw chatbot set-api-key <slug>`
+
+Encrypt and persist a bring-your-own LLM provider API key against the chatbot row. **Reads from stdin only** — never argv, never echoed back. Stored as AES-256-GCM ciphertext + nonce + auth tag in three `chatbots.provider_api_key_*` columns; the master key is `SW_ENCRYPTION_KEY` from `.env`.
+
+```
+$ echo "sk-ant-api03-…" | ./bin/sw chatbot set-api-key acme-corp
+Set api_key for chatbot slug="acme-corp" (104 bytes stored encrypted).
+```
+
+Or from a file:
+
+```
+$ ./bin/sw chatbot set-api-key acme-corp < ~/secrets/anthropic-acme.txt
+```
+
+The command refuses if invoked from an interactive TTY (to avoid the key being echoed as the operator types). The plaintext is trimmed of leading/trailing whitespace before encryption; up to 255 bytes of plaintext fit in the column. There is no `show-api-key` — if you need to verify, set it again.
+
+Chatbots pointed at a metered provider (any cloud-LLM provider; `providers.is_metered = true`) **must** have a key set, or `POST /chat` returns `503 chatbot_api_key_missing` until they do. Chatbots on unmetered providers (Ollama, `is_local = true`) don't need one.
 
 ### `sw chatbot set-parameters <slug> <json>`
 
@@ -264,59 +304,93 @@ Geo policy for slug="acme-corp":
 
 ### `sw chatbot show-model <slug>`
 
-Resolve the chatbot's configured model against the registry and print the result.
+Resolve the chatbot's configured model against the DB-backed registry and print the result.
 
 ```
 $ ./bin/sw chatbot show-model acme-corp
 Chatbot: acme-corp
   model_slug:           cortex/qwen2:1.5b
-  provider:             cortex (ollama-native)
+  provider:             cortex (ollama-native) [unmetered]
   model:                qwen2:1.5b
   parameters:           {"temperature":0.4,"max_tokens":512}
   model_context_window: 4096
 ```
 
-Fails with a clear error if `model_slug` references a provider that isn't in `site-walker.toml`.
+Fails with a clear error if `model_slug` no longer resolves (provider or model row missing from the registry).
 
 ---
 
 ## `sw provider`
 
+The provider registry lives in MariaDB (since M17). It defines which LLM backends the deployment can reach. Every chatbot's `model_slug` resolves against the `providers` and `provider_models` tables.
+
+### `sw provider add <name> --protocol <protocol> [...]`
+
+Register a new provider.
+
+```
+$ ./bin/sw provider add cortex --protocol ollama-native --base-url http://cortex.local:8000 --local
+Created provider: id=1 name=cortex protocol=ollama-native base_url=http://cortex.local:8000 is_local=true is_metered=false
+
+$ ./bin/sw provider add openrouter --protocol openrouter
+Created provider: id=2 name=openrouter protocol=openrouter base_url=https://openrouter.ai/api/v1 is_local=false is_metered=true
+```
+
+Options:
+
+| Flag                         | Meaning                                                                                       |
+| ---------------------------- | --------------------------------------------------------------------------------------------- |
+| `-p, --protocol <protocol>`  | **Required.** One of `ollama-native`, `openrouter`.                                           |
+| `-u, --base-url <url>`       | Endpoint root. Required for `ollama-native`. Defaults to `https://openrouter.ai/api/v1` for `openrouter`. |
+| `--local`                    | Marks the provider as LAN-only. Also defaults `is_metered` to false.                          |
+| `--metered` / `--no-metered` | Explicit override on the metered/unmetered default (`!is_local`).                             |
+
+`name` becomes the prefix in `model_slug` (`<name>/<model-id>`) — pick something short and URL-safe.
+
 ### `sw provider list`
 
-List the providers parsed from `site-walker.toml`. `api_key` values are **never** printed.
+List every provider with its protocol, base URL, local/metered flags, and the count of registered models.
 
 ```
 $ ./bin/sw provider list
-Provider registry (/home/op/site-walker/site-walker.toml):
-  cortex               protocol=ollama-native base_url=http://cortex.local:8000 is_local=true
-  openrouter           protocol=openrouter
+name        protocol       base_url                            local  metered  models
+cortex      ollama-native  http://cortex.local:8000            yes    no       1
+openrouter  openrouter     https://openrouter.ai/api/v1        no     yes      3
 ```
 
-The path printed is the resolved config path — useful for confirming which copy of the TOML was loaded when multiple search paths could match. Search-path precedence is documented in [`site-walker-toml.md`](site-walker-toml.md).
+### `sw provider show <name>`
 
-### `sw provider models <provider> [-f|--filter <substring>]`
+Dump the full DB row as JSON.
 
-Query a configured provider for the list of models it can serve. The output prints **copy-pasteable full slugs** (provider name + `/` + model id) so you can paste them straight into `sw chatbot set-model`.
+### `sw provider remove <name> -f|--force`
+
+Hard-delete a provider and CASCADE through every model registered under it. **Irreversible**; `--force` is required.
+
+```
+$ ./bin/sw provider remove cortex --force
+Removed provider name="cortex". Cascaded: 1 provider_model row(s).
+```
+
+Chatbots that still reference the removed provider via `model_slug` will start failing with `model_not_configured` on the next chat request — re-register the provider or point the chatbot at a different model.
+
+### `sw provider models discover <name> [-f|--filter <substring>]`
+
+Query a **live** provider endpoint for the list of models it can serve. The output prints copy-pasteable full slugs (provider name + `/` + model id) so you can paste them straight into `sw provider models add` and `sw chatbot set-model`.
 
 Supported protocols:
 
-- `ollama-native` — `GET {base_url}/api/tags`
-- `openrouter` — `GET {base_url}/models` (sends your `api_key` as `Authorization: Bearer …` if present, so OpenRouter can attribute the lookup; not strictly required)
-- Other protocols don't yet have a discovery endpoint wired and will refuse with a clear message.
+- `ollama-native` — `GET {base_url}/api/tags`.
+- `openrouter` — `GET {base_url}/models`. The discovery endpoint is public; no key is sent (BYO key only travels with the live chat path).
 
 ```
-$ ./bin/sw provider models cortex
+$ ./bin/sw provider models discover cortex
 Models on provider "cortex" (protocol=ollama-native):
-  cortex/deepseek_r1_distill_qwen:1.5b
-  cortex/llama3.2:3b
-  cortex/qwen2.5-coder:1.5b
-  cortex/qwen2.5-instruct:1.5b
   cortex/qwen2:1.5b
+  cortex/llama3.2:3b
 
-Total: 5
+Total: 2
 
-$ ./bin/sw provider models openrouter --filter haiku
+$ ./bin/sw provider models discover openrouter --filter haiku
 Models on provider "openrouter" (protocol=openrouter):
   openrouter/anthropic/claude-haiku-4.5     ctx=200000      Claude Haiku 4.5
   ...
@@ -324,9 +398,38 @@ Models on provider "openrouter" (protocol=openrouter):
 Total: 3 (of 247 reported by the provider)
 ```
 
-`--filter` is a case-insensitive substring match against the model id and the human-readable label. OpenRouter alone reports hundreds of models — the filter is the difference between a useful list and a wall of text.
+### `sw provider models add <provider> <model-slug> -c <n> [--input-price X] [--output-price Y]`
 
-A printed slug like `openrouter/anthropic/claude-haiku-4.5` is exactly what `sw chatbot set-model <slug> ...` expects.
+Register a model row under a provider. The combination of provider name + model slug is what chatbots resolve against.
+
+```
+$ ./bin/sw provider models add cortex qwen2:1.5b --context-window 4096
+Added model: cortex/qwen2:1.5b context_window=4096 input=(unmetered) output=(unmetered)
+
+$ ./bin/sw provider models add openrouter anthropic/claude-haiku-4.5 --context-window 200000 --input-price 1.0 --output-price 5.0
+Added model: openrouter/anthropic/claude-haiku-4.5 context_window=200000 input=1.000000 output=5.000000
+```
+
+Pricing is per million tokens, in USD. Omit `--input-price` / `--output-price` for unmetered providers (Ollama).
+
+### `sw provider models list <provider>`
+
+List models registered locally against a provider (DB view, not a live query).
+
+```
+$ ./bin/sw provider models list openrouter
+full slug                                  context   in $/M   out $/M
+openrouter/anthropic/claude-haiku-4.5      200000    1.000000 5.000000
+```
+
+### `sw provider models remove <provider> <model-slug>`
+
+Remove a single model row.
+
+```
+$ ./bin/sw provider models remove openrouter anthropic/claude-haiku-4.5
+Removed model: openrouter/anthropic/claude-haiku-4.5
+```
 
 ---
 
@@ -409,6 +512,5 @@ Multi-line message bodies are indented under the header line so they read cleanl
 ## See also
 
 - [`cli-chat.md`](cli-chat.md) — interactive test client that drives a configured chatbot end-to-end.
-- [`site-walker-toml.md`](site-walker-toml.md) — provider registry file the model commands depend on.
-- [`env.md`](env.md) — the `.env` file the CLI reads to find MariaDB.
+- [`env.md`](env.md) — the `.env` file the CLI reads (DB connection + `SW_ENCRYPTION_KEY`).
 - [`system-blocks.md`](system-blocks.md) — how persona + disk blocks are assembled into the system prompt.

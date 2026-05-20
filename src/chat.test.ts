@@ -4,30 +4,20 @@ import { randomUUID } from 'node:crypto';
 import type { Knex } from 'knex';
 import { buildServer } from './server.js';
 import { addOrigin } from './services/chatbots.js';
+import { createProvider, createProviderModel } from './services/providers.js';
 import { setChatbotGeoCountries, setChatbotGeoMode, type GeoChecker } from './services/geo.js';
 import { makeTestDb, seedAccountAndChatbot } from './testing/db.js';
 import type { Account } from './services/accounts.js';
-import type { ProviderEntry, ProviderRegistry } from './config/site-walker-config.js';
 import type { ChatRequest, ChatResponse, ProtocolAdapter } from './providers/index.js';
 
 function uniqueSlug(): string {
   return `test-${randomUUID().slice(0, 8)}`;
 }
 
-function makeFakeRegistry(): ProviderRegistry {
-  const entry: ProviderEntry = {
-    name: 'pi',
-    protocol: 'ollama-native',
-    base_url: 'http://test.invalid',
-    is_local: true,
-  };
-  return { configPath: '<test>', providers: new Map([[entry.name, entry]]) };
-}
-
 interface FakeAdapterOpts {
   reply?: string;
   throwError?: Error;
-  capture?: { requests: ChatRequest[] };
+  capture?: { requests: ChatRequest[]; apiKey?: string | undefined };
 }
 
 function makeFakeAdapter(opts: FakeAdapterOpts = {}): ProtocolAdapter {
@@ -45,16 +35,39 @@ async function setupChat(
   db: Knex,
   patch: Partial<{
     model_slug: string | null;
+    /** If set, register the provider as metered (so the missing-key check fires). */
+    metered: boolean;
     model_context_window: number | null;
     persona: string | null;
     welcome_message: string | null;
   }> = {},
-): Promise<{ slug: string; origin: string; account: Account }> {
+): Promise<{
+  slug: string;
+  origin: string;
+  account: Account;
+  providerName: string;
+  fullModelSlug: string;
+}> {
   const slug = uniqueSlug();
   const origin = `https://${slug}.example.com`;
+  const providerName = `pi-${slug}`;
+  const provider = await createProvider(db, {
+    name: providerName,
+    protocol: 'ollama-native',
+    base_url: 'http://test.invalid:11434',
+    is_local: !patch.metered,
+    is_metered: patch.metered ?? false,
+  });
+  await createProviderModel(db, {
+    provider_id: provider.id,
+    model_slug: 'test-model',
+    context_window: 4096,
+  });
+  const fullModelSlug = `${providerName}/test-model`;
+
   const { account } = await seedAccountAndChatbot(db, slug, { persona: patch.persona ?? null });
   await addOrigin(db, slug, origin);
-  const modelSlug = 'model_slug' in patch ? patch.model_slug : 'pi/test-model';
+  const modelSlug = 'model_slug' in patch ? patch.model_slug : fullModelSlug;
   await db('chatbots')
     .where({ slug })
     .update({
@@ -62,7 +75,19 @@ async function setupChat(
       model_context_window: patch.model_context_window ?? null,
       welcome_message: patch.welcome_message ?? null,
     });
-  return { slug, origin, account };
+  return { slug, origin, account, providerName, fullModelSlug };
+}
+
+async function cleanup(
+  db: Knex,
+  account: Account,
+  providerName: string,
+  fastify: Awaited<ReturnType<typeof buildServer>>,
+): Promise<void> {
+  await fastify.close();
+  await db('accounts').where({ id: account.id }).del();
+  await db('providers').where({ name: providerName }).del();
+  await db.destroy();
 }
 
 type FastifyServer = Awaited<ReturnType<typeof buildServer>>;
@@ -82,7 +107,6 @@ test('POST /chat: 401 when bearer token is missing', async (t) => {
   const fastify = await buildServer({
     db,
     logger: false,
-    registry: makeFakeRegistry(),
     adapterFactory: () => makeFakeAdapter(),
   });
   t.after(async () => {
@@ -104,7 +128,6 @@ test('POST /chat: 401 when bearer token is unknown', async (t) => {
   const fastify = await buildServer({
     db,
     logger: false,
-    registry: makeFakeRegistry(),
     adapterFactory: () => makeFakeAdapter(),
   });
   t.after(async () => {
@@ -127,15 +150,10 @@ test('POST /chat: 400 when message is missing or empty', async (t) => {
   const fastify = await buildServer({
     db,
     logger: false,
-    registry: makeFakeRegistry(),
     adapterFactory: () => makeFakeAdapter(),
   });
-  const { origin, account } = await setupChat(db);
-  t.after(async () => {
-    await fastify.close();
-    await db('accounts').where({ id: account.id }).del();
-    await db.destroy();
-  });
+  const { origin, account, providerName } = await setupChat(db);
+  t.after(() => cleanup(db, account, providerName, fastify));
 
   const token = await mintSession(fastify, origin);
 
@@ -162,15 +180,10 @@ test('POST /chat: 400 when message exceeds the size cap', async (t) => {
   const fastify = await buildServer({
     db,
     logger: false,
-    registry: makeFakeRegistry(),
     adapterFactory: () => makeFakeAdapter(),
   });
-  const { origin, account } = await setupChat(db);
-  t.after(async () => {
-    await fastify.close();
-    await db('accounts').where({ id: account.id }).del();
-    await db.destroy();
-  });
+  const { origin, account, providerName } = await setupChat(db);
+  t.after(() => cleanup(db, account, providerName, fastify));
 
   const token = await mintSession(fastify, origin);
   const oversize = 'x'.repeat(8001);
@@ -190,15 +203,10 @@ test('POST /chat: 503 when chatbot has no model configured', async (t) => {
   const fastify = await buildServer({
     db,
     logger: false,
-    registry: makeFakeRegistry(),
     adapterFactory: () => makeFakeAdapter(),
   });
-  const { origin, account } = await setupChat(db, { model_slug: null });
-  t.after(async () => {
-    await fastify.close();
-    await db('accounts').where({ id: account.id }).del();
-    await db.destroy();
-  });
+  const { origin, account, providerName } = await setupChat(db, { model_slug: null });
+  t.after(() => cleanup(db, account, providerName, fastify));
 
   const token = await mintSession(fastify, origin);
   const res = await fastify.inject({
@@ -211,24 +219,39 @@ test('POST /chat: 503 when chatbot has no model configured', async (t) => {
   assert.equal(res.json().error, 'model_not_configured');
 });
 
-test('POST /chat: 413 when total prompt exceeds context window with headroom', async (t) => {
+test('POST /chat: 503 chatbot_api_key_missing when metered provider has no chatbot key', async (t) => {
   const db = makeTestDb();
-  // Tiny context window forces overflow even with a short message.
   const fastify = await buildServer({
     db,
     logger: false,
-    registry: makeFakeRegistry(),
     adapterFactory: () => makeFakeAdapter(),
   });
-  const { origin, account } = await setupChat(db, {
+  const { origin, account, providerName } = await setupChat(db, { metered: true });
+  t.after(() => cleanup(db, account, providerName, fastify));
+
+  const token = await mintSession(fastify, origin);
+  const res = await fastify.inject({
+    method: 'POST',
+    url: '/chat',
+    headers: { authorization: `Bearer ${token}` },
+    payload: { message: 'hello' },
+  });
+  assert.equal(res.statusCode, 503);
+  assert.equal(res.json().error, 'chatbot_api_key_missing');
+});
+
+test('POST /chat: 413 when total prompt exceeds context window with headroom', async (t) => {
+  const db = makeTestDb();
+  const fastify = await buildServer({
+    db,
+    logger: false,
+    adapterFactory: () => makeFakeAdapter(),
+  });
+  const { origin, account, providerName } = await setupChat(db, {
     model_context_window: 200,
     persona: 'A '.repeat(500), // ~330 tokens by the estimator
   });
-  t.after(async () => {
-    await fastify.close();
-    await db('accounts').where({ id: account.id }).del();
-    await db.destroy();
-  });
+  t.after(() => cleanup(db, account, providerName, fastify));
 
   const token = await mintSession(fastify, origin);
   const res = await fastify.inject({
@@ -250,15 +273,10 @@ test('POST /chat: happy path persists both turns and returns the reply', async (
   const fastify = await buildServer({
     db,
     logger: false,
-    registry: makeFakeRegistry(),
     adapterFactory: () => makeFakeAdapter({ reply: 'I help with widgets.', capture }),
   });
-  const { origin, account } = await setupChat(db);
-  t.after(async () => {
-    await fastify.close();
-    await db('accounts').where({ id: account.id }).del();
-    await db.destroy();
-  });
+  const { origin, account, providerName } = await setupChat(db);
+  t.after(() => cleanup(db, account, providerName, fastify));
 
   const token = await mintSession(fastify, origin);
   const res = await fastify.inject({
@@ -294,20 +312,42 @@ test('POST /chat: happy path persists both turns and returns the reply', async (
   assert.equal(messages[1].content, 'I help with widgets.');
 });
 
+test('POST /chat: adapter factory receives the resolved provider', async (t) => {
+  const db = makeTestDb();
+  const seen: { providerName?: string; apiKey?: string | undefined } = {};
+  const fastify = await buildServer({
+    db,
+    logger: false,
+    adapterFactory: (provider, apiKey) => {
+      seen.providerName = provider.name;
+      seen.apiKey = apiKey;
+      return makeFakeAdapter();
+    },
+  });
+  const { origin, account, providerName } = await setupChat(db);
+  t.after(() => cleanup(db, account, providerName, fastify));
+
+  const token = await mintSession(fastify, origin);
+  await fastify.inject({
+    method: 'POST',
+    url: '/chat',
+    headers: { authorization: `Bearer ${token}` },
+    payload: { message: 'hi' },
+  });
+  assert.equal(seen.providerName, providerName);
+  // Unmetered provider + no chatbot key → apiKey is undefined.
+  assert.equal(seen.apiKey, undefined);
+});
+
 test('POST /chat: adapter failure returns 502 and leaves user msg persisted with no assistant row', async (t) => {
   const db = makeTestDb();
   const fastify = await buildServer({
     db,
     logger: false,
-    registry: makeFakeRegistry(),
     adapterFactory: () => makeFakeAdapter({ throwError: new Error('upstream blew up') }),
   });
-  const { origin, account } = await setupChat(db);
-  t.after(async () => {
-    await fastify.close();
-    await db('accounts').where({ id: account.id }).del();
-    await db.destroy();
-  });
+  const { origin, account, providerName } = await setupChat(db);
+  t.after(() => cleanup(db, account, providerName, fastify));
 
   const token = await mintSession(fastify, origin);
   const res = await fastify.inject({
@@ -338,7 +378,6 @@ test('POST /chat: second turn includes prior history in the adapter request', as
   const fastify = await buildServer({
     db,
     logger: false,
-    registry: makeFakeRegistry(),
     adapterFactory: () => ({
       protocol: 'ollama-native',
       chat: async (req) => {
@@ -347,12 +386,8 @@ test('POST /chat: second turn includes prior history in the adapter request', as
       },
     }),
   });
-  const { origin, account } = await setupChat(db);
-  t.after(async () => {
-    await fastify.close();
-    await db('accounts').where({ id: account.id }).del();
-    await db.destroy();
-  });
+  const { origin, account, providerName } = await setupChat(db);
+  t.after(() => cleanup(db, account, providerName, fastify));
 
   const token = await mintSession(fastify, origin);
 
@@ -386,27 +421,6 @@ test('POST /chat: second turn includes prior history in the adapter request', as
   assert.equal(second.messages[3].content, 'second user');
 });
 
-test('POST /chat: 500 when buildServer was constructed without a registry', async (t) => {
-  const db = makeTestDb();
-  const fastify = await buildServer({ db, logger: false });
-  const { origin, account } = await setupChat(db);
-  t.after(async () => {
-    await fastify.close();
-    await db('accounts').where({ id: account.id }).del();
-    await db.destroy();
-  });
-
-  const token = await mintSession(fastify, origin);
-  const res = await fastify.inject({
-    method: 'POST',
-    url: '/chat',
-    headers: { authorization: `Bearer ${token}` },
-    payload: { message: 'hi' },
-  });
-  assert.equal(res.statusCode, 500);
-  assert.equal(res.json().error, 'server_misconfigured');
-});
-
 // ----- geo-blocking -----
 
 function fakeGeoChecker(mapping: Record<string, string | null>): GeoChecker {
@@ -420,14 +434,10 @@ test('POST /sessions: 403 geo_blocked when blocklist matches the visitor country
     logger: false,
     geoChecker: fakeGeoChecker({ '203.0.113.10': 'RU' }),
   });
-  const { slug, origin, account } = await setupChat(db);
+  const { slug, origin, account, providerName } = await setupChat(db);
   await setChatbotGeoMode(db, slug, 'blocklist');
   await setChatbotGeoCountries(db, slug, ['RU', 'CN']);
-  t.after(async () => {
-    await fastify.close();
-    await db('accounts').where({ id: account.id }).del();
-    await db.destroy();
-  });
+  t.after(() => cleanup(db, account, providerName, fastify));
 
   const res = await fastify.inject({
     method: 'POST',
@@ -449,14 +459,10 @@ test('POST /sessions: allowlist permits the listed country and rejects others', 
       '203.0.113.21': 'US',
     }),
   });
-  const { slug, origin, account } = await setupChat(db);
+  const { slug, origin, account, providerName } = await setupChat(db);
   await setChatbotGeoMode(db, slug, 'allowlist');
   await setChatbotGeoCountries(db, slug, ['GB']);
-  t.after(async () => {
-    await fastify.close();
-    await db('accounts').where({ id: account.id }).del();
-    await db.destroy();
-  });
+  t.after(() => cleanup(db, account, providerName, fastify));
 
   const ok = await fastify.inject({
     method: 'POST',
@@ -483,14 +489,10 @@ test('GET /sessions/can-start: returns { ok: true } when geo allows', async (t) 
     logger: false,
     geoChecker: fakeGeoChecker({ '203.0.113.30': 'GB' }),
   });
-  const { slug, origin, account } = await setupChat(db);
+  const { slug, origin, account, providerName } = await setupChat(db);
   await setChatbotGeoMode(db, slug, 'allowlist');
   await setChatbotGeoCountries(db, slug, ['GB']);
-  t.after(async () => {
-    await fastify.close();
-    await db('accounts').where({ id: account.id }).del();
-    await db.destroy();
-  });
+  t.after(() => cleanup(db, account, providerName, fastify));
 
   const res = await fastify.inject({
     method: 'GET',
@@ -509,14 +511,10 @@ test('GET /sessions/can-start: 403 geo_blocked when policy denies (mints nothing
     logger: false,
     geoChecker: fakeGeoChecker({ '203.0.113.40': 'RU' }),
   });
-  const { slug, origin, account } = await setupChat(db);
+  const { slug, origin, account, providerName } = await setupChat(db);
   await setChatbotGeoMode(db, slug, 'blocklist');
   await setChatbotGeoCountries(db, slug, ['RU']);
-  t.after(async () => {
-    await fastify.close();
-    await db('accounts').where({ id: account.id }).del();
-    await db.destroy();
-  });
+  t.after(() => cleanup(db, account, providerName, fastify));
 
   const res = await fastify.inject({
     method: 'GET',
@@ -567,19 +565,14 @@ test('POST /chat: 403 geo_blocked rejects after session is minted', async (t) =>
   const fastify = await buildServer({
     db,
     logger: false,
-    registry: makeFakeRegistry(),
     adapterFactory: () => makeFakeAdapter(),
     geoChecker: fakeGeoChecker({
       '203.0.113.50': 'GB',
       '203.0.113.51': 'RU',
     }),
   });
-  const { slug, origin, account } = await setupChat(db);
-  t.after(async () => {
-    await fastify.close();
-    await db('accounts').where({ id: account.id }).del();
-    await db.destroy();
-  });
+  const { slug, origin, account, providerName } = await setupChat(db);
+  t.after(() => cleanup(db, account, providerName, fastify));
 
   const sessionRes = await fastify.inject({
     method: 'POST',
@@ -615,12 +608,8 @@ test('GET /messages: 403 geo_blocked when policy denies', async (t) => {
       '203.0.113.61': 'RU',
     }),
   });
-  const { slug, origin, account } = await setupChat(db);
-  t.after(async () => {
-    await fastify.close();
-    await db('accounts').where({ id: account.id }).del();
-    await db.destroy();
-  });
+  const { slug, origin, account, providerName } = await setupChat(db);
+  t.after(() => cleanup(db, account, providerName, fastify));
 
   const sessionRes = await fastify.inject({
     method: 'POST',

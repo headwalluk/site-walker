@@ -12,7 +12,6 @@ import {
   type CheckGeoResult,
   type GeoChecker,
 } from './services/geo.js';
-import type { ProviderRegistry } from './config/site-walker-config.js';
 import { env as runtimeEnv } from './config/env.js';
 import { VERSION } from './utils/version.js';
 
@@ -23,11 +22,6 @@ const GITHUB_URL = 'https://github.com/headwalluk/site-walker';
 export interface BuildServerOpts {
   db: Knex;
   logger?: boolean;
-  /**
-   * Provider registry for /chat. Optional so tests that don't exercise /chat
-   * can build the server with just a db. /chat returns 500 if absent.
-   */
-  registry?: ProviderRegistry;
   /** Replace the adapter factory used by /chat (tests inject a fake). */
   adapterFactory?: AdapterFactory;
   /**
@@ -58,6 +52,7 @@ const CHAT_ERROR_STATUS = {
   message_too_long: 400,
   context_overflow: 413,
   model_not_configured: 503,
+  chatbot_api_key_missing: 503,
   model_error: 502,
 } as const satisfies Record<ChatError['code'], number>;
 
@@ -213,7 +208,7 @@ async function enforceGeo(
 }
 
 export async function buildServer(opts: BuildServerOpts): Promise<FastifyInstance> {
-  const { db, logger = true, registry, adapterFactory } = opts;
+  const { db, logger = true, adapterFactory } = opts;
   const geoChecker: GeoChecker | null = opts.geoChecker ?? null;
   // trustProxy: required for X-Forwarded-For to be honoured behind nginx /
   // Cloudflare / whatever fronts api.site-walker.net. In dev with no proxy
@@ -627,10 +622,6 @@ export async function buildServer(opts: BuildServerOpts): Promise<FastifyInstanc
       if (!token) {
         return reply.status(401).send({ error: 'token_required' });
       }
-      if (!registry) {
-        req.log.error('POST /chat called but no provider registry is wired into buildServer');
-        return reply.status(500).send({ error: 'server_misconfigured' });
-      }
       const body = req.body as { message?: unknown } | undefined;
       if (!body || typeof body.message !== 'string') {
         return reply.status(400).send({ error: 'message_required' });
@@ -661,7 +652,6 @@ export async function buildServer(opts: BuildServerOpts): Promise<FastifyInstanc
       try {
         const result = await runChat({
           db,
-          registry,
           sessionToken: token,
           message: body.message,
           adapterFactory,

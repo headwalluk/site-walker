@@ -23,7 +23,7 @@ Operator and developer reference docs live in [`docs/`](docs/):
 - [**Browser API usage**](docs/api-usage.md) — chat flow for widget developers: `POST /sessions`, `POST /chat`, `GET /messages`, token persistence, error handling.
 - [**`./bin/sw` CLI reference**](docs/cli-sw.md) — register chatbots, manage origins, choose models, inspect system blocks.
 - [**`./bin/chat` reference**](docs/cli-chat.md) — interactive test client that exercises the loop end-to-end.
-- [**`site-walker.toml`**](docs/site-walker-toml.md) — the provider registry: search paths, permission gate, per-provider keys.
+- [**Provider registry**](docs/cli-sw.md#sw-provider) — DB-backed (since 0.13.0); managed via `sw provider add/list/show/remove` and `sw provider models add/list/remove/discover`.
 - [**`.env`**](docs/env.md) — environment file: database connection, host/port, permission gate.
 - [**System blocks**](docs/system-blocks.md) — persona, disk blocks, ordering rules, token-budget interplay.
 

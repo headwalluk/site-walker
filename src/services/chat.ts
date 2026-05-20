@@ -1,12 +1,14 @@
 import type { Knex } from 'knex';
-import type { ProviderEntry, ProviderRegistry } from '../config/site-walker-config.js';
 import { buildAdapter } from '../providers/index.js';
 import type { ChatMessage, ProtocolAdapter } from '../providers/index.js';
+import type { Provider } from './providers.js';
+import { decrypt } from '../utils/crypto.js';
+import { loadEncryptionKey } from '../config/secrets.js';
 import { estimateTokens } from '../utils/tokens.js';
 import { appendMessage, findSessionByToken, listMessages, type Message } from './sessions.js';
 import { defaultHeadroom, resolveModel, type ResolvedModel } from './models.js';
 import { assemblePrompt, loadDiskBlocks } from './system-blocks.js';
-import { getChatbotById } from './chatbots.js';
+import { getChatbotById, type Chatbot } from './chatbots.js';
 
 export const MAX_MESSAGE_CHARS = 8000;
 
@@ -16,6 +18,7 @@ export type ChatErrorCode =
   | 'message_too_long'
   | 'context_overflow'
   | 'model_not_configured'
+  | 'chatbot_api_key_missing'
   | 'model_error';
 
 /**
@@ -33,11 +36,10 @@ export class ChatError extends Error {
   }
 }
 
-export type AdapterFactory = (entry: ProviderEntry) => ProtocolAdapter;
+export type AdapterFactory = (provider: Provider, apiKey?: string) => ProtocolAdapter;
 
 export interface RunChatInput {
   db: Knex;
-  registry: ProviderRegistry;
   sessionToken: string;
   message: string;
   /** Override the system-blocks base directory (tests use this). */
@@ -56,8 +58,42 @@ function historyToChatMessages(history: Message[]): ChatMessage[] {
   return history.map((m) => ({ role: m.role, content: m.content }));
 }
 
+/**
+ * Decrypt the chatbot's stored API key, if present. Returns undefined when
+ * the chatbot hasn't set one. Throws ChatError('chatbot_api_key_missing')
+ * when the provider is metered and the chatbot has no key — caller does
+ * not need to handle that case itself.
+ */
+function decryptChatbotApiKey(chatbot: Chatbot, provider: Provider): string | undefined {
+  const { provider_api_key_ciphertext, provider_api_key_nonce, provider_api_key_auth_tag } =
+    chatbot;
+
+  if (provider_api_key_ciphertext && provider_api_key_nonce && provider_api_key_auth_tag) {
+    const key = loadEncryptionKey();
+    return decrypt(
+      {
+        ciphertext: provider_api_key_ciphertext,
+        nonce: provider_api_key_nonce,
+        authTag: provider_api_key_auth_tag,
+      },
+      key,
+    );
+  }
+
+  if (provider.is_metered) {
+    throw new ChatError(
+      'chatbot_api_key_missing',
+      `chatbot "${chatbot.slug}" targets metered provider "${provider.name}" but has no api_key set. ` +
+        `Run \`sw chatbot set-api-key ${chatbot.slug}\` to provide one.`,
+      { chatbot: chatbot.slug, provider: provider.name },
+    );
+  }
+
+  return undefined;
+}
+
 export async function runChat(input: RunChatInput): Promise<RunChatResult> {
-  const { db, registry, sessionToken, message, blocksBaseDir, adapterFactory } = input;
+  const { db, sessionToken, message, blocksBaseDir, adapterFactory } = input;
   const makeAdapter: AdapterFactory = adapterFactory ?? buildAdapter;
 
   const trimmed = message.trim();
@@ -85,10 +121,14 @@ export async function runChat(input: RunChatInput): Promise<RunChatResult> {
 
   let resolved: ResolvedModel;
   try {
-    resolved = resolveModel(chatbot, registry);
+    resolved = await resolveModel(db, chatbot);
   } catch (err) {
     throw new ChatError('model_not_configured', (err as Error).message);
   }
+
+  // Surface a missing api_key for metered providers before we do any further
+  // work (assemble blocks, count tokens). Caller gets a clean 503.
+  const apiKey = decryptChatbotApiKey(chatbot, resolved.provider);
 
   const diskBlocks = blocksBaseDir
     ? await loadDiskBlocks(chatbot.slug, blocksBaseDir)
@@ -130,7 +170,7 @@ export async function runChat(input: RunChatInput): Promise<RunChatResult> {
     { role: 'user', content: trimmed },
   ];
 
-  const adapter = makeAdapter(resolved.provider);
+  const adapter = makeAdapter(resolved.provider, apiKey);
 
   let response;
   try {

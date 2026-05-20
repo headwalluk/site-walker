@@ -23,18 +23,57 @@ import {
 import { findSessionByTokenOrId, listMessages, listSessions } from '../services/sessions.js';
 import { assemblePrompt, loadDiskBlocks } from '../services/system-blocks.js';
 import { resolveModel, setContextWindow, setModel, setParameters } from '../services/models.js';
-import { loadConfig } from '../config/site-walker-config.js';
 import { listProviderModels } from '../providers/list-models.js';
+import { DEFAULT_OPENROUTER_BASE_URL } from '../providers/openrouter.js';
+import {
+  SUPPORTED_PROTOCOLS,
+  createProvider,
+  createProviderModel,
+  deleteProvider,
+  deleteProviderModel,
+  getProviderByName,
+  listProviderModelsForProvider,
+  listProviders,
+} from '../services/providers.js';
 import {
   getChatbotGeoSummary,
   setChatbotGeoCountries,
   setChatbotGeoMode,
 } from '../services/geo.js';
 import { readPersonaTemplate } from '../utils/templates.js';
+import { encrypt, generateMasterKey } from '../utils/crypto.js';
+import { loadEncryptionKey } from '../config/secrets.js';
 
 const program = new Command();
 
 program.name('sw').description('site-walker admin CLI').version('0.11.0');
+
+// -----------------------------------------------------------------------------
+// secrets subgroup
+// -----------------------------------------------------------------------------
+
+const secrets = program
+  .command('secrets')
+  .description(
+    'manage env-resident master secrets (SW_ENCRYPTION_KEY today; SW_PROVISIONING_KEY in M19)',
+  );
+
+secrets
+  .command('gen-key')
+  .description('print a fresh base64 32-byte SW_ENCRYPTION_KEY value to stdout')
+  .action(async () => {
+    try {
+      const key = generateMasterKey();
+      // Print just the value to stdout so it can be piped or captured cleanly;
+      // the hint goes to stderr so the operator sees it but it doesn't pollute
+      // the captured value.
+      console.log(key.toString('base64'));
+      console.error('# Paste the value above into your .env as SW_ENCRYPTION_KEY=...');
+      console.error('# Treat the value like any other production secret — do not commit it.');
+    } finally {
+      await db.destroy();
+    }
+  });
 
 // -----------------------------------------------------------------------------
 // account subgroup
@@ -344,13 +383,76 @@ chatbot
   .argument('<model-slug>', 'provider/model, e.g. cortex/qwen2:1.5b')
   .action(async (slug: string, modelSlug: string) => {
     try {
-      const registry = await loadConfig();
-      const row = await setModel(db, slug, modelSlug, registry);
+      const row = await setModel(db, slug, modelSlug);
       console.log(`Set model_slug="${row.model_slug}" for chatbot slug="${row.slug}".`);
     } finally {
       await db.destroy();
     }
   });
+
+chatbot
+  .command('set-api-key')
+  .description("encrypt and store this chatbot's BYO LLM provider API key. Reads from stdin only.")
+  .argument('<slug>', 'chatbot slug')
+  .action(async (slug: string) => {
+    try {
+      if (process.stdin.isTTY) {
+        console.error(
+          'sw chatbot set-api-key reads from stdin only. Pipe the key — for example:\n' +
+            `  echo "sk-ant-..." | ./bin/sw chatbot set-api-key ${slug}\n` +
+            'or:\n' +
+            `  ./bin/sw chatbot set-api-key ${slug} < ~/secrets/key.txt`,
+        );
+        process.exitCode = 1;
+        return;
+      }
+      const chatbot = await getChatbotBySlug(db, slug);
+      if (!chatbot) {
+        console.error(`Chatbot not found: slug="${slug}"`);
+        process.exitCode = 1;
+        return;
+      }
+      const raw = await readAllStdin();
+      const apiKey = raw.trim();
+      if (apiKey.length === 0) {
+        console.error(`No api_key value read from stdin. Aborting; no change made.`);
+        process.exitCode = 1;
+        return;
+      }
+      const plaintextBytes = Buffer.byteLength(apiKey, 'utf8');
+      // VARBINARY(255) on the ciphertext column; AES-GCM ciphertext is byte-
+      // for-byte the same length as plaintext, so this cap is exact.
+      if (plaintextBytes > 255) {
+        console.error(
+          `api_key is ${plaintextBytes} bytes; the ciphertext column is VARBINARY(255). ` +
+            `Refusing to truncate.`,
+        );
+        process.exitCode = 1;
+        return;
+      }
+      const masterKey = loadEncryptionKey();
+      const secret = encrypt(apiKey, masterKey);
+      await db('chatbots').where({ id: chatbot.id }).update({
+        provider_api_key_ciphertext: secret.ciphertext,
+        provider_api_key_nonce: secret.nonce,
+        provider_api_key_auth_tag: secret.authTag,
+      });
+      // Never print the key, the ciphertext, or any prefix of either.
+      console.log(
+        `Set api_key for chatbot slug="${slug}" (${plaintextBytes} bytes stored encrypted).`,
+      );
+    } finally {
+      await db.destroy();
+    }
+  });
+
+async function readAllStdin(): Promise<string> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of process.stdin) {
+    chunks.push(typeof chunk === 'string' ? Buffer.from(chunk, 'utf8') : (chunk as Buffer));
+  }
+  return Buffer.concat(chunks).toString('utf8');
+}
 
 chatbot
   .command('set-parameters')
@@ -402,12 +504,12 @@ chatbot
         console.log(`Chatbot "${slug}" has no model_slug set.`);
         return;
       }
-      const registry = await loadConfig();
-      const resolved = resolveModel(row, registry);
+      const resolved = await resolveModel(db, row);
       console.log(`Chatbot: ${resolved.chatbotSlug}`);
       console.log(`  model_slug:           ${resolved.modelSlug}`);
       console.log(
-        `  provider:             ${resolved.provider.name} (${resolved.provider.protocol})`,
+        `  provider:             ${resolved.provider.name} (${resolved.provider.protocol})` +
+          (resolved.provider.is_metered ? ' [metered]' : ' [unmetered]'),
       );
       console.log(`  model:                ${resolved.model}`);
       console.log(`  parameters:           ${JSON.stringify(resolved.parameters)}`);
@@ -481,26 +583,93 @@ chatbot
   });
 
 // -----------------------------------------------------------------------------
-// provider subgroup
+// provider subgroup (DB-backed registry, M17 onwards)
 // -----------------------------------------------------------------------------
 
-const provider = program.command('provider').description('inspect the provider registry (TOML)');
+const provider = program.command('provider').description('manage the DB-backed provider registry');
+
+provider
+  .command('add')
+  .description('register a new provider in the DB registry')
+  .argument('<name>', 'provider name (URL-safe slug; appears as the prefix in model_slug)')
+  .requiredOption(
+    '-p, --protocol <protocol>',
+    `wire protocol — one of: ${SUPPORTED_PROTOCOLS.join(', ')}`,
+  )
+  .option(
+    '-u, --base-url <url>',
+    'endpoint root (required for ollama-native; defaults to https://openrouter.ai/api/v1 for openrouter)',
+  )
+  .option('--local', 'mark this provider as LAN-only (defaults is_metered to false)')
+  .option('--no-metered', 'force is_metered=false (Ollama or other free-tier provider)')
+  .option('--metered', 'force is_metered=true (overrides the !is_local default)')
+  .action(
+    async (
+      name: string,
+      opts: { protocol: string; baseUrl?: string; local?: boolean; metered?: boolean },
+    ) => {
+      try {
+        let baseUrl = opts.baseUrl;
+        if (!baseUrl && opts.protocol === 'openrouter') {
+          baseUrl = DEFAULT_OPENROUTER_BASE_URL;
+        }
+        if (!baseUrl) {
+          console.error(
+            `--base-url is required for protocol "${opts.protocol}". ` +
+              `(Defaults are only filled in for openrouter.)`,
+          );
+          process.exitCode = 1;
+          return;
+        }
+        const row = await createProvider(db, {
+          name,
+          protocol: opts.protocol,
+          base_url: baseUrl,
+          is_local: opts.local ?? false,
+          is_metered: opts.metered,
+        });
+        console.log(
+          `Created provider: id=${row.id} name=${row.name} protocol=${row.protocol} ` +
+            `base_url=${row.base_url} is_local=${row.is_local} is_metered=${row.is_metered}`,
+        );
+      } finally {
+        await db.destroy();
+      }
+    },
+  );
 
 provider
   .command('list')
-  .description('list providers defined in site-walker.toml (api_keys are never printed)')
+  .description('list providers in the DB registry (with per-provider model counts)')
   .action(async () => {
     try {
-      const registry = await loadConfig();
-      console.log(`Provider registry (${registry.configPath}):`);
-      if (registry.providers.size === 0) {
-        console.log('  (no providers defined)');
+      const rows = await listProviders(db);
+      if (rows.length === 0) {
+        console.log('(no providers defined — add one with `sw provider add`)');
         return;
       }
-      for (const entry of registry.providers.values()) {
-        const baseUrl = entry.base_url ? ` base_url=${entry.base_url}` : '';
-        const local = entry.is_local ? ' is_local=true' : '';
-        console.log(`  ${entry.name.padEnd(20)} protocol=${entry.protocol}${baseUrl}${local}`);
+      const counts = await db('provider_models')
+        .select('provider_id')
+        .count<{ provider_id: number; n: string | number }[]>({ n: '*' })
+        .groupBy('provider_id');
+      const countByProviderId = new Map<number, number>(
+        counts.map((r) => [r.provider_id, Number(r.n)]),
+      );
+      const nameW = Math.max(8, ...rows.map((r) => r.name.length));
+      const protoW = Math.max(10, ...rows.map((r) => r.protocol.length));
+      const urlW = Math.max(8, ...rows.map((r) => r.base_url.length));
+      console.log(
+        `${'name'.padEnd(nameW)}  ${'protocol'.padEnd(protoW)}  ${'base_url'.padEnd(urlW)}  ` +
+          `local  metered  models`,
+      );
+      for (const r of rows) {
+        const local = r.is_local ? 'yes' : 'no';
+        const metered = r.is_metered ? 'yes' : 'no';
+        const count = countByProviderId.get(r.id) ?? 0;
+        console.log(
+          `${r.name.padEnd(nameW)}  ${r.protocol.padEnd(protoW)}  ${r.base_url.padEnd(urlW)}  ` +
+            `${local.padEnd(5)}  ${metered.padEnd(7)}  ${count}`,
+        );
       }
     } finally {
       await db.destroy();
@@ -508,24 +677,74 @@ provider
   });
 
 provider
+  .command('show')
+  .description('dump a provider row as JSON')
+  .argument('<name>', 'provider name')
+  .action(async (name: string) => {
+    try {
+      const row = await getProviderByName(db, name);
+      if (!row) {
+        console.error(`Provider not found: name="${name}"`);
+        process.exitCode = 1;
+        return;
+      }
+      console.log(JSON.stringify(row, null, 2));
+    } finally {
+      await db.destroy();
+    }
+  });
+
+provider
+  .command('remove')
+  .description('delete a provider and CASCADE through its provider_models rows')
+  .argument('<name>', 'provider name')
+  .option('-f, --force', 'required — irreversible; deletes all provider_models rows too')
+  .action(async (name: string, opts: { force?: boolean }) => {
+    try {
+      if (!opts.force) {
+        console.error(
+          `Refusing to remove provider "${name}" without --force.\n` +
+            `Pass -f|--force to confirm. This cascades to every provider_models row.`,
+        );
+        process.exitCode = 1;
+        return;
+      }
+      const counts = await deleteProvider(db, name);
+      console.log(
+        `Removed provider name="${name}". Cascaded: ${counts.models} provider_model row(s).`,
+      );
+    } finally {
+      await db.destroy();
+    }
+  });
+
+const providerModels = provider
   .command('models')
-  .description('query a provider for its available models (copy-pasteable into `set-model`)')
-  .argument('<provider>', 'provider name from site-walker.toml')
+  .description('manage the local provider_models registry (add/list/remove) + live discovery');
+
+providerModels
+  .command('discover')
+  .description(
+    'query a registered provider for the models it serves (copy-pasteable into `set-model`)',
+  )
+  .argument('<provider>', 'provider name (from `sw provider list`)')
   .option('-f, --filter <substring>', 'case-insensitive substring filter against model id + label')
   .action(async (name: string, opts: { filter?: string }) => {
     try {
-      const registry = await loadConfig();
-      const entry = registry.providers.get(name);
+      const entry = await getProviderByName(db, name);
       if (!entry) {
         console.error(
-          `Provider "${name}" not defined in ${registry.configPath}. ` +
-            `Known: ${[...registry.providers.keys()].join(', ') || '(none)'}.`,
+          `Provider not found: name="${name}". Register it first with \`sw provider add\`.`,
         );
         process.exitCode = 1;
         return;
       }
 
-      const models = await listProviderModels(entry);
+      const models = await listProviderModels({
+        name: entry.name,
+        protocol: entry.protocol,
+        base_url: entry.base_url,
+      });
       const filter = opts.filter?.toLowerCase();
       const filtered = filter
         ? models.filter(
@@ -559,6 +778,109 @@ provider
             ? ` (of ${models.length} reported by the provider)`
             : ''),
       );
+    } finally {
+      await db.destroy();
+    }
+  });
+
+providerModels
+  .command('add')
+  .description("register a model under a provider (for chatbots' `set-model` to resolve against)")
+  .argument('<provider>', 'provider name (from `sw provider list`)')
+  .argument(
+    '<model-slug>',
+    'model identifier as the provider reports it, e.g. anthropic/claude-haiku-4.5',
+  )
+  .requiredOption('-c, --context-window <n>', 'total context tokens for this model', (raw) => {
+    const n = Number(raw);
+    if (!Number.isInteger(n) || n <= 0) {
+      throw new Error(`--context-window must be a positive integer (got "${raw}")`);
+    }
+    return n;
+  })
+  .option(
+    '--input-price <usd_per_million>',
+    'input token price, USD per million tokens',
+    parseFloat,
+  )
+  .option(
+    '--output-price <usd_per_million>',
+    'output token price, USD per million tokens',
+    parseFloat,
+  )
+  .action(
+    async (
+      providerName: string,
+      modelSlug: string,
+      opts: { contextWindow: number; inputPrice?: number; outputPrice?: number },
+    ) => {
+      try {
+        const provider = await getProviderByName(db, providerName);
+        if (!provider) {
+          console.error(
+            `Provider not found: name="${providerName}". Register it with \`sw provider add\`.`,
+          );
+          process.exitCode = 1;
+          return;
+        }
+        const row = await createProviderModel(db, {
+          provider_id: provider.id,
+          model_slug: modelSlug,
+          context_window: opts.contextWindow,
+          input_per_million_usd: opts.inputPrice ?? null,
+          output_per_million_usd: opts.outputPrice ?? null,
+        });
+        console.log(
+          `Added model: ${provider.name}/${row.model_slug} context_window=${row.context_window} ` +
+            `input=${row.input_per_million_usd ?? '(unmetered)'} ` +
+            `output=${row.output_per_million_usd ?? '(unmetered)'}`,
+        );
+      } finally {
+        await db.destroy();
+      }
+    },
+  );
+
+providerModels
+  .command('list')
+  .description('list models registered under a provider (DB; full slugs are copy-pasteable)')
+  .argument('<provider>', 'provider name')
+  .action(async (providerName: string) => {
+    try {
+      const provider = await getProviderByName(db, providerName);
+      if (!provider) {
+        console.error(`Provider not found: name="${providerName}"`);
+        process.exitCode = 1;
+        return;
+      }
+      const rows = await listProviderModelsForProvider(db, provider.id);
+      if (rows.length === 0) {
+        console.log(`(no models registered against provider "${providerName}")`);
+        return;
+      }
+      const slugW = Math.max(12, ...rows.map((r) => `${provider.name}/${r.model_slug}`.length));
+      console.log(`${'full slug'.padEnd(slugW)}  ${'context'.padEnd(8)}  in $/M   out $/M`);
+      for (const r of rows) {
+        const full = `${provider.name}/${r.model_slug}`.padEnd(slugW);
+        const ctx = String(r.context_window).padEnd(8);
+        const inPrice = (r.input_per_million_usd ?? '-').padEnd(8);
+        const outPrice = r.output_per_million_usd ?? '-';
+        console.log(`${full}  ${ctx}  ${inPrice} ${outPrice}`);
+      }
+    } finally {
+      await db.destroy();
+    }
+  });
+
+providerModels
+  .command('remove')
+  .description('remove a model registered under a provider')
+  .argument('<provider>', 'provider name')
+  .argument('<model-slug>', 'model identifier (as registered with `add`)')
+  .action(async (providerName: string, modelSlug: string) => {
+    try {
+      await deleteProviderModel(db, providerName, modelSlug);
+      console.log(`Removed model: ${providerName}/${modelSlug}`);
     } finally {
       await db.destroy();
     }

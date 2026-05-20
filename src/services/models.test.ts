@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import type { ProviderEntry, ProviderRegistry } from '../config/site-walker-config.js';
+import type { Knex } from 'knex';
 import {
   defaultHeadroom,
   resolveModel,
@@ -12,24 +12,37 @@ import {
   validateRegistryAgainstChatbots,
 } from './models.js';
 import { getChatbotBySlug } from './chatbots.js';
+import { createProvider, createProviderModel } from './providers.js';
 import { makeTestDb, seedAccountAndChatbot } from '../testing/db.js';
 
 function uniqueSlug(): string {
   return `test-${randomUUID().slice(0, 8)}`;
 }
 
-function fakeRegistry(entries: ProviderEntry[] = []): ProviderRegistry {
-  return {
-    configPath: '/tmp/fake.toml',
-    providers: new Map(entries.map((e) => [e.name, e])),
-  };
+/**
+ * Each test gets its own provider + model rows so concurrent test
+ * execution doesn't collide on unique provider names. Returns the
+ * provider name so the test can compose the `provider/model` slug.
+ */
+async function seedProvider(
+  db: Knex,
+  opts: { metered?: boolean } = {},
+): Promise<{ providerName: string; providerId: number }> {
+  const providerName = `pi-${randomUUID().slice(0, 8)}`;
+  const provider = await createProvider(db, {
+    name: providerName,
+    protocol: 'ollama-native',
+    base_url: 'http://test.invalid:11434',
+    is_local: !opts.metered,
+    is_metered: opts.metered ?? false,
+  });
+  await createProviderModel(db, {
+    provider_id: provider.id,
+    model_slug: 'qwen2:1.5b',
+    context_window: 4096,
+  });
+  return { providerName, providerId: provider.id };
 }
-
-const piEntry: ProviderEntry = {
-  name: 'pi',
-  protocol: 'ollama-native',
-  base_url: 'http://rpi.local:11434',
-};
 
 test('setModel rejects when provider is not in the registry', async (t) => {
   const db = makeTestDb();
@@ -41,22 +54,24 @@ test('setModel rejects when provider is not in the registry', async (t) => {
   });
 
   await assert.rejects(
-    () => setModel(db, slug, 'nope/qwen2:1.5b', fakeRegistry([piEntry])),
-    /Provider "nope".*not defined/,
+    () => setModel(db, slug, 'no-such-provider/qwen2:1.5b'),
+    /does not resolve against the provider registry/,
   );
 });
 
-test('setModel persists model_slug when provider is known', async (t) => {
+test('setModel persists model_slug when the slug resolves against the DB', async (t) => {
   const db = makeTestDb();
   const slug = uniqueSlug();
   const { account } = await seedAccountAndChatbot(db, slug);
+  const { providerName } = await seedProvider(db);
   t.after(async () => {
     await db('accounts').where({ id: account.id }).del();
+    await db('providers').where({ name: providerName }).del();
     await db.destroy();
   });
 
-  const updated = await setModel(db, slug, 'pi/qwen2:1.5b', fakeRegistry([piEntry]));
-  assert.equal(updated.model_slug, 'pi/qwen2:1.5b');
+  const updated = await setModel(db, slug, `${providerName}/qwen2:1.5b`);
+  assert.equal(updated.model_slug, `${providerName}/qwen2:1.5b`);
 });
 
 test('setParameters rejects unknown keys', async (t) => {
@@ -123,26 +138,50 @@ test('setContextWindow persists a positive integer', async (t) => {
   assert.equal(updated.model_context_window, 32000);
 });
 
-test('resolveModel happy path', async (t) => {
+test('resolveModel happy path joins through the DB registry', async (t) => {
   const db = makeTestDb();
   const slug = uniqueSlug();
   const { account } = await seedAccountAndChatbot(db, slug);
+  const { providerName } = await seedProvider(db);
   t.after(async () => {
     await db('accounts').where({ id: account.id }).del();
+    await db('providers').where({ name: providerName }).del();
     await db.destroy();
   });
 
-  const registry = fakeRegistry([piEntry]);
-  await setModel(db, slug, 'pi/qwen2:1.5b', registry);
+  await setModel(db, slug, `${providerName}/qwen2:1.5b`);
   await setParameters(db, slug, { temperature: 0.5 });
 
   const row = await getChatbotBySlug(db, slug);
   assert.ok(row);
-  const resolved = resolveModel(row, registry);
-  assert.equal(resolved.modelSlug, 'pi/qwen2:1.5b');
-  assert.equal(resolved.provider.name, 'pi');
+  const resolved = await resolveModel(db, row);
+  assert.equal(resolved.modelSlug, `${providerName}/qwen2:1.5b`);
+  assert.equal(resolved.provider.name, providerName);
   assert.equal(resolved.model, 'qwen2:1.5b');
   assert.deepEqual(resolved.parameters, { temperature: 0.5 });
+  // contextWindow falls back to provider_models.context_window when the
+  // chatbot's own override is NULL.
+  assert.equal(resolved.contextWindow, 4096);
+});
+
+test('resolveModel: chatbot override wins over provider_models.context_window', async (t) => {
+  const db = makeTestDb();
+  const slug = uniqueSlug();
+  const { account } = await seedAccountAndChatbot(db, slug);
+  const { providerName } = await seedProvider(db);
+  t.after(async () => {
+    await db('accounts').where({ id: account.id }).del();
+    await db('providers').where({ name: providerName }).del();
+    await db.destroy();
+  });
+
+  await setModel(db, slug, `${providerName}/qwen2:1.5b`);
+  await setContextWindow(db, slug, 2048);
+
+  const row = await getChatbotBySlug(db, slug);
+  assert.ok(row);
+  const resolved = await resolveModel(db, row);
+  assert.equal(resolved.contextWindow, 2048);
 });
 
 test('resolveModel throws when chatbot has no model_slug', async (t) => {
@@ -156,22 +195,31 @@ test('resolveModel throws when chatbot has no model_slug', async (t) => {
 
   const row = await getChatbotBySlug(db, slug);
   assert.ok(row);
-  assert.throws(() => resolveModel(row, fakeRegistry([piEntry])), /no model_slug set/);
+  await assert.rejects(() => resolveModel(db, row), /no model_slug set/);
 });
 
-test('resolveModel throws when registry is missing the provider', async (t) => {
+test('resolveModel throws when the registered provider/model row is missing', async (t) => {
   const db = makeTestDb();
   const slug = uniqueSlug();
   const { account } = await seedAccountAndChatbot(db, slug);
+  const { providerName } = await seedProvider(db);
   t.after(async () => {
     await db('accounts').where({ id: account.id }).del();
+    // Note: provider deleted before resolveModel so the lookup misses.
+    await db('providers').where({ name: providerName }).del();
     await db.destroy();
   });
 
-  await setModel(db, slug, 'pi/qwen2:1.5b', fakeRegistry([piEntry]));
+  await setModel(db, slug, `${providerName}/qwen2:1.5b`);
+  // Now wipe the provider entirely (CASCADE drops the model row).
+  await db('providers').where({ name: providerName }).del();
+
   const row = await getChatbotBySlug(db, slug);
   assert.ok(row);
-  assert.throws(() => resolveModel(row, fakeRegistry([])), /not defined/);
+  await assert.rejects(
+    () => resolveModel(db, row),
+    /does not resolve against the provider registry/,
+  );
 });
 
 test('validateContextBudget: under budget passes', () => {
@@ -206,30 +254,34 @@ test('validateRegistryAgainstChatbots: passes when every model_slug resolves', a
   const db = makeTestDb();
   const slug = uniqueSlug();
   const { account } = await seedAccountAndChatbot(db, slug);
+  const { providerName } = await seedProvider(db);
   t.after(async () => {
     await db('accounts').where({ id: account.id }).del();
+    await db('providers').where({ name: providerName }).del();
     await db.destroy();
   });
 
-  const registry = fakeRegistry([piEntry]);
-  await setModel(db, slug, 'pi/qwen2:1.5b', registry);
-  await validateRegistryAgainstChatbots(db, registry, [slug]);
+  await setModel(db, slug, `${providerName}/qwen2:1.5b`);
+  await validateRegistryAgainstChatbots(db, [slug]);
 });
 
 test('validateRegistryAgainstChatbots: fails when a chatbot references a missing provider', async (t) => {
   const db = makeTestDb();
   const slug = uniqueSlug();
   const { account } = await seedAccountAndChatbot(db, slug);
+  const { providerName } = await seedProvider(db);
   t.after(async () => {
     await db('accounts').where({ id: account.id }).del();
+    await db('providers').where({ name: providerName }).del();
     await db.destroy();
   });
 
-  const registry = fakeRegistry([piEntry]);
-  await setModel(db, slug, 'pi/qwen2:1.5b', registry);
+  await setModel(db, slug, `${providerName}/qwen2:1.5b`);
+  // Wipe the provider; the chatbot's model_slug now dangles.
+  await db('providers').where({ name: providerName }).del();
 
   await assert.rejects(
-    () => validateRegistryAgainstChatbots(db, fakeRegistry([]), [slug]),
-    /references provider "pi".*not defined/s,
+    () => validateRegistryAgainstChatbots(db, [slug]),
+    /does not resolve against the provider registry/,
   );
 });

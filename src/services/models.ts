@@ -1,16 +1,23 @@
 import type { Knex } from 'knex';
-import type { ProviderEntry, ProviderRegistry } from '../config/site-walker-config.js';
 import { NormalisedParametersSchema, parseModelSlug } from '../providers/index.js';
 import type { NormalisedParameters } from '../providers/index.js';
 import { getChatbotBySlug, type Chatbot } from './chatbots.js';
+import { findProviderModel, type Provider } from './providers.js';
 
 export interface ResolvedModel {
   chatbotId: number;
   chatbotSlug: string;
+  /** Full `provider/model` slug, as written in `chatbots.model_slug`. */
   modelSlug: string;
-  provider: ProviderEntry;
+  /** DB-loaded provider row (name, protocol, base_url, is_local, is_metered). */
+  provider: Provider;
+  /** The model portion after the slash, what the adapter passes to the API. */
   model: string;
   parameters: NormalisedParameters;
+  /**
+   * Effective context window. Operator override on the chatbot wins; otherwise
+   * the value registered against the provider's `provider_models` row.
+   */
   contextWindow: number | null;
 }
 
@@ -31,22 +38,19 @@ async function reload(db: Knex, slug: string): Promise<Chatbot> {
 }
 
 /**
- * Set a chatbot's model slug. Validates that the provider portion of the
- * slug exists in the loaded registry; the model portion is opaque (we don't
- * call the provider to check it — first request surfaces typos).
+ * Set a chatbot's model slug. Validates that the slug resolves against the
+ * DB-backed provider registry — both the provider name and the model row
+ * must exist. Typos surface here, not on first chat request.
  */
-export async function setModel(
-  db: Knex,
-  slug: string,
-  modelSlug: string,
-  registry: ProviderRegistry,
-): Promise<Chatbot> {
+export async function setModel(db: Knex, slug: string, modelSlug: string): Promise<Chatbot> {
   const chatbot = await getRowOrThrow(db, slug);
-  const { provider } = parseModelSlug(modelSlug);
-  if (!registry.providers.has(provider)) {
+  const { provider: providerName, model: modelPart } = parseModelSlug(modelSlug);
+  const resolved = await findProviderModel(db, providerName, modelPart);
+  if (!resolved) {
     throw new Error(
-      `Provider "${provider}" (referenced by model_slug "${modelSlug}") is not defined in ${registry.configPath}. ` +
-        `Known providers: ${[...registry.providers.keys()].join(', ') || '(none)'}.`,
+      `model_slug "${modelSlug}" does not resolve against the provider registry. ` +
+        `Register the provider with \`sw provider add\` and the model with ` +
+        `\`sw provider models add\`.`,
     );
   }
   await db('chatbots').where({ id: chatbot.id }).update({ model_slug: modelSlug });
@@ -77,19 +81,27 @@ export async function setContextWindow(db: Knex, slug: string, tokens: number): 
 }
 
 /**
- * Resolve a chatbot's chosen model into provider entry + model string +
- * parsed parameters. Throws if the chatbot has no model_slug or if its
- * provider is missing from the registry.
+ * Resolve a chatbot's chosen model into provider + model + parsed parameters
+ * by joining against the DB-backed provider registry. Throws if the chatbot
+ * has no `model_slug` set, or if the referenced provider/model isn't
+ * registered.
+ *
+ * Effective context window = chatbot override (if set) ?? provider model's
+ * declared window. Operator can still pin a smaller window per-chatbot if
+ * they want the budget check to be tighter than the model nominally allows.
  */
-export function resolveModel(chatbot: Chatbot, registry: ProviderRegistry): ResolvedModel {
+export async function resolveModel(db: Knex, chatbot: Chatbot): Promise<ResolvedModel> {
   if (!chatbot.model_slug) {
     throw new Error(`Chatbot "${chatbot.slug}" has no model_slug set.`);
   }
-  const { provider: providerName, model } = parseModelSlug(chatbot.model_slug);
-  const provider = registry.providers.get(providerName);
-  if (!provider) {
+  const { provider: providerName, model: modelPart } = parseModelSlug(chatbot.model_slug);
+  const found = await findProviderModel(db, providerName, modelPart);
+  if (!found) {
     throw new Error(
-      `Chatbot "${chatbot.slug}" references provider "${providerName}" which is not defined in ${registry.configPath}.`,
+      `Chatbot "${chatbot.slug}" references model_slug "${chatbot.model_slug}", which does ` +
+        `not resolve against the provider registry. Re-register the provider/model with ` +
+        `\`sw provider add\` and \`sw provider models add\`, or set a different model_slug ` +
+        `on this chatbot.`,
     );
   }
   const parameters: NormalisedParameters = chatbot.model_parameters
@@ -99,10 +111,10 @@ export function resolveModel(chatbot: Chatbot, registry: ProviderRegistry): Reso
     chatbotId: chatbot.id,
     chatbotSlug: chatbot.slug,
     modelSlug: chatbot.model_slug,
-    provider,
-    model,
+    provider: found.provider,
+    model: modelPart,
     parameters,
-    contextWindow: chatbot.model_context_window,
+    contextWindow: chatbot.model_context_window ?? found.model.context_window,
   };
 }
 
@@ -141,18 +153,17 @@ export function validateContextBudget(check: ContextBudgetCheck): void {
 }
 
 /**
- * Startup check: every chatbot with a non-NULL model_slug must reference a
- * provider that exists in the loaded registry. Caller decides what to do
- * with the thrown error (fail boot, fail CLI command, etc.).
+ * Startup check: every chatbot with a non-NULL model_slug must resolve
+ * against the DB-backed provider registry. Caller decides what to do with
+ * the thrown error (fail boot, fail CLI command, etc.).
  *
  * `whereSlugs` narrows the scan to a specific subset of chatbots — used by
- * tests that need to assert behaviour against rows they own, without being
+ * tests that need to assert behaviour against rows they own without being
  * dragged into validating unrelated state in a shared dev DB. Production
  * callers omit it to scan everything.
  */
 export async function validateRegistryAgainstChatbots(
   db: Knex,
-  registry: ProviderRegistry,
   whereSlugs?: string[],
 ): Promise<void> {
   const query = db<Chatbot>('chatbots').whereNotNull('model_slug').select('slug', 'model_slug');
@@ -164,11 +175,12 @@ export async function validateRegistryAgainstChatbots(
   for (const row of rows) {
     if (!row.model_slug) continue;
     try {
-      const { provider } = parseModelSlug(row.model_slug);
-      if (!registry.providers.has(provider)) {
+      const { provider: providerName, model: modelPart } = parseModelSlug(row.model_slug);
+      const found = await findProviderModel(db, providerName, modelPart);
+      if (!found) {
         problems.push(
-          `chatbot "${row.slug}" references provider "${provider}" (from model_slug "${row.model_slug}") ` +
-            `which is not defined in ${registry.configPath}`,
+          `chatbot "${row.slug}" references model_slug "${row.model_slug}", which does not ` +
+            `resolve against the provider registry (missing provider or model row)`,
         );
       }
     } catch (err) {

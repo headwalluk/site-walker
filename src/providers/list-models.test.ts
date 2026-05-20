@@ -3,8 +3,7 @@ import assert from 'node:assert/strict';
 import http, { type IncomingMessage, type ServerResponse } from 'node:http';
 import { once } from 'node:events';
 import type { AddressInfo } from 'node:net';
-import type { ProviderEntry } from '../config/site-walker-config.js';
-import { listProviderModels } from './list-models.js';
+import { listProviderModels, type ProviderForListing } from './list-models.js';
 
 interface CapturedRequest {
   url: string;
@@ -47,7 +46,7 @@ test('listProviderModels: ollama-native maps /api/tags to ModelListing[]', async
   });
   t.after(() => fake.close());
 
-  const entry: ProviderEntry = {
+  const entry: ProviderForListing = {
     name: 'pi',
     protocol: 'ollama-native',
     base_url: fake.url,
@@ -61,12 +60,7 @@ test('listProviderModels: ollama-native maps /api/tags to ModelListing[]', async
   assert.equal(fake.capturedRequests[0].method, 'GET');
 });
 
-test('listProviderModels: ollama-native requires base_url', async () => {
-  const entry: ProviderEntry = { name: 'pi', protocol: 'ollama-native' };
-  await assert.rejects(() => listProviderModels(entry), /requires base_url/);
-});
-
-test('listProviderModels: openrouter maps /models response and forwards api_key', async (t) => {
+test('listProviderModels: openrouter maps /models response (no Authorization sent)', async (t) => {
   const fake = await startFakeProvider({
     data: [
       { id: 'anthropic/claude-haiku-4.5', name: 'Claude Haiku 4.5', context_length: 200000 },
@@ -79,11 +73,10 @@ test('listProviderModels: openrouter maps /models response and forwards api_key'
   });
   t.after(() => fake.close());
 
-  const entry: ProviderEntry = {
+  const entry: ProviderForListing = {
     name: 'openrouter',
     protocol: 'openrouter',
     base_url: fake.url,
-    api_key: 'sk-or-v1-TEST',
   };
   const models = await listProviderModels(entry);
 
@@ -98,31 +91,19 @@ test('listProviderModels: openrouter maps /models response and forwards api_key'
   const req = fake.capturedRequests[0];
   assert.equal(req.url, '/models');
   assert.equal(req.method, 'GET');
-  assert.equal(req.headers.authorization, 'Bearer sk-or-v1-TEST');
+  // Discovery is BYO-key-free: no Authorization header should be sent.
+  assert.equal(req.headers.authorization, undefined);
 });
 
-test('listProviderModels: openrouter skips Authorization when api_key absent', async (t) => {
-  const fake = await startFakeProvider({ data: [{ id: 'free/model' }] });
-  t.after(() => fake.close());
-
-  const entry: ProviderEntry = {
-    name: 'openrouter',
-    protocol: 'openrouter',
-    base_url: fake.url,
-  };
-  await listProviderModels(entry);
-  assert.equal(fake.capturedRequests[0].headers.authorization, undefined);
-});
-
-test('listProviderModels: throws for protocols that have no discovery surface yet', async () => {
+test('listProviderModels: throws for protocols that have no discovery surface', async () => {
   await assert.rejects(
     () =>
       listProviderModels({
-        name: 'anthropic-direct',
-        protocol: 'anthropic',
-        api_key: 'sk-ant-x',
+        name: 'mystery',
+        protocol: 'unsupported-protocol',
+        base_url: 'http://x',
       }),
-    /doesn't yet support model listing/,
+    /doesn't support model discovery/,
   );
 });
 
@@ -130,7 +111,7 @@ test('listProviderModels: surfaces upstream non-2xx errors', async (t) => {
   const fake = await startFakeProvider({ error: 'nope' }, 503);
   t.after(() => fake.close());
 
-  const entry: ProviderEntry = {
+  const entry: ProviderForListing = {
     name: 'cortex',
     protocol: 'ollama-native',
     base_url: fake.url,

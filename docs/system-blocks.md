@@ -134,6 +134,6 @@ That entire workflow lives in M10. Until then, "rebuild" means an operator editi
 
 ## See also
 
-- [`cli-sw.md`](cli-sw.md) — `sw website set-persona`, `sw blocks list`.
+- [`cli-sw.md`](cli-sw.md) — `sw chatbot set-persona`, `sw blocks list`.
 - [`cli-chat.md`](cli-chat.md) — testing block changes interactively.
-- [`site-walker-toml.md`](site-walker-toml.md) — the model/context-window settings the budget check refers to.
+- [`cli-sw.md#sw-provider`](cli-sw.md#sw-provider) — the DB-backed provider registry; per-model `context_window` is what the budget check refers to.

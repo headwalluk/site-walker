@@ -1,5 +1,14 @@
-import type { ProviderEntry } from '../config/site-walker-config.js';
 import { DEFAULT_OPENROUTER_BASE_URL } from './openrouter.js';
+
+/**
+ * Minimum shape needed to ask a provider for its available models. Structural
+ * — both DB `Provider` rows and lightweight test objects satisfy it.
+ */
+export interface ProviderForListing {
+  name: string;
+  protocol: string;
+  base_url: string;
+}
 
 export interface ModelListing {
   /** The model string the operator passes as the part after the provider slash. */
@@ -36,16 +45,9 @@ async function listOllamaModels(baseUrl: string): Promise<ModelListing[]> {
     .filter((m): m is ModelListing => m !== null);
 }
 
-async function listOpenRouterModels(
-  baseUrl: string | undefined,
-  apiKey: string | undefined,
-): Promise<ModelListing[]> {
+async function listOpenRouterModels(baseUrl: string | undefined): Promise<ModelListing[]> {
   const url = `${(baseUrl ?? DEFAULT_OPENROUTER_BASE_URL).replace(/\/$/, '')}/models`;
-  const headers: Record<string, string> = {};
-  // The public /models endpoint doesn't strictly require auth, but sending
-  // the key is harmless and lets OpenRouter attribute the lookup.
-  if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
-  const data = await fetchJson<OpenRouterModelsResponse>(url, headers);
+  const data = await fetchJson<OpenRouterModelsResponse>(url, {});
   if (!Array.isArray(data.data)) return [];
   return data.data
     .map((m): ModelListing | null => {
@@ -63,29 +65,19 @@ async function listOpenRouterModels(
  * that don't expose a discovery endpoint throw with a clear message.
  *
  * The returned `id` is the model string the operator pastes after the
- * provider name into `sw chatbot set-model <slug> <provider>/<id>`.
+ * provider name into `sw chatbot set-model <slug> <provider>/<id>`. The
+ * openrouter discovery endpoint is public; no api_key is sent (and none
+ * is needed) — the live chat path is what actually uses the BYO key.
  */
-export async function listProviderModels(entry: ProviderEntry): Promise<ModelListing[]> {
+export async function listProviderModels(entry: ProviderForListing): Promise<ModelListing[]> {
   switch (entry.protocol) {
-    case 'ollama-native': {
-      if (!entry.base_url) {
-        throw new Error(
-          `provider "${entry.name}" (ollama-native) requires base_url in site-walker.toml`,
-        );
-      }
+    case 'ollama-native':
       return listOllamaModels(entry.base_url);
-    }
-    case 'openrouter': {
-      return listOpenRouterModels(entry.base_url, entry.api_key);
-    }
-    case 'anthropic':
-    case 'openai-compatible':
+    case 'openrouter':
+      return listOpenRouterModels(entry.base_url);
+    default:
       throw new Error(
-        `provider "${entry.name}" uses protocol "${entry.protocol}", which doesn't yet support model listing.`,
+        `provider "${entry.name}" uses protocol "${entry.protocol}", which doesn't support model discovery.`,
       );
-    default: {
-      const exhaustiveCheck: never = entry.protocol;
-      throw new Error(`unknown protocol "${exhaustiveCheck as string}"`);
-    }
   }
 }

@@ -17,6 +17,16 @@ export interface Chatbot {
   model_slug: string | null;
   model_parameters: ModelParameters | null;
   model_context_window: number | null;
+  /**
+   * AES-256-GCM-encrypted BYO LLM provider API key. All three columns are
+   * either all NULL (no key set) or all non-NULL (decryptable). Decryption
+   * happens in `chat.ts` at request time via `src/utils/crypto.ts` + the
+   * master key from `SW_ENCRYPTION_KEY`. Never logged. The DB row carries
+   * the raw Buffer values; the CLI never reads them back out.
+   */
+  provider_api_key_ciphertext: Buffer | null;
+  provider_api_key_nonce: Buffer | null;
+  provider_api_key_auth_tag: Buffer | null;
   created_at: Date;
   updated_at: Date;
 }

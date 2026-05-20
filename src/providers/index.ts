@@ -1,4 +1,4 @@
-import type { ProviderEntry } from '../config/site-walker-config.js';
+import type { Provider } from '../services/providers.js';
 import { OllamaNativeAdapter } from './ollama-native.js';
 import { OpenRouterAdapter } from './openrouter.js';
 import type { ProtocolAdapter } from './types.js';
@@ -13,46 +13,35 @@ export type {
 export { NormalisedParametersSchema, parseModelSlug } from './types.js';
 
 /**
- * Build a protocol adapter from a registry entry.
+ * Build a protocol adapter for a single chat request. The provider row is
+ * the DB-loaded `providers` row resolved from the chatbot's model_slug; the
+ * apiKey is the decrypted plaintext from `chatbots.provider_api_key_*` (or
+ * undefined for unmetered providers where the chatbot has no key set).
  *
- * Implemented:
- *  - ollama-native (M5)
- *  - openrouter   (0.9.0)
- *
- * Still to land:
- *  - anthropic           — direct Messages API (planned alongside Gemini/OpenAI cluster)
- *  - openai-compatible   — generic OpenAI-clone provider (reserved)
+ * Adapters are per-request instances — they hold the apiKey for the lifetime
+ * of the chat call, and are thrown away afterwards. Cheap; lifecycle is
+ * obvious; no shared mutable state between requests.
  */
-export function buildAdapter(entry: ProviderEntry): ProtocolAdapter {
-  switch (entry.protocol) {
-    case 'ollama-native': {
-      if (!entry.base_url) {
+export function buildAdapter(provider: Provider, apiKey?: string): ProtocolAdapter {
+  switch (provider.protocol) {
+    case 'ollama-native':
+      return new OllamaNativeAdapter(provider.base_url);
+    case 'openrouter':
+      if (!apiKey) {
         throw new Error(
-          `provider "${entry.name}" (ollama-native) requires base_url in site-walker.toml`,
-        );
-      }
-      return new OllamaNativeAdapter(entry.base_url);
-    }
-    case 'openrouter': {
-      if (!entry.api_key) {
-        throw new Error(
-          `provider "${entry.name}" (openrouter) requires api_key in site-walker.toml`,
+          `provider "${provider.name}" (openrouter) requires a chatbot-level api_key. ` +
+            `Set one with \`sw chatbot set-api-key <slug>\`.`,
         );
       }
       return new OpenRouterAdapter({
-        apiKey: entry.api_key,
-        baseUrl: entry.base_url,
+        apiKey,
+        baseUrl: provider.base_url,
       });
-    }
-    case 'anthropic':
-    case 'openai-compatible':
-      throw new Error(
-        `provider "${entry.name}" uses protocol "${entry.protocol}", which is not implemented yet. ` +
-          `Use openrouter to reach Anthropic models in the meantime.`,
-      );
     default: {
-      const exhaustiveCheck: never = entry.protocol;
-      throw new Error(`unknown protocol "${exhaustiveCheck as string}"`);
+      // SUPPORTED_PROTOCOLS narrows provider.protocol; this is the
+      // exhaustiveness guard.
+      const exhaustive: never = provider.protocol;
+      throw new Error(`unknown protocol "${exhaustive as string}"`);
     }
   }
 }

@@ -1,6 +1,3 @@
-import path from 'node:path';
-import os from 'node:os';
-
 /**
  * Normalised, frozen view of the runtime environment. All `process.env`
  * reads in production code go through this module. Construction validates
@@ -22,10 +19,6 @@ export interface RuntimeEnv {
     readonly host: string;
     readonly port: number;
   };
-  /** Override path for site-walker.toml. Undefined when SW_CONFIG is unset. */
-  readonly swConfig: string | undefined;
-  /** Resolved $XDG_CONFIG_HOME, defaulting to $HOME/.config. */
-  readonly xdgConfigHome: string;
   /**
    * Raw `NODE_ENV`, defaulting to `'production'` so the tighter mode
    * applies whenever the var is unset. Set explicitly to `'development'`
@@ -64,7 +57,6 @@ function nonEmptyOrDefault(raw: string | undefined, fallback: string): string {
  * a test that has just mutated `process.env`.
  */
 export function loadEnv(): RuntimeEnv {
-  const home = os.homedir();
   const nodeEnv = nonEmptyOrDefault(process.env.NODE_ENV, 'production');
   const env: RuntimeEnv = Object.freeze({
     db: Object.freeze({
@@ -78,9 +70,6 @@ export function loadEnv(): RuntimeEnv {
       host: nonEmptyOrDefault(process.env.HOST, '127.0.0.1'),
       port: parsePort(process.env.PORT, 'PORT', 47830),
     }),
-    swConfig:
-      process.env.SW_CONFIG && process.env.SW_CONFIG !== '' ? process.env.SW_CONFIG : undefined,
-    xdgConfigHome: nonEmptyOrDefault(process.env.XDG_CONFIG_HOME, path.join(home, '.config')),
     nodeEnv,
     isProduction: nodeEnv === 'production',
     geoipDbPath:

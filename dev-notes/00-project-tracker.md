@@ -488,5 +488,5 @@ Still open:
 - Resist adding Redis before M11. MariaDB carries everything until then.
 - This repo is API-only. The WordPress plugin lives elsewhere — anything resembling browser/widget code is out of scope.
 - API-key auth is **not** Phase 1. Browser traffic auths via `Origin` allowlist + session token; admin work goes through the local CLI against the local DB. API keys arrive in Phase 2 only if/when a server-to-server HTTP caller appears.
-- LLM provider config lives in a host-side TOML file (`site-walker.toml`, mode `0600`) — not in the DB. Per-website model selection lives in the DB. Full design in [`03-llm-providers.md`](03-llm-providers.md).
+- LLM provider config lives in MariaDB (since M17 / v0.13.0): `providers` + `provider_models` tables, per-chatbot BYO API keys in `chatbots.provider_api_key_*` (AES-256-GCM, master key in `.env` as `SW_ENCRYPTION_KEY`). Managed via `sw provider ...` and `sw chatbot set-api-key`. The pre-M17 TOML approach is preserved historically in [`03-llm-providers.md`](03-llm-providers.md).
 - `ollama-native` is the lowest-common-denominator target. Design system blocks against the Pi's tight context first; larger models unlock larger per-website blocks but we never assume a fat context globally.
