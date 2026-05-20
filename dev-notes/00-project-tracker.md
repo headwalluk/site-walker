@@ -12,6 +12,7 @@ Companion planning docs:
 - [`02-data-model.md`](02-data-model.md) — **v1.0 schema reference** (rewritten in M16 — `accounts`, `chatbots`, `chatbot_origins`, `chatbot_geo_countries`, `sessions`, `messages`, `geo_modes`). [`db-schema-pre-m16.sql`](db-schema-pre-m16.sql) is the frozen v0.11.0 snapshot kept for reference.
 - [`03-llm-providers.md`](03-llm-providers.md) — TOML provider registry, per-chatbot model selection, protocol adapters, normalised parameters, context-window handling. **Superseded in M17 by DB-backed provider registry** ([`10-saas-shape.md`](10-saas-shape.md)).
 - [`10-saas-shape.md`](10-saas-shape.md) — SaaS architecture (four-repo topology, account model, BYO keys, admin HTTP API, M16–M20 phasing)
+- [`11-budget-handoff.md`](11-budget-handoff.md) — budget-driven conversation handoff (soft-handoff at 80% spend, hard-cap → email capture). Recasts old M9 history-trimming as part of M20's budget-cap UX. Settled during M20 design pass.
 
 ## Next up
 
@@ -32,7 +33,7 @@ In parallel with the above (operator-side, outside this repo):
 Pre-pivot deferred work still real, now renumber-deferred until after M20:
 - **M7 finish**: `sw db backup/restore/list/prune`, `sw blocks rebuild` (the latter is really an M10 trigger).
 - **M11 (renumber-deferred)**: rate limiting + abuse heuristics (first Redis use). `is_local` on the provider entry is consumed here. Also the natural home for any provider-registry caching M17 might prove necessary.
-- **M9 (renumber-deferred)**: history trimming. The 0.6.0 chat path currently refuses with `413 context_overflow` when the prompt + history busts the window; M9 turns that into graceful drop-old-turns or summarise-older-turns.
+- **M9 (renumber-deferred, likely superseded)**: history trimming. The 0.6.0 chat path refuses with `413 context_overflow` when prompt + history busts the window. Preferred shape is to fold this into M20 via budget-driven handoff ([`11-budget-handoff.md`](11-budget-handoff.md)). M9 stays alive as a fallback only if real M18 cost data shows conversations regularly bust context windows before budgets.
 - **M15 (renumber-deferred)**: friendlier CLI + boot error messages for non-developer operators. Self-hosters will see raw knex/mysql2 stack traces today.
 - **M14 follow-ups**: gate `/docs` + `/openapi.json` on `NODE_ENV !== 'production'`; add request-body schemas to `POST /chat` with `attachValidation: true` so OpenAPI carries the body shape without breaking typed-error responses.
 
@@ -474,7 +475,7 @@ Resolved (kept for the record):
 - **Provisioning-key bootstrap mechanism** — resolved 2026-05-20. `SW_PROVISIONING_KEY` in `.env`, **not** in the `admin_keys` table. Air-gap chosen over single-code-path symmetry: a bug in `admin_keys`-touching code cannot accidentally create a provisioning credential. Full rationale + rotation procedure in [`10-saas-shape.md`](10-saas-shape.md). M19 implements: boot hash, constant-time-compare middleware, `sw secrets gen-provisioning-key` CLI, boot validation that rejects empty/short values.
 
 Still open:
-- **History trimming strategy** — old M9 (renumber-deferred). Sliding window vs summarisation. Shapes session schema. Decide before this lands.
+- **History trimming strategy** — old M9 (likely superseded by budget-driven handoff, see [`11-budget-handoff.md`](11-budget-handoff.md)). Original sliding-window-vs-summarisation choice remains a fallback only if M18 cost data shows budgets don't bound conversation length in practice.
 - **"I don't know, contact us" boundaries** — old M12 (renumber-deferred). What topics force the bail-out path?
 - **Auto-mode content ingestion shape** — post-M20. Push-triggered vs scheduled cron; status surface (polling vs callbacks); per-run cost ceiling. Sketch in [`10-saas-shape.md`](10-saas-shape.md); full doc when this milestone is next-up.
 

@@ -192,7 +192,7 @@ CLI: `sw chatbot usage <slug> [--since 24h]` shows running totals.
 
 ## Budget caps
 
-Lands in M20 once cost accounting has been measuring for a while.
+Lands in M20 once cost accounting has been measuring for a while. The behaviour around the session cap (soft-handoff at 80%, hard-cap → human-handoff with email capture) is sketched in [`11-budget-handoff.md`](11-budget-handoff.md) and supersedes the old M9 history-trimming work.
 
 **Per-chatbot:**
 
