@@ -7,6 +7,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-05-21
+
+The fourth SaaS-pivot milestone (M19). Adds the admin HTTP API: 22 routes across two scopes (provisioning + account-admin), each with bearer-token authentication, OpenAPI documentation, and integration tests. Unblocks `site-walker-wp` (plugin) and `site-walker-for-woo` (provisioning) from doing anything beyond chat.
+
+### Added
+- **`admin_keys` table** (additive migration `0004_admin_keys.js`). Account-scoped (`account_id NOT NULL FK CASCADE`); provisioning keys deliberately *not* here — they live in `.env` as `SW_PROVISIONING_KEY` per the air-gap design. Hash at rest, raw key returned ONCE at mint time (GitHub-PAT style).
+- **`src/config/secrets.ts::loadProvisioningKey`** — mirror of the M17 encryption-key loader. Unset is valid (returns null; locks down `/admin/accounts/*` routes for self-hosters who don't run WC-side provisioning). Empty string or malformed value throws. Format: `sw_<base64url-32>`.
+- **`src/utils/crypto.ts::generateProvisioningKey`** — matches the format `loadProvisioningKey` validates.
+- **`src/services/admin-keys.ts`** — `createAdminKey` (mints UUID + raw key with sha-256 stored), `getAdminKeyByHash` (auth lookup with `last_used_at` bump), `listAdminKeys` (newest-first, never includes `token_hash`), `revokeAdminKey` (idempotent, refuses cross-account).
+- **`src/routes/admin-auth.ts`** — `makeVerifyProvisioningBearer` (constant-time compare; refuses everything when env var unset) + `makeVerifyAccountAdminBearer` (hashes incoming bearer, looks up `admin_keys`, populates `req.adminContext.accountId`; refuses the provisioning bearer on chatbot routes with `wrong_scope`).
+- **`/admin/accounts/*` HTTP routes** (5, provisioning-gated): list, create, list/mint/revoke admin keys.
+- **`/admin/chatbots/*` HTTP routes** (17, account-admin-gated): core CRUD (list/create/get/patch/delete), origins (list/add/remove), blocks (list/get/put/delete with `^[A-Za-z0-9_-]+$` name pattern, 64KB cap, `text/markdown` or `text/plain` body), api-key (PATCH set + DELETE clear), usage (with `?since=` window + under-counting warnings), geo (GET + PATCH).
+- **OpenAPI augmentation** — new `admin` tag + new `adminBearerAuth` security scheme. All 22 routes documented at `/openapi.json`.
+- **CLI helpers** (mirroring the HTTP surface so operators can choose either):
+  - `sw secrets gen-provisioning-key`
+  - `sw account add-admin-key <slug> [-d "..."]`
+  - `sw account list-admin-keys <slug>`
+  - `sw account revoke-admin-key <slug> <key-id>`
+- **`docs/api-admin.md`** — operator-facing reference for the admin HTTP surface. Audience: `site-walker-wp` + `site-walker-for-woo` developers + self-hosters who prefer HTTP over `./bin/sw`.
+- **`dev-notes/12-admin-http-api.md`** — design-conversation record (status: shipped).
+- **`src/utils/bearer.ts`** — shared `extractBearerToken` helper (promoted from `src/server.ts` so the admin middlewares can use the same parser).
+- **`src/testing/db.ts::setTestChatbotApiKey`** — encrypts + persists a plaintext key for tests that need the metered chat path.
+
+### Changed
+- **Cross-account access on `/admin/chatbots/*` returns `404 not_found`**, not `403`. Returning a distinct error code would leak the existence of other accounts' chatbot slugs. Documented in `docs/api-admin.md` and the dev-notes design doc.
+- **Revoked-key auth failures collapse to `401 bearer_invalid`** rather than a distinct `bearer_revoked` code. Same info-leak rationale.
+- **`src/server.ts`**: OpenAPI components gain `adminBearerAuth` security scheme + `admin` tag. The two admin plugins register at `/admin/accounts` and `/admin/chatbots` with their respective bearer middlewares.
+
+### Tests
+246/246 pass (up from 216 — +30 new admin-route integration tests covering auth paths, accounts surface, chatbots CRUD, cross-account guards, blocks PUT/GET/DELETE with content-type rejection + reserved name, api-key PATCH/DELETE, usage zero-totals + since-window, geo GET/PATCH).
+
+### Resolved during execution
+- **Block-name validator pattern**: `^[A-Za-z0-9_-]+$` (both cases). Uppercase-only would have rejected existing operator habits like `10-overview.md`.
+- **api-key clear semantics**: `DELETE /admin/chatbots/{slug}/api-key`. Separate verb, separate auditable action.
+- **Geo settings exposure**: dedicated sub-resource (`/admin/chatbots/{slug}/geo`, GET + PATCH) rather than fields on the main chatbot PATCH. Symmetric with origins + blocks.
+
+### What this enables, what it doesn't
+**Enables:** `site-walker-wp` and `site-walker-for-woo` can now drive chatbot configuration over HTTPS without operator shell access. Self-hosters with an `SW_PROVISIONING_KEY` set get a programmable provisioning surface.
+
+**Doesn't ship:** account deletion is HTTP-unexposed (severe cascade; CLI-only). The chat path itself (`POST /sessions`, `POST /chat`, `GET /messages`) is unchanged — admin and chat surfaces are separate concerns by design.
+
 ## [0.14.0] - 2026-05-20
 
 The third SaaS-pivot milestone (M18). Records token counts + USD cost estimate on every assistant message row, ships a `sw chatbot usage` CLI, and pre-adds the schema substrate for Anthropic prompt caching ahead of the post-M20 wiring milestone. Foundation-only — no enforcement of caps (that lands in M20).

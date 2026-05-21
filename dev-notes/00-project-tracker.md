@@ -1,9 +1,9 @@
 # site-walker — Project Tracker
 
-**Last Updated:** 20 May 2026
-**Current Version:** 0.14.0
-**Current Phase:** **SaaS pivot — execution.** v0.11.0 was the last prototype release. v0.12.0 landed M16 (multi-tenant rename + accounts). v0.13.0 lands M17 (DB-backed provider registry + chatbot BYO keys; TOML config path deleted). v0.13.1 patched the `sw provider add --local` flag-defaulting bug. v0.14.0 lands M18 (cost-accounting foundation + `sw chatbot usage` + Anthropic prompt-caching substrate). Remaining SaaS-pivot work is M19 + M20 in [`10-saas-shape.md`](10-saas-shape.md). The pre-pivot deferred items (M7 finish, old M9/M11/M12/M13/M14/M15) stay renumber-deferred until after M20.
-**Overall Progress (post-M18, v0.14.0):** M1–M6 complete, M7 + M8 partial, M16/M17/M18 complete in v0.12.0/v0.13.0/v0.14.0. Token + USD cost recording on every assistant turn; `sw chatbot usage <slug> [--since 24h]` aggregates. Anthropic prompt-caching schema substrate in place (cache_creation/read token columns + four-bucket cost formula); the adapter-side wiring is a named follow-up post-M20.
+**Last Updated:** 21 May 2026
+**Current Version:** 0.15.0
+**Current Phase:** **SaaS pivot — execution.** Prototype era ended at v0.11.0. v0.12.0 landed M16 (multi-tenant rename + accounts). v0.13.0 lands M17 (DB-backed provider registry + chatbot BYO keys; TOML config path deleted). v0.13.1 patched the `sw provider add --local` flag-defaulting bug. v0.14.0 lands M18 (cost-accounting foundation + `sw chatbot usage` + Anthropic prompt-caching substrate). v0.15.0 lands M19 (admin HTTP API: 22 routes, two bearer-auth scopes, full OpenAPI, integration tests). Only M20 (budget caps) remains in the SaaS-pivot block; pre-pivot deferred items (M7 finish, old M9/M11/M12/M13/M14/M15) come back into focus after M20 + first-customer feedback.
+**Overall Progress (post-M19, v0.15.0):** M1–M6 complete, M7 + M8 partial, M16/M17/M18/M19 complete in v0.12.0/v0.13.0/v0.14.0/v0.15.0. Admin HTTP surface live, fully tested, fully documented. `site-walker-wp` and `site-walker-for-woo` can now drive chatbot configuration over HTTPS without operator shell access.
 
 Vision and phasing live in [`../README.md`](../README.md). **Note:** README still markets the prototype-era "self-hosted multi-tenant API" framing; rewrite ships after M16 lands, not before, to avoid documenting vapourware. Stack and architecture decisions live in [`../CLAUDE.md`](../CLAUDE.md). Auth/session and data-model design live in companion docs in this directory. This file tracks the work.
 
@@ -16,11 +16,10 @@ Companion planning docs:
 
 ## Next up
 
-Post-M18, 2026-05-20. Picking up next in roughly this order:
+Post-M19, 2026-05-21. M20 is the last SaaS-pivot milestone:
 
-1. **M19 — Admin HTTP API + auth.** `admin_keys` table (account admin keys only, `account_id NOT NULL`). Provisioning surface is `SW_PROVISIONING_KEY` in `.env`, air-gapped from `admin_keys` — see the resolved decision in [`10-saas-shape.md`](10-saas-shape.md). Unblocks `site-walker-wp` from talking to the API for anything beyond chat itself.
-2. **M20 — Budget caps.** Daily + per-session enforcement at `/sessions/can-start`, `POST /sessions`, `POST /chat`. 402 error semantics. The session cap shape (soft-handoff at 80%, hard-cap → email capture) is sketched in [`11-budget-handoff.md`](11-budget-handoff.md); concrete design lands during the M20 pass.
-3. **Post-M20: Anthropic prompt caching (via OpenRouter).** Substrate already in DB (M18). Adapter-side work: send `cache_control` markers on system-blocks prefix, parse cache stats from response, gate by model, skip below the minimum-cacheable threshold. ~70-80% input-billing savings expected for chatbots with stable system blocks and many conversations per cache window. See [`10-saas-shape.md`](10-saas-shape.md).
+1. **M20 — Budget caps.** Daily + per-session enforcement at `/sessions/can-start`, `POST /sessions`, `POST /chat`. 402 error semantics. The session cap shape (soft-handoff at 80%, hard-cap → email capture + visitor-side email field) is sketched in [`11-budget-handoff.md`](11-budget-handoff.md); concrete design lands during the M20 pass. The 4 admin endpoints needed alongside (cap getter/setter on the chatbot, plus `GET /admin/chatbots/{slug}/usage` warnings) plug naturally into the M19 surface.
+2. **Post-M20: Anthropic prompt caching (via OpenRouter).** Substrate already in DB (M18). Adapter-side work: send `cache_control` markers on system-blocks prefix, parse cache stats from response, gate by model, skip below the minimum-cacheable threshold. ~70-80% input-billing savings expected for chatbots with stable system blocks and many conversations per cache window. See [`10-saas-shape.md`](10-saas-shape.md).
 
 Operational measurement note for M20: let M18's `sw chatbot usage` accumulate real numbers across both the cortex and openrouter chatbots before settling on M20's default `daily_budget_usd` / `session_budget_usd` shapes. We want real cost-per-conversation data, not invented defaults.
 
@@ -447,8 +446,8 @@ CLI: `sw chatbot usage <slug> [--since 24h]` shows running totals.
 
 ### Milestone 19: Admin HTTP API + bearer-token auth
 
-**Target Completion:** TBD
-**Status:** 🔴 Not started
+**Target Completion:** 21 May 2026
+**Status:** ✅ Complete (21 May 2026, v0.15.0)
 **Priority:** Critical — unblocks `site-walker-wp` (plugin) and `site-walker-for-woo` (provisioning) from doing anything beyond chat
 
 Two credential surfaces, deliberately separated (full rationale in [`10-saas-shape.md`](10-saas-shape.md)):
@@ -475,6 +474,29 @@ GET    /admin/chatbots/{id}/usage
 Reuses the same service layer the CLI uses. OpenAPI schema augmented to cover the admin surface.
 
 CLI surface for the self-hoster path (parallel to the SaaS-path provisioning-key endpoints): `sw account create <slug>`, `sw account list`, `sw account add-admin-key <slug>` (inserts a hashed row, prints the raw key once), `sw account revoke-admin-key <key-id>`. Same service layer the HTTP routes call.
+
+**Shipped at 0.15.0:**
+- `migrations/0004_admin_keys.js` — `admin_keys` (id CHAR(36) UUID PK, account_id CHAR(36) NOT NULL FK CASCADE, token_hash CHAR(64) UNIQUE, description, last_used_at, revoked_at, created_at). Account-scoped only.
+- `src/config/secrets.ts` gains `loadProvisioningKey` + `ProvisioningKeyError` + `resetProvisioningKeyCache`. Unset is valid; format is `sw_<base64url-32>`. 9 unit tests.
+- `src/utils/crypto.ts::generateProvisioningKey` — gen tool output matches the loader's validator.
+- `src/services/admin-keys.ts` — `createAdminKey` / `getAdminKeyByHash` (with last_used_at bump) / `listAdminKeys` (never leaks token_hash) / `revokeAdminKey` (idempotent, cross-account refused). `hashAdminKey` helper. 15 integration tests.
+- `src/routes/admin-auth.ts` — two middleware factories. Provisioning path constant-time-compares against the env value; revoked keys collapse to `bearer_invalid`. Cross-scope use (provisioning bearer on chatbot routes) returns `403 wrong_scope`.
+- `src/routes/admin-accounts.ts` (5 routes, provisioning-gated): GET/POST `/admin/accounts`, GET/POST `/admin/accounts/{id}/keys`, DELETE `/admin/accounts/{id}/keys/{keyId}`. Account deletion deliberately CLI-only.
+- `src/routes/admin-chatbots.ts` (17 routes, account-admin-gated): core CRUD + origins + blocks (incl. GET-list + GET-single + PUT + DELETE, name pattern `^[A-Za-z0-9_-]+$`, PERSONA reserved, 64KB cap, text/markdown or text/plain bodies) + api-key (PATCH set, DELETE clear) + usage (with `?since=` window + warnings array) + geo (GET + PATCH). Cross-account access returns `404 not_found` rather than `403` to avoid leaking other accounts' slugs.
+- `src/server.ts` — OpenAPI gains `adminBearerAuth` security scheme + `admin` tag; both plugins registered with their respective preHandler middlewares.
+- `src/utils/bearer.ts` — `extractBearerToken` promoted from server.ts so the admin middlewares share the same parser.
+- `src/testing/db.ts::setTestChatbotApiKey` — encrypts + persists a plaintext key for tests.
+- CLI mirror: `sw secrets gen-provisioning-key`, `sw account add-admin-key`, `sw account list-admin-keys`, `sw account revoke-admin-key`.
+- `docs/api-admin.md` — operator reference for the new HTTP surface (auth, error vocabulary, route reference). README links to it.
+- `dev-notes/12-admin-http-api.md` — design-conversation record, status flipped to shipped.
+- 246 tests pass (30 new). Format + lint clean.
+
+**Resolved during execution:**
+- Block-name validator: `^[A-Za-z0-9_-]+$` (both cases). Uppercase-only would have rejected existing operator habits like `10-overview.md`.
+- api-key clear semantics: dedicated `DELETE /admin/chatbots/{slug}/api-key`. Separate verb, separate auditable action.
+- Geo settings: dedicated sub-resource (`/admin/chatbots/{slug}/geo`, GET + PATCH) rather than fields on the main chatbot PATCH. Symmetric with origins + blocks.
+- Cross-account access on `/admin/chatbots/*` returns `404` (not `403`). Avoids leaking other accounts' chatbot slugs.
+- Revoked-key auth failures collapse to `401 bearer_invalid` (not a distinct `bearer_revoked`). Same info-leak rationale.
 
 ### Milestone 20: Budget caps
 
