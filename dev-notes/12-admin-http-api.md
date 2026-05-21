@@ -1,8 +1,8 @@
 # Admin HTTP API + bearer-token auth
 
-Design notes for M19. Captures the route-level decisions that need operator input before the `/admin/*` handlers get written. **Not authoritative** until the open questions resolve — the operator green-lights, then this doc gets folded into the M19 milestone wrap-up.
+Design notes for M19, captured during the route-design pass. **Status: shipped** in v0.15.0 — the three live questions (block-name validator, api-key clear via DELETE, geo as sub-resource) resolved on 2026-05-21, routes implemented in the same session.
 
-**Status:** design-in-flight. Foundation layer (admin_keys schema, SW_PROVISIONING_KEY loader, service, CLI) is being implemented in the same session this doc lands; routes themselves are deferred until the design questions resolve.
+The operator-facing reference for the resulting HTTP surface is now [`../docs/api-admin.md`](../docs/api-admin.md). This doc is preserved as the design-conversation record; the open-question section captures what we considered and chose.
 
 Companion to:
 - [`10-saas-shape.md`](10-saas-shape.md) — auth model (two key types, air-gapped), endpoint surface sketch

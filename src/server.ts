@@ -6,6 +6,8 @@ import type { Knex } from 'knex';
 import { findChatbotByOrigin } from './services/chatbots.js';
 import { createSession, findSessionByToken, listMessages } from './services/sessions.js';
 import { ChatError, runChat, type AdapterFactory } from './services/chat.js';
+import adminAccountsPlugin from './routes/admin-accounts.js';
+import adminChatbotsPlugin from './routes/admin-chatbots.js';
 import {
   checkGeoPolicy,
   loadChatbotGeoPolicy,
@@ -13,6 +15,7 @@ import {
   type GeoChecker,
 } from './services/geo.js';
 import { env as runtimeEnv } from './config/env.js';
+import { extractBearerToken } from './utils/bearer.js';
 import { VERSION } from './utils/version.js';
 
 const DEFAULT_WELCOME = 'Hi! How can I help?';
@@ -38,12 +41,6 @@ export interface BuildServerOpts {
  */
 function hasCapacity(_chatbotId: number): boolean {
   return true;
-}
-
-function extractBearerToken(authHeader: string | undefined): string | null {
-  if (!authHeader) return null;
-  const match = /^Bearer (.+)$/.exec(authHeader);
-  return match ? match[1] : null;
 }
 
 const CHAT_ERROR_STATUS = {
@@ -233,6 +230,7 @@ export async function buildServer(opts: BuildServerOpts): Promise<FastifyInstanc
         { name: 'sessions', description: 'session lifecycle (browser auth)' },
         { name: 'messages', description: 'conversation rehydrate' },
         { name: 'chat', description: 'send a turn, get a reply' },
+        { name: 'admin', description: 'operator + provisioning HTTP surface (M19)' },
       ],
       components: {
         securitySchemes: {
@@ -243,6 +241,17 @@ export async function buildServer(opts: BuildServerOpts): Promise<FastifyInstanc
             description:
               'Session token returned by `POST /sessions`. Carry it as ' +
               '`Authorization: Bearer <session_token>` on `GET /messages` and `POST /chat`.',
+          },
+          adminBearerAuth: {
+            type: 'http',
+            scheme: 'bearer',
+            bearerFormat: 'admin key (sw_<base64url-32>)',
+            description:
+              'Admin bearer for the `/admin/*` surface. Either the deployment ' +
+              '`SW_PROVISIONING_KEY` (gates `/admin/accounts/*`) or an account ' +
+              'admin key minted via `sw account add-admin-key` or ' +
+              '`POST /admin/accounts/{accountId}/keys` (gates `/admin/chatbots/*`). ' +
+              'Both formats are `sw_<base64url-32>`.',
           },
         },
       },
@@ -672,6 +681,12 @@ export async function buildServer(opts: BuildServerOpts): Promise<FastifyInstanc
       }
     },
   );
+
+  // M19 admin HTTP API. Two prefixes with different bearer-auth scopes:
+  // `/admin/accounts/*` uses the deployment SW_PROVISIONING_KEY;
+  // `/admin/chatbots/*` uses account-scoped admin_keys rows.
+  await fastify.register(adminAccountsPlugin, { prefix: '/admin/accounts', db });
+  await fastify.register(adminChatbotsPlugin, { prefix: '/admin/chatbots', db });
 
   return fastify;
 }

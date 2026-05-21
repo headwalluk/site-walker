@@ -21,6 +21,7 @@ Small-site operators who want a pre-sales bot they can stand up and reason about
 Operator and developer reference docs live in [`docs/`](docs/):
 
 - [**Browser API usage**](docs/api-usage.md) — chat flow for widget developers: `POST /sessions`, `POST /chat`, `GET /messages`, token persistence, error handling.
+- [**Admin HTTP API**](docs/api-admin.md) — operator + provisioning surface: bearer-token auth, account creation, chatbot CRUD, system-block push, BYO-key set, usage aggregation. Audience: `site-walker-wp` + `site-walker-for-woo` integrations + self-hosters who prefer HTTP over `./bin/sw`.
 - [**`./bin/sw` CLI reference**](docs/cli-sw.md) — register chatbots, manage origins, choose models, inspect system blocks.
 - [**`./bin/chat` reference**](docs/cli-chat.md) — interactive test client that exercises the loop end-to-end.
 - [**Provider registry**](docs/cli-sw.md#sw-provider) — DB-backed (since 0.13.0); managed via `sw provider add/list/show/remove` and `sw provider models add/list/remove/discover`.
