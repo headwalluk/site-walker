@@ -20,6 +20,7 @@ import {
   getAccountBySlug,
   listAccounts,
 } from '../services/accounts.js';
+import { createAdminKey, listAdminKeys, revokeAdminKey } from '../services/admin-keys.js';
 import { findSessionByTokenOrId, listMessages, listSessions } from '../services/sessions.js';
 import { assemblePrompt, loadDiskBlocks } from '../services/system-blocks.js';
 import { resolveModel, setContextWindow, setModel, setParameters } from '../services/models.js';
@@ -44,7 +45,7 @@ import {
   setChatbotGeoMode,
 } from '../services/geo.js';
 import { readPersonaTemplate } from '../utils/templates.js';
-import { encrypt, generateMasterKey } from '../utils/crypto.js';
+import { encrypt, generateMasterKey, generateProvisioningKey } from '../utils/crypto.js';
 import { loadEncryptionKey } from '../config/secrets.js';
 
 const program = new Command();
@@ -73,6 +74,26 @@ secrets
       console.log(key.toString('base64'));
       console.error('# Paste the value above into your .env as SW_ENCRYPTION_KEY=...');
       console.error('# Treat the value like any other production secret — do not commit it.');
+    } finally {
+      await db.destroy();
+    }
+  });
+
+secrets
+  .command('gen-provisioning-key')
+  .description('print a fresh SW_PROVISIONING_KEY value (sw_<base64url-32>) to stdout')
+  .action(async () => {
+    try {
+      const value = generateProvisioningKey();
+      console.log(value);
+      console.error('# Paste the value above into your .env as SW_PROVISIONING_KEY=...');
+      console.error('# This bearer gates /admin/accounts/* — treat it like any production secret.');
+      console.error(
+        '# After updating .env, restart the API server. Coordinate with `site-walker-for-woo`',
+      );
+      console.error(
+        '# to update its stored value at the same time (brief cutover blip is expected).',
+      );
     } finally {
       await db.destroy();
     }
@@ -165,6 +186,111 @@ account
         `Deleted account slug="${slug}". Cascaded: ${counts.chatbots} chatbot(s), ` +
           `${counts.origins} origin(s), ${counts.sessions} session(s), ${counts.messages} message(s).`,
       );
+    } finally {
+      await db.destroy();
+    }
+  });
+
+account
+  .command('add-admin-key')
+  .description(
+    'mint a new admin key against an account. Raw key is printed ONCE — copy it now or revoke + re-mint.',
+  )
+  .argument('<account-slug>', 'account slug')
+  .option(
+    '-d, --description <text>',
+    'human-readable label for `sw account list-admin-keys` (e.g. "production WP plugin")',
+  )
+  .action(async (accountSlug: string, opts: { description?: string }) => {
+    try {
+      const acc = await getAccountBySlug(db, accountSlug);
+      if (!acc) {
+        console.error(`Account not found: slug="${accountSlug}"`);
+        process.exitCode = 1;
+        return;
+      }
+      const minted = await createAdminKey(db, {
+        accountId: acc.id,
+        description: opts.description ?? null,
+      });
+      // Stdout: just the raw key, captureable cleanly via `> file` or pipe.
+      console.log(minted.rawKey);
+      // Stderr: structured human context so the operator can see id +
+      // description but won't accidentally include them in any captured
+      // value.
+      console.error('');
+      console.error(`# Admin key minted for account="${accountSlug}".`);
+      console.error(`#   id:          ${minted.id}`);
+      if (minted.description) {
+        console.error(`#   description: ${minted.description}`);
+      }
+      console.error('# The raw key above is shown EXACTLY ONCE. Copy it now.');
+      console.error('# If lost, revoke this key and mint a new one — there is no recovery path.');
+    } finally {
+      await db.destroy();
+    }
+  });
+
+account
+  .command('list-admin-keys')
+  .description('list admin keys for an account (active + revoked). Token hashes are never printed.')
+  .argument('<account-slug>', 'account slug')
+  .action(async (accountSlug: string) => {
+    try {
+      const acc = await getAccountBySlug(db, accountSlug);
+      if (!acc) {
+        console.error(`Account not found: slug="${accountSlug}"`);
+        process.exitCode = 1;
+        return;
+      }
+      const rows = await listAdminKeys(db, acc.id);
+      if (rows.length === 0) {
+        console.log(`(no admin keys for account "${accountSlug}")`);
+        return;
+      }
+      const idW = Math.max(2, ...rows.map((r) => r.id.length));
+      const descW = Math.max(11, ...rows.map((r) => (r.description ?? '').length));
+      console.log(
+        `${'id'.padEnd(idW)}  ${'description'.padEnd(descW)}  ${'created_at'.padEnd(24)}  ` +
+          `${'last_used_at'.padEnd(24)}  revoked_at`,
+      );
+      for (const r of rows) {
+        const desc = r.description ?? '';
+        const created = r.created_at instanceof Date ? r.created_at.toISOString() : '';
+        const lastUsed = r.last_used_at instanceof Date ? r.last_used_at.toISOString() : '(never)';
+        const revoked = r.revoked_at instanceof Date ? r.revoked_at.toISOString() : '(active)';
+        console.log(
+          `${r.id.padEnd(idW)}  ${desc.padEnd(descW)}  ${created.padEnd(24)}  ` +
+            `${lastUsed.padEnd(24)}  ${revoked}`,
+        );
+      }
+    } finally {
+      await db.destroy();
+    }
+  });
+
+account
+  .command('revoke-admin-key')
+  .description('revoke an admin key by id. Idempotent. Cross-account revocation refused.')
+  .argument('<account-slug>', 'account slug that owns the key')
+  .argument('<key-id>', 'admin_keys.id from `sw account list-admin-keys`')
+  .action(async (accountSlug: string, keyId: string) => {
+    try {
+      const acc = await getAccountBySlug(db, accountSlug);
+      if (!acc) {
+        console.error(`Account not found: slug="${accountSlug}"`);
+        process.exitCode = 1;
+        return;
+      }
+      try {
+        const revoked = await revokeAdminKey(db, acc.id, keyId);
+        const ts =
+          revoked.revoked_at instanceof Date ? revoked.revoked_at.toISOString() : '(unset?)';
+        console.log(`Revoked admin key id="${keyId}" for account "${accountSlug}" at ${ts}.`);
+      } catch (err) {
+        console.error((err as Error).message);
+        process.exitCode = 1;
+      }
     } finally {
       await db.destroy();
     }

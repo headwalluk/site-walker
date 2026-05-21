@@ -62,3 +62,16 @@ export function decrypt(secret: EncryptedSecret, key: Buffer): string {
 export function generateMasterKey(): Buffer {
   return randomBytes(KEY_LENGTH);
 }
+
+/**
+ * Generate a fresh provisioning-key string in the `sw_<base64url-32-bytes>`
+ * format expected by `loadProvisioningKey`. The CLI helper
+ * `sw secrets gen-provisioning-key` prints this for the operator to paste
+ * into `.env` as `SW_PROVISIONING_KEY=...`.
+ *
+ * Length: `sw_` (3) + base64url-of-32-bytes (43) = 46 chars. base64url
+ * (no padding) keeps the value URL-safe and copy-paste-friendly.
+ */
+export function generateProvisioningKey(): string {
+  return `sw_${randomBytes(32).toString('base64url')}`;
+}

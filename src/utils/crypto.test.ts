@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { randomBytes } from 'node:crypto';
-import { decrypt, encrypt, generateMasterKey } from './crypto.js';
+import { decrypt, encrypt, generateMasterKey, generateProvisioningKey } from './crypto.js';
 
 test('encrypt + decrypt round-trip recovers the original string', () => {
   const key = generateMasterKey();
@@ -107,4 +107,24 @@ test('generateMasterKey returns 32 fresh random bytes', () => {
   assert.equal(a.length, 32);
   assert.equal(b.length, 32);
   assert.notDeepEqual(a, b, 'consecutive calls should not collide');
+});
+
+test('generateProvisioningKey returns the `sw_<base64url-32>` shape', () => {
+  const key = generateProvisioningKey();
+  // Total length: prefix (3) + base64url-of-32-bytes (43 chars, no padding) = 46.
+  assert.equal(key.length, 46);
+  assert.match(key, /^sw_[A-Za-z0-9_-]{43}$/);
+});
+
+test('generateProvisioningKey: consecutive calls do not collide', () => {
+  const a = generateProvisioningKey();
+  const b = generateProvisioningKey();
+  assert.notEqual(a, b);
+});
+
+test('generateProvisioningKey output passes loadProvisioningKey validation', () => {
+  // Tight coupling between the gen tool and the validator — break this and
+  // operators paste output that can't be loaded.
+  const key = generateProvisioningKey();
+  assert.match(key, /^sw_[A-Za-z0-9_-]{32,}$/);
 });
