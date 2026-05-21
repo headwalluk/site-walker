@@ -8,7 +8,34 @@ export interface Session {
   summary: string | null;
   created_at: Date;
   last_active_at: Date;
+  /**
+   * Set when the M20 hard-cap triggered. Subsequent `POST /chat` on this
+   * session returns the canned HANDOFF_HARD.md message without an LLM call.
+   * Cleared by re-creating the session (a fresh token).
+   */
+  terminated_at: Date | null;
+  /**
+   * Captured at handoff via `POST /sessions/visitor-email` (M20). Admin-
+   * readable only — the session-bearer scope can write a new value but
+   * cannot read the current one. Webhook delivery includes it.
+   */
+  visitor_email: string | null;
+  /** Set when the M20 handoff webhook delivered successfully. */
+  handoff_notified_at: Date | null;
 }
+
+/**
+ * Idle-expiry window for `findSessionByToken`. Sessions whose
+ * `last_active_at` is older than this are treated as expired and not
+ * resolvable, even if the row still exists in the DB.
+ *
+ * Hardcoded for v1 (the M20 design pass leaned "configurable later if
+ * someone asks"). A primary risk this guards against is a shared
+ * browser/device picking up an old session that has someone else's
+ * `visitor_email` attached — the design conversation on 2026-05-21
+ * settled on 24h as the bound.
+ */
+export const SESSION_IDLE_EXPIRY_HOURS = 24;
 
 export type MessageRole = 'user' | 'assistant';
 
@@ -65,9 +92,20 @@ export async function createSession(db: Knex, chatbotId: number): Promise<Sessio
   return row;
 }
 
+/**
+ * Resolve a session by token, honouring the M20 idle-expiry window.
+ * Returns null for unknown tokens AND for sessions whose `last_active_at`
+ * is older than `SESSION_IDLE_EXPIRY_HOURS` — collapsed to "invalid"
+ * deliberately (same info-leak rationale as revoked admin keys).
+ */
 export async function findSessionByToken(db: Knex, token: string): Promise<Session | null> {
   const row = await db<Session>('sessions').where({ token }).first();
-  return row ?? null;
+  if (!row) return null;
+  const idleCutoff = new Date(Date.now() - SESSION_IDLE_EXPIRY_HOURS * 3600_000);
+  if (row.last_active_at.getTime() < idleCutoff.getTime()) {
+    return null;
+  }
+  return row;
 }
 
 export interface SessionWithMeta extends Session {

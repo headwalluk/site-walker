@@ -27,6 +27,14 @@ export interface Chatbot {
   provider_api_key_ciphertext: Buffer | null;
   provider_api_key_nonce: Buffer | null;
   provider_api_key_auth_tag: Buffer | null;
+  /** M20: daily USD spend cap. NULL = no cap. DECIMAL → string from mysql2. */
+  daily_budget_usd: string | null;
+  /** M20: per-session USD spend cap. NULL = no cap. */
+  session_budget_usd: string | null;
+  /** M20: % of session_budget_usd that triggers the soft-handoff injection. */
+  handoff_threshold_pct: number;
+  /** M20: operator's webhook URL for handoff notifications. NULL = no webhook. */
+  handoff_webhook_url: string | null;
   created_at: Date;
   updated_at: Date;
 }

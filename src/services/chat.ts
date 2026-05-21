@@ -8,10 +8,27 @@ import { computeCostUsd } from './cost.js';
 import { estimateTokens } from '../utils/tokens.js';
 import { appendMessage, findSessionByToken, listMessages, type Message } from './sessions.js';
 import { defaultHeadroom, resolveModel, type ResolvedModel } from './models.js';
-import { assemblePrompt, loadDiskBlocks } from './system-blocks.js';
+import { assemblePrompt, loadDiskBlocks, loadHandoffBlock } from './system-blocks.js';
 import { getChatbotById, type Chatbot } from './chatbots.js';
+import {
+  getChatbotDailySpend,
+  getSessionSpend,
+  isDailyBudgetExhausted,
+  isSessionBudgetExhausted,
+  parseCapDecimal,
+} from './budget.js';
+import { notifyHandoff } from './handoff-webhook.js';
 
 export const MAX_MESSAGE_CHARS = 8000;
+
+/**
+ * Fallback when the chatbot has no HANDOFF_HARD.md on disk. Returned to
+ * the visitor when their session is terminated (after the M20 hard-cap
+ * was hit). Operator-templated content in HANDOFF_HARD.md overrides this.
+ */
+export const DEFAULT_HARD_HANDOFF =
+  'I think it would be better to talk to a human representative. ' +
+  'Please leave your email address and someone will be in touch soon.';
 
 export type ChatErrorCode =
   | 'invalid_token'
@@ -20,7 +37,8 @@ export type ChatErrorCode =
   | 'context_overflow'
   | 'model_not_configured'
   | 'chatbot_api_key_missing'
-  | 'model_error';
+  | 'model_error'
+  | 'budget_exhausted_daily';
 
 /**
  * Service-layer errors carry a stable `code` the route handler maps to a
@@ -53,6 +71,16 @@ export interface RunChatResult {
   reply: string;
   message_id: number;
   tokens_used?: { prompt: number; completion: number };
+  /**
+   * M20: true when the session is closed and no further LLM calls will be
+   * processed. The visitor's widget surfaces an email-capture input when
+   * this is set. Two cases trigger it: (a) the session was already
+   * terminated before this turn (canned response, message_id = 0); (b) the
+   * just-written assistant reply pushed session spend over the cap — the
+   * caller got their final natural reply, but the next turn would be
+   * refused. Either way, the widget treats this as the final exchange.
+   */
+  session_terminated?: boolean;
 }
 
 function historyToChatMessages(history: Message[]): ChatMessage[] {
@@ -130,11 +158,42 @@ export async function runChat(input: RunChatInput): Promise<RunChatResult> {
     throw new ChatError('invalid_token', 'session is orphaned');
   }
 
+  // M20: a session that was previously hard-capped returns the canned
+  // HANDOFF_HARD.md content without invoking the LLM. The visitor's widget
+  // sees session_terminated: true and renders the email-capture input.
+  if (session.terminated_at !== null) {
+    const cannedHard =
+      (blocksBaseDir
+        ? await loadHandoffBlock(chatbot.slug, 'hard', blocksBaseDir)
+        : await loadHandoffBlock(chatbot.slug, 'hard')) ?? DEFAULT_HARD_HANDOFF;
+    return {
+      reply: cannedHard,
+      message_id: 0,
+      session_terminated: true,
+    };
+  }
+
   let resolved: ResolvedModel;
   try {
     resolved = await resolveModel(db, chatbot);
   } catch (err) {
     throw new ChatError('model_not_configured', (err as Error).message);
+  }
+
+  // M20: daily-cap check. The chatbot's resolved provider/model is settled,
+  // so we know cost computation will work; if the daily window is already
+  // spent, refuse this turn before we do any LLM work.
+  const dailyCap = parseCapDecimal(chatbot.daily_budget_usd);
+  if (dailyCap !== null) {
+    const dailySpend = await getChatbotDailySpend(db, chatbot.id);
+    if (isDailyBudgetExhausted(dailySpend, dailyCap)) {
+      throw new ChatError(
+        'budget_exhausted_daily',
+        `chatbot "${chatbot.slug}" has spent $${dailySpend.toFixed(4)} today against the ` +
+          `$${dailyCap.toFixed(4)} daily cap. Next window starts at 00:00 UTC.`,
+        { cap_usd: dailyCap, spend_usd: dailySpend },
+      );
+    }
   }
 
   // Surface a missing api_key for metered providers before we do any further
@@ -144,9 +203,29 @@ export async function runChat(input: RunChatInput): Promise<RunChatResult> {
   const diskBlocks = blocksBaseDir
     ? await loadDiskBlocks(chatbot.slug, blocksBaseDir)
     : await loadDiskBlocks(chatbot.slug);
+
+  // M20: if the session has crossed the soft-handoff threshold (default
+  // 80% of session_budget_usd), inject HANDOFF_SOFT.md as the most-recent
+  // system block so the model sees "wind this conversation toward a human".
+  const sessionCap = parseCapDecimal(chatbot.session_budget_usd);
+  const sessionSpendBefore = sessionCap !== null ? await getSessionSpend(db, session.id) : 0;
+  const softThresholdUsd =
+    sessionCap !== null ? (sessionCap * chatbot.handoff_threshold_pct) / 100 : null;
+  const softTriggered = softThresholdUsd !== null && sessionSpendBefore >= softThresholdUsd;
+  const extraBlocks: { name: string; content: string }[] = [];
+  if (softTriggered) {
+    const softContent = blocksBaseDir
+      ? await loadHandoffBlock(chatbot.slug, 'soft', blocksBaseDir)
+      : await loadHandoffBlock(chatbot.slug, 'soft');
+    if (softContent !== null) {
+      extraBlocks.push({ name: 'HANDOFF_SOFT', content: softContent });
+    }
+  }
+
   const assembled = assemblePrompt({
     persona: chatbot.persona,
     diskBlocks,
+    extraBlocks: extraBlocks.length > 0 ? extraBlocks : undefined,
   });
 
   const history = await listMessages(db, session.id);
@@ -220,5 +299,31 @@ export async function runChat(input: RunChatInput): Promise<RunChatResult> {
   if (response.tokensUsed) {
     result.tokens_used = response.tokensUsed;
   }
+
+  // M20: session-cap check is AFTER writing the assistant reply, by design
+  // — a visitor who's one message over cap gets that one final reply
+  // rather than being cut off mid-thought. If we just crossed the cap,
+  // terminate the session: the next POST /chat returns the canned hard-
+  // handoff message without invoking the LLM.
+  if (sessionCap !== null) {
+    const sessionSpendAfter = sessionSpendBefore + costUsd;
+    if (isSessionBudgetExhausted(sessionSpendAfter, sessionCap)) {
+      await db('sessions').where({ id: session.id }).update({ terminated_at: db.fn.now() });
+      result.session_terminated = true;
+      // Fire-and-forget webhook (does nothing if handoff_webhook_url unset).
+      // We refetch the session to pick up the freshly-set terminated_at; if
+      // the visitor has captured an email earlier the webhook carries it.
+      const refreshed = await findSessionByToken(db, sessionToken);
+      if (refreshed) {
+        void notifyHandoff({
+          db,
+          chatbot,
+          session: refreshed,
+          spendUsd: sessionSpendAfter,
+        });
+      }
+    }
+  }
+
   return result;
 }

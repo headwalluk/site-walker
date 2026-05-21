@@ -47,6 +47,7 @@ import {
 import { readPersonaTemplate } from '../utils/templates.js';
 import { encrypt, generateMasterKey, generateProvisioningKey } from '../utils/crypto.js';
 import { loadEncryptionKey } from '../config/secrets.js';
+import { env } from '../config/env.js';
 
 const program = new Command();
 
@@ -613,6 +614,129 @@ chatbot
       const n = Number(tokens);
       const row = await setContextWindow(db, slug, n);
       console.log(`Set model_context_window=${row.model_context_window} for slug="${row.slug}".`);
+    } finally {
+      await db.destroy();
+    }
+  });
+
+chatbot
+  .command('set-budget')
+  .description(
+    'set per-chatbot spend caps (M20). `daily`/`session` are USD amounts or the ' +
+      'literal `none` to clear. `threshold` is the soft-handoff % of the session ' +
+      'cap (integer 1–100). Bounded by SW_MAX_DAILY_BUDGET_USD / SW_MAX_SESSION_BUDGET_USD.',
+  )
+  .argument('<slug>', 'chatbot slug')
+  .option('--daily <usd-or-none>', 'daily spend cap in USD, or "none" to clear (e.g. --daily 2.50)')
+  .option(
+    '--session <usd-or-none>',
+    'per-session spend cap in USD, or "none" to clear (e.g. --session 0.25)',
+  )
+  .option('--threshold <pct>', 'soft-handoff threshold, as % of session cap (integer 1–100)')
+  .action(async (slug: string, opts: { daily?: string; session?: string; threshold?: string }) => {
+    try {
+      const row = await getChatbotBySlug(db, slug);
+      if (!row) {
+        console.error(`Chatbot not found: slug="${slug}"`);
+        process.exitCode = 1;
+        return;
+      }
+      if (opts.daily === undefined && opts.session === undefined && opts.threshold === undefined) {
+        console.error('Pass at least one of --daily, --session, --threshold.');
+        process.exitCode = 1;
+        return;
+      }
+
+      const sets: Record<string, string | number | null> = {};
+
+      const parseCap = (raw: string, field: string, upper: number): string | null => {
+        if (raw.toLowerCase() === 'none') return null;
+        const n = Number(raw);
+        if (!Number.isFinite(n) || n <= 0) {
+          throw new Error(`--${field} must be a positive number or "none", got "${raw}".`);
+        }
+        if (n > upper) {
+          throw new Error(
+            `--${field} ${n} exceeds environment cap ${upper}. Raise SW_MAX_${field.toUpperCase()}_BUDGET_USD in .env if you genuinely need this.`,
+          );
+        }
+        return n.toFixed(4);
+      };
+
+      try {
+        if (opts.daily !== undefined) {
+          sets.daily_budget_usd = parseCap(opts.daily, 'daily', env.maxDailyBudgetUsd);
+        }
+        if (opts.session !== undefined) {
+          sets.session_budget_usd = parseCap(opts.session, 'session', env.maxSessionBudgetUsd);
+        }
+        if (opts.threshold !== undefined) {
+          const n = Number(opts.threshold);
+          if (!Number.isInteger(n) || n < 1 || n > 100) {
+            throw new Error(`--threshold must be an integer in [1, 100], got "${opts.threshold}".`);
+          }
+          sets.handoff_threshold_pct = n;
+        }
+      } catch (err) {
+        console.error((err as Error).message);
+        process.exitCode = 1;
+        return;
+      }
+
+      await db('chatbots').where({ id: row.id }).update(sets);
+      const after = await getChatbotBySlug(db, slug);
+      console.log(`Updated budgets for chatbot "${slug}":`);
+      console.log(`  daily_budget_usd:      ${after?.daily_budget_usd ?? '(none)'}`);
+      console.log(`  session_budget_usd:    ${after?.session_budget_usd ?? '(none)'}`);
+      console.log(`  handoff_threshold_pct: ${after?.handoff_threshold_pct}`);
+    } finally {
+      await db.destroy();
+    }
+  });
+
+chatbot
+  .command('set-handoff-webhook')
+  .description(
+    'set or clear the handoff-notification webhook URL (M20). Pass the literal ' +
+      '"none" to clear. URL must be http(s) and ≤255 chars.',
+  )
+  .argument('<slug>', 'chatbot slug')
+  .argument('<url-or-none>', 'webhook URL, or "none" to clear')
+  .action(async (slug: string, urlOrNone: string) => {
+    try {
+      const row = await getChatbotBySlug(db, slug);
+      if (!row) {
+        console.error(`Chatbot not found: slug="${slug}"`);
+        process.exitCode = 1;
+        return;
+      }
+      let value: string | null;
+      if (urlOrNone.toLowerCase() === 'none') {
+        value = null;
+      } else {
+        try {
+          const url = new URL(urlOrNone);
+          if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+            throw new Error('scheme must be http or https');
+          }
+        } catch (err) {
+          console.error(`Invalid webhook URL: ${(err as Error).message}`);
+          process.exitCode = 1;
+          return;
+        }
+        if (urlOrNone.length > 255) {
+          console.error('Webhook URL must be ≤255 chars.');
+          process.exitCode = 1;
+          return;
+        }
+        value = urlOrNone;
+      }
+      await db('chatbots').where({ id: row.id }).update({ handoff_webhook_url: value });
+      console.log(
+        value === null
+          ? `Cleared handoff_webhook_url for slug="${slug}".`
+          : `Set handoff_webhook_url="${value}" for slug="${slug}".`,
+      );
     } finally {
       await db.destroy();
     }

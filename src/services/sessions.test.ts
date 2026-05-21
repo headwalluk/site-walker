@@ -15,6 +15,44 @@ function uniqueSlug(): string {
   return `test-${randomUUID().slice(0, 8)}`;
 }
 
+test('M20 idle expiry: findSessionByToken returns null when last_active_at is >24h old', async (t) => {
+  const db = makeTestDb();
+  const slug = uniqueSlug();
+  const { account, chatbot } = await seedAccountAndChatbot(db, slug);
+  t.after(async () => {
+    await db('accounts').where({ id: account.id }).del();
+    await db.destroy();
+  });
+
+  const session = await createSession(db, chatbot.id);
+  // Fresh session resolves.
+  assert.ok(await findSessionByToken(db, session.token));
+
+  // Push last_active_at past the 24h cutoff via direct UPDATE.
+  const stale = new Date(Date.now() - 25 * 3600_000);
+  await db('sessions').where({ id: session.id }).update({ last_active_at: stale });
+
+  assert.equal(await findSessionByToken(db, session.token), null);
+});
+
+test('M20 idle expiry: a session active <24h ago still resolves', async (t) => {
+  const db = makeTestDb();
+  const slug = uniqueSlug();
+  const { account, chatbot } = await seedAccountAndChatbot(db, slug);
+  t.after(async () => {
+    await db('accounts').where({ id: account.id }).del();
+    await db.destroy();
+  });
+
+  const session = await createSession(db, chatbot.id);
+  const recent = new Date(Date.now() - 23 * 3600_000);
+  await db('sessions').where({ id: session.id }).update({ last_active_at: recent });
+
+  const found = await findSessionByToken(db, session.token);
+  assert.ok(found);
+  assert.equal(found.id, session.id);
+});
+
 test('createSession + findSessionByToken roundtrip; token is 64 hex chars', async (t) => {
   const db = makeTestDb();
   const slug = uniqueSlug();

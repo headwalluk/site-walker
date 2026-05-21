@@ -6,8 +6,14 @@ import type { Knex } from 'knex';
 import { findChatbotByOrigin } from './services/chatbots.js';
 import { createSession, findSessionByToken, listMessages } from './services/sessions.js';
 import { ChatError, runChat, type AdapterFactory } from './services/chat.js';
+import {
+  getChatbotDailySpend,
+  isDailyBudgetExhausted,
+  parseCapDecimal,
+} from './services/budget.js';
 import adminAccountsPlugin from './routes/admin-accounts.js';
 import adminChatbotsPlugin from './routes/admin-chatbots.js';
+import { notifyHandoff } from './services/handoff-webhook.js';
 import {
   checkGeoPolicy,
   loadChatbotGeoPolicy,
@@ -51,6 +57,7 @@ const CHAT_ERROR_STATUS = {
   model_not_configured: 503,
   chatbot_api_key_missing: 503,
   model_error: 502,
+  budget_exhausted_daily: 402,
 } as const satisfies Record<ChatError['code'], number>;
 
 function clientPrefersHtml(acceptHeader: string | undefined): boolean {
@@ -401,6 +408,7 @@ export async function buildServer(opts: BuildServerOpts): Promise<FastifyInstanc
             required: ['session_token', 'welcome_message'],
           },
           400: errorResponseSchema,
+          402: errorResponseSchema,
           403: errorResponseSchema,
           503: errorResponseSchema,
         },
@@ -441,6 +449,18 @@ export async function buildServer(opts: BuildServerOpts): Promise<FastifyInstanc
         return reply.status(503).send({ error: 'capacity_exceeded' });
       }
 
+      // M20: refuse new sessions when the daily cap is already spent.
+      const dailyCap = parseCapDecimal(chatbot.daily_budget_usd);
+      if (dailyCap !== null) {
+        const dailySpend = await getChatbotDailySpend(db, chatbot.id);
+        if (isDailyBudgetExhausted(dailySpend, dailyCap)) {
+          return reply.status(402).send({
+            error: 'budget_exhausted_daily',
+            detail: { cap_usd: dailyCap, spend_usd: dailySpend },
+          });
+        }
+      }
+
       const session = await createSession(db, chatbot.id);
       return reply.status(201).send({
         session_token: session.token,
@@ -477,6 +497,7 @@ export async function buildServer(opts: BuildServerOpts): Promise<FastifyInstanc
             required: ['ok'],
           },
           400: errorResponseSchema,
+          402: errorResponseSchema,
           403: errorResponseSchema,
           503: errorResponseSchema,
         },
@@ -517,7 +538,102 @@ export async function buildServer(opts: BuildServerOpts): Promise<FastifyInstanc
         return reply.status(503).send({ error: 'capacity_exceeded' });
       }
 
+      // M20: refuse session-start probes when the daily cap is spent. Mirrors
+      // POST /sessions so widgets can hide the chat affordance proactively.
+      const dailyCap = parseCapDecimal(chatbot.daily_budget_usd);
+      if (dailyCap !== null) {
+        const dailySpend = await getChatbotDailySpend(db, chatbot.id);
+        if (isDailyBudgetExhausted(dailySpend, dailyCap)) {
+          return reply.status(402).send({
+            error: 'budget_exhausted_daily',
+            detail: { cap_usd: dailyCap, spend_usd: dailySpend },
+          });
+        }
+      }
+
       return reply.send({ ok: true });
+    },
+  );
+
+  // M20: visitor email capture. Write-only at the session-bearer scope —
+  // the body sets the value; no GET counterpart returns it. Admin path
+  // (post-launch) can read it via a future endpoint. Fires the chatbot's
+  // handoff webhook on success when terminated_at is already set; if the
+  // session isn't yet terminated, the capture still persists (a visitor
+  // who proactively leaves their email mid-conversation isn't denied).
+  fastify.post<{ Body: { email?: unknown } }>(
+    '/sessions/visitor-email',
+    {
+      schema: {
+        tags: ['sessions'],
+        summary: 'Persist a visitor email against a session (write-only)',
+        description:
+          'Body: `{ email }`. Session-bearer auth. Email is loosely validated ' +
+          '(must contain `@` and a `.` after it). Returns 204 with no body — ' +
+          'deliberately no echo, and there is no GET counterpart at this scope. ' +
+          'Admin path is the only way to recall the stored value. If the session ' +
+          'is already terminated and the chatbot has a `handoff_webhook_url`, the ' +
+          'POST fires the webhook best-effort before returning.',
+        security: [{ bearerAuth: [] }],
+        response: {
+          204: { type: 'null' },
+          400: errorResponseSchema,
+          401: errorResponseSchema,
+        },
+      },
+    },
+    async (req, reply) => {
+      const token = extractBearerToken(req.headers.authorization);
+      if (!token) {
+        return reply.status(401).send({ error: 'token_required' });
+      }
+      const session = await findSessionByToken(db, token);
+      if (!session) {
+        return reply.status(401).send({ error: 'invalid_token' });
+      }
+      const email = req.body?.email;
+      if (typeof email !== 'string') {
+        return reply.status(400).send({
+          error: 'validation_failed',
+          detail: { message: 'Body requires an `email` string.' },
+        });
+      }
+      const trimmed = email.trim();
+      // Loose RFC-ish check — no full RFC 5321 parser; just enough to catch
+      // obvious garbage. Length cap matches the VARCHAR(255) column.
+      if (
+        trimmed.length === 0 ||
+        trimmed.length > 255 ||
+        !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmed)
+      ) {
+        return reply.status(400).send({
+          error: 'validation_failed',
+          detail: { message: 'Email must be a non-empty string ≤255 chars with @ and a dot.' },
+        });
+      }
+
+      await db('sessions').where({ id: session.id }).update({ visitor_email: trimmed });
+
+      // If the session is already terminated, attempt the webhook now.
+      // (If it isn't, the webhook will fire from runChat when the hard-cap
+      // crosses.) The webhook is best-effort — never block on it here.
+      if (session.terminated_at !== null) {
+        const chatbot = await db('chatbots').where({ id: session.chatbot_id }).first();
+        if (chatbot && chatbot.handoff_webhook_url) {
+          const spendRow = await db('messages')
+            .where({ session_id: session.id })
+            .sum<{ total: string | number | null }[]>({ total: 'cost_usd_estimate' })
+            .first();
+          const spendUsd = Number(spendRow?.total ?? 0);
+          // Refetch the session so the webhook payload carries the just-set email.
+          const refreshed = await findSessionByToken(db, token);
+          if (refreshed) {
+            void notifyHandoff({ db, chatbot, session: refreshed, spendUsd });
+          }
+        }
+      }
+
+      return reply.status(204).send();
     },
   );
 
@@ -613,11 +729,19 @@ export async function buildServer(opts: BuildServerOpts): Promise<FastifyInstanc
                   completion: { type: 'integer' },
                 },
               },
+              session_terminated: {
+                type: 'boolean',
+                description:
+                  'M20: when true, this session is closed. The visitor widget should ' +
+                  'render the email-capture input. message_id may be 0 when no new ' +
+                  'row was persisted (terminated session re-entered).',
+              },
             },
             required: ['reply', 'message_id'],
           },
           400: errorResponseSchema,
           401: errorResponseSchema,
+          402: errorResponseSchema,
           403: errorResponseSchema,
           413: errorResponseSchema,
           500: errorResponseSchema,

@@ -144,3 +144,76 @@ test('assemblePrompt: estimatedTokens matches whole assembled prompt', () => {
   });
   assert.equal(out.estimatedTokens, estimateTokens(out.prompt));
 });
+
+// ---------------------------------------------------------------------------
+// M20: HANDOFF_SOFT / HANDOFF_HARD reserved + loadHandoffBlock
+// ---------------------------------------------------------------------------
+
+test('loadDiskBlocks: HANDOFF_SOFT.md + HANDOFF_HARD.md are skipped (M20 reserved)', async (t) => {
+  const { writeFile, mkdtemp, mkdir, rm } = await import('node:fs/promises');
+  const { tmpdir } = await import('node:os');
+  const path = await import('node:path');
+  const baseDir = await mkdtemp(path.join(tmpdir(), 'sw-blocks-'));
+  const slug = 'test-handoff';
+  const siteDir = path.join(baseDir, slug);
+  await mkdir(siteDir, { recursive: true });
+  t.after(() => rm(baseDir, { recursive: true, force: true }));
+
+  await writeFile(path.join(siteDir, 'COMPANY.md'), 'on-product', 'utf8');
+  await writeFile(path.join(siteDir, 'HANDOFF_SOFT.md'), 'nudge them out', 'utf8');
+  await writeFile(path.join(siteDir, 'HANDOFF_HARD.md'), 'we are done', 'utf8');
+
+  const { loadDiskBlocks } = await import('./system-blocks.js');
+  const blocks = await loadDiskBlocks(slug, baseDir);
+  // HANDOFF_* files MUST not appear among regular system blocks; they're
+  // loaded conditionally by the chat path via loadHandoffBlock.
+  assert.deepEqual(
+    blocks.map((b) => b.name),
+    ['COMPANY'],
+  );
+});
+
+test('loadHandoffBlock: returns the file contents when present', async (t) => {
+  const { writeFile, mkdtemp, mkdir, rm } = await import('node:fs/promises');
+  const { tmpdir } = await import('node:os');
+  const path = await import('node:path');
+  const baseDir = await mkdtemp(path.join(tmpdir(), 'sw-blocks-'));
+  const slug = 'test-handoff';
+  const siteDir = path.join(baseDir, slug);
+  await mkdir(siteDir, { recursive: true });
+  t.after(() => rm(baseDir, { recursive: true, force: true }));
+  await writeFile(path.join(siteDir, 'HANDOFF_SOFT.md'), 'gently nudge', 'utf8');
+  await writeFile(path.join(siteDir, 'HANDOFF_HARD.md'), 'cut off', 'utf8');
+
+  const { loadHandoffBlock } = await import('./system-blocks.js');
+  assert.equal(await loadHandoffBlock(slug, 'soft', baseDir), 'gently nudge');
+  assert.equal(await loadHandoffBlock(slug, 'hard', baseDir), 'cut off');
+});
+
+test('loadHandoffBlock: returns null when the file is missing', async (t) => {
+  const { mkdtemp, mkdir, rm } = await import('node:fs/promises');
+  const { tmpdir } = await import('node:os');
+  const path = await import('node:path');
+  const baseDir = await mkdtemp(path.join(tmpdir(), 'sw-blocks-'));
+  const slug = 'test-handoff';
+  await mkdir(path.join(baseDir, slug), { recursive: true });
+  t.after(() => rm(baseDir, { recursive: true, force: true }));
+
+  const { loadHandoffBlock } = await import('./system-blocks.js');
+  assert.equal(await loadHandoffBlock(slug, 'soft', baseDir), null);
+  assert.equal(await loadHandoffBlock(slug, 'hard', baseDir), null);
+});
+
+test('loadHandoffBlock: whitespace-only files are treated as missing', async (t) => {
+  const { writeFile, mkdtemp, mkdir, rm } = await import('node:fs/promises');
+  const { tmpdir } = await import('node:os');
+  const path = await import('node:path');
+  const baseDir = await mkdtemp(path.join(tmpdir(), 'sw-blocks-'));
+  const slug = 'test-handoff';
+  await mkdir(path.join(baseDir, slug), { recursive: true });
+  t.after(() => rm(baseDir, { recursive: true, force: true }));
+  await writeFile(path.join(baseDir, slug, 'HANDOFF_SOFT.md'), '   \n\t  ', 'utf8');
+
+  const { loadHandoffBlock } = await import('./system-blocks.js');
+  assert.equal(await loadHandoffBlock(slug, 'soft', baseDir), null);
+});

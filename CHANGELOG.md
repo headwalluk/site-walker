@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.16.0] - 2026-05-21
+
+The fifth and final SaaS-pivot milestone (M20). Adds per-chatbot daily + per-session spend caps with soft- and hard-handoff behaviour, visitor-email capture, and an operator webhook for terminated-session notification. With this, the SaaS-pivot block (M16–M20) is closed; next phase is real-customer onboarding on `api.site-walker.net`.
+
+### Added
+- **Migration `0005_budget_caps.js`** (additive). Adds `chatbots.daily_budget_usd DECIMAL(10,4) NULL`, `chatbots.session_budget_usd DECIMAL(10,4) NULL`, `chatbots.handoff_threshold_pct TINYINT UNSIGNED NOT NULL DEFAULT 80`, `chatbots.handoff_webhook_url VARCHAR(255) NULL`; adds `sessions.terminated_at TIMESTAMP NULL`, `sessions.visitor_email VARCHAR(255) NULL`, `sessions.handoff_notified_at TIMESTAMP NULL`.
+- **`src/services/budget.ts`** — pure helpers (`utcMidnightToday`, `parseCapDecimal`, `isDailyBudgetExhausted`, `isSessionBudgetExhausted`) plus DB aggregators (`getChatbotDailySpend`, `getSessionSpend`). Closed-boundary semantics: `spend === cap` exhausts.
+- **`src/services/handoff-webhook.ts::notifyHandoff`** — fire-and-forget POST to `chatbots.handoff_webhook_url` with `{ event: 'session_handoff', chatbot_slug, session_id, visitor_email, terminated_at, spend_usd }`. 10s timeout, no retry, no HMAC v1. Stamps `sessions.handoff_notified_at` on 2xx; logs and swallows failures.
+- **`src/services/system-blocks.ts`** — `RESERVED_BLOCK_NAMES` extended to `{ PERSONA, HANDOFF_SOFT, HANDOFF_HARD }`. New `loadHandoffBlock('soft' | 'hard')` helper. `assemblePrompt()` accepts optional `extraBlocks?: Block[]` for conditional injection without making prompt assembly globally stateful.
+- **Chat-path budget enforcement** in `src/services/chat.ts` — five-step flow: (1) early-return canned `HANDOFF_HARD` when `terminated_at` is set (`message_id: 0`, `session_terminated: true`, no adapter call, no new rows); (2) daily-cap pre-check → `402 budget_exhausted_daily`; (3) soft-handoff inject when session-spend-before crosses `cap * threshold/100`; (4) adapter + persist; (5) hard-cap after-write check → set `terminated_at`, mark `session_terminated: true`, fire `notifyHandoff` if webhook + email present.
+- **`DEFAULT_HARD_HANDOFF`** constant in `src/services/chat.ts` — generic operator-bland fallback when a chatbot has no `HANDOFF_HARD.md`.
+- **`POST /sessions/visitor-email`** — session-bearer-authenticated, write-only route. 204 with no body on success. Loosely validates the email shape (≤255 chars, must contain `@` and a `.`). No GET counterpart at this scope — admin-only readback. Fires `notifyHandoff` when the session is already terminated and the chatbot has a webhook set.
+- **Daily-cap gating on session mint** — `POST /sessions` and `GET /sessions/can-start` both return `402 budget_exhausted_daily` with `detail: { cap_usd, spend_usd }` when a chatbot's daily spend cap is reached. Widgets can hide the chat affordance proactively via the probe.
+- **24h idle session expiry** — `findSessionByToken` now returns `null` for sessions whose `last_active_at` is older than `SESSION_IDLE_EXPIRY_HOURS = 24`. Prevents shared-device data leak; serves as a free housekeeping floor.
+- **`PATCH /admin/chatbots/{slug}`** extended with four new optional fields: `daily_budget_usd`, `session_budget_usd`, `handoff_threshold_pct`, `handoff_webhook_url`. `null` clears. Webhook URL must be `http://` or `https://`, ≤255 chars.
+- **Sanity-bound budget caps** — new env vars `SW_MAX_DAILY_BUDGET_USD` (default `10000`) and `SW_MAX_SESSION_BUDGET_USD` (default `100`). Admin PATCH + CLI refuse to set values above the env cap with `400 validation_failed` naming the env var to raise. Bounds the blast radius of a stolen account-admin key.
+- **CLI: `sw chatbot set-budget <slug> [--daily <usd|none>] [--session <usd|none>] [--threshold <pct>]`** and **`sw chatbot set-handoff-webhook <slug> <url|none>`**. Literal `none` clears the column. Validates against the env-side bounds.
+- **Tests:** 6 new (281 total). `chat-budget.test.ts` covers daily-cap refusal on `/chat`, session-mint gating, soft-handoff inject presence/absence, hard-cap after-write terminate, canned-response on terminated session, `DEFAULT_HARD_HANDOFF` fallback, visitor-email persist/validate/auth. `admin.test.ts` covers the new PATCH allowlist + sanity-bound rejection cases.
+- **Docs:** `docs/api-usage.md` (visitor-email route, 402 vocabulary, soft/hard handoff in the chat path), `docs/api-admin.md` (PATCH allowlist + 402 cross-reference), `docs/cli-sw.md` (`set-budget` + `set-handoff-webhook`), `docs/env.md` (`SW_MAX_*` vars). `dev-notes/11-budget-handoff.md` gets a "What shipped" section with the resolved-design summary, schema delta, and the chat-path state machine.
+
+### Changed
+- `POST /chat` success response carries optional `session_terminated: boolean` (added to OpenAPI schema so Fastify's serializer doesn't strip it). Widgets should hide the input on `true`.
+- `CHAT_ERROR_STATUS` gains `budget_exhausted_daily: 402`. The new code is returned by `POST /chat`, `POST /sessions`, and `GET /sessions/can-start`.
+
+### Notes
+- The hard-cap check fires *after* the assistant reply is written — the visitor gets one final natural reply, then the session terminates. Trades a single over-cap reply per session for a non-jarring UX.
+- Webhook v1 is intentionally minimal: no HMAC, no retry, no replay protection. Operator's receiver is responsible for idempotency on `session_id` and (if exposed publicly) IP allowlisting. Signed payloads + retry-with-backoff are a follow-up only if a real customer asks.
+- The original M9 (history trimming) sits unchanged — likely superseded by this budget-driven handoff in practice, but kept available as a fallback if real cost data ever shows conversations regularly bust context windows before they bust budgets.
+
 ## [0.15.0] - 2026-05-21
 
 The fourth SaaS-pivot milestone (M19). Adds the admin HTTP API: 22 routes across two scopes (provisioning + account-admin), each with bearer-token authentication, OpenAPI documentation, and integration tests. Unblocks `site-walker-wp` (plugin) and `site-walker-for-woo` (provisioning) from doing anything beyond chat.

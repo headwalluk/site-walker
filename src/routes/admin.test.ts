@@ -417,6 +417,97 @@ test('admin: PATCH /admin/chatbots/{slug} updates whitelisted fields', async (t)
   assert.equal(body.persona, 'helpful');
 });
 
+test('admin: PATCH /admin/chatbots/{slug} sets M20 budget caps + handoff webhook', async (t) => {
+  const db = makeTestDb();
+  setProvisioningKey(VALID_PROVISIONING);
+  const ctx = await seedAdminContext(db);
+  const slug = uniqueSlug('chatbot');
+  await db('chatbots').insert({ account_id: ctx.account.id, slug, name: slug });
+
+  const fastify = await buildServer({ db, logger: false });
+  t.after(async () => {
+    setProvisioningKey(null);
+    await fastify.close();
+    await db('accounts').where({ id: ctx.account.id }).del();
+    await db.destroy();
+  });
+
+  // Happy path: set all four fields together.
+  const res = await fastify.inject({
+    method: 'PATCH',
+    url: `/admin/chatbots/${slug}`,
+    headers: { authorization: `Bearer ${ctx.rawKey}` },
+    payload: {
+      daily_budget_usd: 2.5,
+      session_budget_usd: 0.25,
+      handoff_threshold_pct: 75,
+      handoff_webhook_url: 'https://example.test/hook',
+    },
+  });
+  assert.equal(res.statusCode, 200, res.payload);
+  const body = res.json();
+  assert.equal(Number(body.daily_budget_usd), 2.5);
+  assert.equal(Number(body.session_budget_usd), 0.25);
+  assert.equal(body.handoff_threshold_pct, 75);
+  assert.equal(body.handoff_webhook_url, 'https://example.test/hook');
+
+  // Clearing with null.
+  const clear = await fastify.inject({
+    method: 'PATCH',
+    url: `/admin/chatbots/${slug}`,
+    headers: { authorization: `Bearer ${ctx.rawKey}` },
+    payload: {
+      daily_budget_usd: null,
+      session_budget_usd: null,
+      handoff_webhook_url: null,
+    },
+  });
+  assert.equal(clear.statusCode, 200);
+  const cleared = clear.json();
+  assert.equal(cleared.daily_budget_usd, null);
+  assert.equal(cleared.session_budget_usd, null);
+  assert.equal(cleared.handoff_webhook_url, null);
+});
+
+test('admin: PATCH /admin/chatbots/{slug} rejects out-of-bounds + malformed M20 fields', async (t) => {
+  const db = makeTestDb();
+  setProvisioningKey(VALID_PROVISIONING);
+  const ctx = await seedAdminContext(db);
+  const slug = uniqueSlug('chatbot');
+  await db('chatbots').insert({ account_id: ctx.account.id, slug, name: slug });
+
+  const fastify = await buildServer({ db, logger: false });
+  t.after(async () => {
+    setProvisioningKey(null);
+    await fastify.close();
+    await db('accounts').where({ id: ctx.account.id }).del();
+    await db.destroy();
+  });
+
+  const cases: Array<{ payload: Record<string, unknown>; reason: string }> = [
+    { payload: { daily_budget_usd: 999999999 }, reason: 'daily over env cap' },
+    { payload: { daily_budget_usd: 0 }, reason: 'daily zero' },
+    { payload: { daily_budget_usd: -1 }, reason: 'daily negative' },
+    { payload: { session_budget_usd: 999999 }, reason: 'session over env cap' },
+    { payload: { handoff_threshold_pct: 0 }, reason: 'pct zero' },
+    { payload: { handoff_threshold_pct: 101 }, reason: 'pct over 100' },
+    { payload: { handoff_threshold_pct: 50.5 }, reason: 'pct non-integer' },
+    { payload: { handoff_webhook_url: 'not-a-url' }, reason: 'webhook unparseable' },
+    { payload: { handoff_webhook_url: 'ftp://example.test/hook' }, reason: 'webhook wrong scheme' },
+  ];
+
+  for (const c of cases) {
+    const res = await fastify.inject({
+      method: 'PATCH',
+      url: `/admin/chatbots/${slug}`,
+      headers: { authorization: `Bearer ${ctx.rawKey}` },
+      payload: c.payload,
+    });
+    assert.equal(res.statusCode, 400, `expected 400 for ${c.reason}, got ${res.statusCode}`);
+    assert.equal(res.json().error, 'validation_failed');
+  }
+});
+
 test('admin: DELETE /admin/chatbots/{slug} returns cascade counts', async (t) => {
   const db = makeTestDb();
   setProvisioningKey(VALID_PROVISIONING);

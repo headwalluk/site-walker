@@ -4,6 +4,8 @@ Operator + provisioning HTTP surface, shipped in M19 (v0.15.0). Audience: develo
 
 For the **browser-side** API (Origin + session-token, the chat path itself), see [`api-usage.md`](api-usage.md). That doc is for widget developers; this one is for back-office integrations.
 
+> **M20 surface change:** the browser chat path now returns `402 budget_exhausted_daily` when a chatbot's daily USD spend cap is reached, and `POST /chat` carries `session_terminated: true` once a per-session cap is hit. Those codes don't appear on `/admin/*` — they're chat-path concerns, documented in [`api-usage.md`](api-usage.md). The admin side just configures the caps via `PATCH /admin/chatbots/{slug}` (see below).
+
 ## Audience + scope
 
 Two distinct bearer-token scopes, with two distinct mount points:
@@ -75,8 +77,14 @@ All routes are scoped to the auth'd account. Chatbots owned by other accounts re
 - `model_slug` (string `"<provider>/<model>"` validated against the registry, or `null` to clear)
 - `model_parameters` (object validated by the normalised-parameters Zod schema)
 - `model_context_window` (positive integer or `null`)
+- `daily_budget_usd` (positive number or `null` — M20 daily spend cap; capped by `SW_MAX_DAILY_BUDGET_USD`)
+- `session_budget_usd` (positive number or `null` — M20 per-session spend cap; capped by `SW_MAX_SESSION_BUDGET_USD`)
+- `handoff_threshold_pct` (integer 1–100 — soft-handoff trigger as % of the session cap; default 80)
+- `handoff_webhook_url` (http(s) URL ≤255 chars, or `null` — fired when a session terminates with a captured visitor email)
 
 The `slug`, `account_id`, `provider_api_key_*`, and geo settings are **not** patchable via this route — each has its own endpoint (or is immutable here).
+
+The two budget caps are sanity-bound by host env vars to limit the blast radius of a stolen admin key. A request that exceeds `SW_MAX_DAILY_BUDGET_USD` or `SW_MAX_SESSION_BUDGET_USD` is refused with `400 validation_failed` and a `detail.message` naming the env var to raise. See [`env.md`](env.md) and [`../dev-notes/11-budget-handoff.md`](../dev-notes/11-budget-handoff.md).
 
 #### Origins
 

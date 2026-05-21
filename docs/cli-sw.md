@@ -259,6 +259,42 @@ Set model_context_window=4096 for slug="acme-corp".
 
 This is the figure the `POST /chat` budget check refers to. The check refuses the request with `413 context_overflow` when `system + history + new user` tokens plus a headroom (12.5% of the window, 512-token floor) exceeds the window. Leave it unset (NULL) to skip the check entirely.
 
+### `sw chatbot set-budget <slug> [--daily <usd|none>] [--session <usd|none>] [--threshold <pct>]`
+
+Set per-chatbot spend caps (M20). All three options are independent and any combination is accepted (at least one must be present).
+
+```
+$ ./bin/sw chatbot set-budget acme-corp --daily 2.50 --session 0.25 --threshold 80
+Updated budgets for chatbot "acme-corp":
+  daily_budget_usd:      2.5000
+  session_budget_usd:    0.2500
+  handoff_threshold_pct: 80
+
+$ ./bin/sw chatbot set-budget acme-corp --daily none
+Updated budgets for chatbot "acme-corp":
+  daily_budget_usd:      (none)
+  session_budget_usd:    0.2500
+  handoff_threshold_pct: 80
+```
+
+- **`--daily <usd|none>`** — daily USD spend cap. Once today's spend (UTC midnight–to-now) reaches it, `POST /sessions`, `GET /sessions/can-start`, and `POST /chat` all return `402 budget_exhausted_daily` until the next UTC midnight. `none` clears the cap (= unlimited). Bounded above by `SW_MAX_DAILY_BUDGET_USD` ([`env.md`](env.md)) — the CLI refuses to set a higher value.
+- **`--session <usd|none>`** — per-conversation USD cap. Triggers the soft-handoff inject at `--threshold` % and terminates the session once spend crosses the cap (the last natural reply is still delivered). `none` clears the cap. Bounded by `SW_MAX_SESSION_BUDGET_USD`.
+- **`--threshold <pct>`** — integer in `[1, 100]`. Soft-handoff trigger as a % of the session cap. Defaults to `80`. Has no effect when `session_budget_usd` is unset.
+
+### `sw chatbot set-handoff-webhook <slug> <url|none>`
+
+Set or clear the handoff-notification webhook URL (M20). Fired best-effort (no retry, 10s timeout) when a session ends with a captured visitor email. Pass the literal `none` to clear.
+
+```
+$ ./bin/sw chatbot set-handoff-webhook acme-corp https://crm.example.com/site-walker/handoff
+Set handoff_webhook_url="https://crm.example.com/site-walker/handoff" for slug="acme-corp".
+
+$ ./bin/sw chatbot set-handoff-webhook acme-corp none
+Cleared handoff_webhook_url for slug="acme-corp".
+```
+
+URL must be `http://` or `https://` and ≤255 chars. The payload shape, retry policy, and webhook security stance are documented in [`../dev-notes/11-budget-handoff.md`](../dev-notes/11-budget-handoff.md).
+
 ### `sw chatbot set-geo-mode <slug> <allowall|blocklist|allowlist>`
 
 Set the chatbot's geo-blocking mode. Three modes:

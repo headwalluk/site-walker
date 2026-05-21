@@ -1,9 +1,9 @@
 # site-walker — Project Tracker
 
 **Last Updated:** 21 May 2026
-**Current Version:** 0.15.0
-**Current Phase:** **SaaS pivot — execution.** Prototype era ended at v0.11.0. v0.12.0 landed M16 (multi-tenant rename + accounts). v0.13.0 lands M17 (DB-backed provider registry + chatbot BYO keys; TOML config path deleted). v0.13.1 patched the `sw provider add --local` flag-defaulting bug. v0.14.0 lands M18 (cost-accounting foundation + `sw chatbot usage` + Anthropic prompt-caching substrate). v0.15.0 lands M19 (admin HTTP API: 22 routes, two bearer-auth scopes, full OpenAPI, integration tests). Only M20 (budget caps) remains in the SaaS-pivot block; pre-pivot deferred items (M7 finish, old M9/M11/M12/M13/M14/M15) come back into focus after M20 + first-customer feedback.
-**Overall Progress (post-M19, v0.15.0):** M1–M6 complete, M7 + M8 partial, M16/M17/M18/M19 complete in v0.12.0/v0.13.0/v0.14.0/v0.15.0. Admin HTTP surface live, fully tested, fully documented. `site-walker-wp` and `site-walker-for-woo` can now drive chatbot configuration over HTTPS without operator shell access.
+**Current Version:** 0.16.0
+**Current Phase:** **SaaS-pivot block complete — first-customer onboarding next.** Prototype era ended at v0.11.0. v0.12.0 landed M16 (multi-tenant rename + accounts). v0.13.0 lands M17 (DB-backed provider registry + chatbot BYO keys; TOML config path deleted). v0.13.1 patched the `sw provider add --local` flag-defaulting bug. v0.14.0 lands M18 (cost-accounting foundation + `sw chatbot usage` + Anthropic prompt-caching substrate). v0.15.0 lands M19 (admin HTTP API: 22 routes, two bearer-auth scopes, full OpenAPI, integration tests). **v0.16.0 lands M20 (budget caps + soft/hard handoff + visitor-email capture)** — the SaaS-pivot block is closed. Next phase: real-customer onboarding on `api.site-walker.net`, then the pre-pivot deferred items (M7 finish, old M9/M11/M12/M13/M14/M15) come back into focus informed by first-customer feedback.
+**Overall Progress (post-M20, v0.16.0):** M1–M6 complete, M7 + M8 partial, M16/M17/M18/M19/M20 complete in v0.12.0/v0.13.0/v0.14.0/v0.15.0/v0.16.0. Admin HTTP surface live with full M20 budget-cap controls. Daily + per-session spend caps enforced end-to-end; soft-handoff prompt injection at configurable threshold; hard-cap session termination with `HANDOFF_HARD.md` template + webhook delivery; visitor-email capture write-only at the session-bearer scope. 281 tests, format + lint clean.
 
 Vision and phasing live in [`../README.md`](../README.md). **Note:** README still markets the prototype-era "self-hosted multi-tenant API" framing; rewrite ships after M16 lands, not before, to avoid documenting vapourware. Stack and architecture decisions live in [`../CLAUDE.md`](../CLAUDE.md). Auth/session and data-model design live in companion docs in this directory. This file tracks the work.
 
@@ -16,14 +16,13 @@ Companion planning docs:
 
 ## Next up
 
-Post-M19, 2026-05-21. M20 is the last SaaS-pivot milestone:
+Post-M20, 2026-05-21. The SaaS-pivot block is closed. The work ahead is real-customer onboarding + opportunistic technical follow-ups:
 
-1. **M20 — Budget caps.** Daily + per-session enforcement at `/sessions/can-start`, `POST /sessions`, `POST /chat`. 402 error semantics. The session cap shape (soft-handoff at 80%, hard-cap → email capture + visitor-side email field) is sketched in [`11-budget-handoff.md`](11-budget-handoff.md); concrete design lands during the M20 pass. The 4 admin endpoints needed alongside (cap getter/setter on the chatbot, plus `GET /admin/chatbots/{slug}/usage` warnings) plug naturally into the M19 surface.
-2. **Post-M20: Anthropic prompt caching (via OpenRouter).** Substrate already in DB (M18). Adapter-side work: send `cache_control` markers on system-blocks prefix, parse cache stats from response, gate by model, skip below the minimum-cacheable threshold. ~70-80% input-billing savings expected for chatbots with stable system blocks and many conversations per cache window. See [`10-saas-shape.md`](10-saas-shape.md).
+1. **First paying client on `api.site-walker.net`.** End-to-end test of the whole stack with BYO Anthropic key, daily cap configured (informed by real M18 usage data once we have a couple of real chatbots running for a week), the `site-walker-wp` widget installed on the customer's WordPress, and the operator's CRM wired to `handoff_webhook_url` for email capture. The whole point of the SaaS pivot.
+2. **Reverse proxy for `api.site-walker.net`.** Dev proxy at `apix.site-walker.net` → `sentinel:47830` is already up via Apache on `nexus.headwall.co.uk` (IP-locked to the developer's home IP). Production `api.site-walker.net` needs DNS/cert work + no IP lock.
+3. **Anthropic prompt caching (via OpenRouter).** Substrate already in DB (M18). Adapter-side work: send `cache_control` markers on system-blocks prefix, parse cache stats from response, gate by model, skip below the minimum-cacheable threshold. ~70-80% input-billing savings expected for chatbots with stable system blocks and many conversations per cache window. See [`10-saas-shape.md`](10-saas-shape.md).
 
-Operational measurement note for M20: let M18's `sw chatbot usage` accumulate real numbers across both the cortex and openrouter chatbots before settling on M20's default `daily_budget_usd` / `session_budget_usd` shapes. We want real cost-per-conversation data, not invented defaults.
-
-After M20: real client live. Auto-mode content ingestion, condensation pipeline, operational hours, and OAuth-style plugin linking all come after that.
+After the first paying client lands: auto-mode content ingestion, condensation pipeline, operational hours, and OAuth-style plugin linking all come after that.
 
 In parallel with the above (operator-side, outside this repo):
 - **Reverse proxy for `api.site-walker.net`.** Dev proxy at `apix.site-walker.net` → `sentinel:47830` is already up via Apache on `nexus.headwall.co.uk` (IP-locked to the developer's home IP). Production `api.site-walker.net` needs DNS/cert work + no IP lock. Exercises the `trustProxy: true` + `X-Forwarded-For` plumbing that 0.10.0 wired in.
@@ -500,26 +499,33 @@ CLI surface for the self-hoster path (parallel to the SaaS-path provisioning-key
 
 ### Milestone 20: Budget caps
 
-**Target Completion:** TBD
-**Status:** 🔴 Not started
+**Target Completion:** 21 May 2026
+**Status:** ✅ Complete (21 May 2026, v0.16.0)
 **Priority:** High — the "this can't ruin a customer's week" guarantee
 
-Per-chatbot caps:
-- `chatbots.daily_budget_usd` — NULL = no cap.
-- `chatbots.session_budget_usd` — NULL = no cap.
+Per-chatbot caps + soft/hard handoff behaviour + visitor-email capture. Full design notes in [`11-budget-handoff.md`](11-budget-handoff.md) (recasts the original M9 / M20 split — see "What shipped" section).
 
-Enforced at:
-- `GET /sessions/can-start` — returns `{ available: false, reason: 'budget_exhausted_daily' }`.
-- `POST /sessions` — hard 402 if daily cap already blown.
-- `POST /chat` — daily checked before completion; session checked *after* writing the assistant reply (so a one-message-over-cap visitor gets one final reply rather than being cut off mid-thought).
+**Shipped:**
+- Migration `0005_budget_caps.js` — adds `chatbots.daily_budget_usd`, `chatbots.session_budget_usd`, `chatbots.handoff_threshold_pct` (default 80), `chatbots.handoff_webhook_url`; adds `sessions.terminated_at`, `sessions.visitor_email`, `sessions.handoff_notified_at`.
+- `src/services/budget.ts` — pure helpers (`utcMidnightToday`, `parseCapDecimal`, `isDailyBudgetExhausted`, `isSessionBudgetExhausted`) + DB aggregators (`getChatbotDailySpend`, `getSessionSpend`). Closed-boundary semantics: `spend === cap` counts as exhausted.
+- `src/services/system-blocks.ts` — `RESERVED_BLOCK_NAMES` extended to include `HANDOFF_SOFT` + `HANDOFF_HARD`; new `loadHandoffBlock()` helper; `assemblePrompt()` gains optional `extraBlocks?: Block[]` so the chat path can append the soft-handoff block conditionally without making prompt assembly otherwise stateful.
+- `src/services/sessions.ts` — `findSessionByToken` now returns `null` for sessions idle >24h (`SESSION_IDLE_EXPIRY_HOURS`). Prevents shared-device data leak; also serves as a free housekeeping floor.
+- `src/services/handoff-webhook.ts` — fire-and-forget `notifyHandoff()` (10s timeout, no retry, no HMAC v1). Stamps `sessions.handoff_notified_at` on 2xx.
+- `src/services/chat.ts` — five-step flow: (1) early-return canned `HANDOFF_HARD.md` (or `DEFAULT_HARD_HANDOFF` constant fallback) with `message_id: 0` + `session_terminated: true` when `terminated_at` is set; (2) daily-cap pre-check → `402 budget_exhausted_daily`; (3) soft-handoff inject when spend-before crosses `cap * threshold/100`; (4) adapter call + persist; (5) hard-cap after-write check + terminate + fire-and-forget webhook.
+- `POST /sessions/visitor-email` — session-bearer auth, write-only (no GET counterpart at this scope), 204 with no body. Loosely validates email shape. Fires the webhook iff the session is already terminated.
+- Daily-cap gating on `POST /sessions` AND `GET /sessions/can-start` — widgets can hide the chat affordance proactively.
+- `PATCH /admin/chatbots/{slug}` extended with `daily_budget_usd`, `session_budget_usd`, `handoff_threshold_pct`, `handoff_webhook_url`. Sanity-bound by `SW_MAX_DAILY_BUDGET_USD` / `SW_MAX_SESSION_BUDGET_USD` env vars (defaults `10000` / `100`); admin requests above the env cap return `400 validation_failed` naming the env var to raise.
+- CLI: `sw chatbot set-budget <slug> [--daily <usd|none>] [--session <usd|none>] [--threshold <pct>]` and `sw chatbot set-handoff-webhook <slug> <url|none>`. Literal `none` clears.
+- Docs: `docs/api-usage.md` (visitor-email + 402 + soft/hard handoff), `docs/api-admin.md` (PATCH allowlist + 402 note), `docs/cli-sw.md` (set-budget + set-handoff-webhook), `docs/env.md` (`SW_MAX_*` vars), `dev-notes/11-budget-handoff.md` "What shipped" section.
+- 281 tests pass (M20 added 6 new tests on top of M19's 275; the rest of M20's behaviour reuses existing harness paths via `chat-budget.test.ts` extensions). Format + lint clean.
 
-Error codes: `budget_exhausted_daily`, `budget_exhausted_session`, both 402.
-
-CLI: `sw chatbot set-budget <slug> --daily 5.00 --session 0.50`.
-
-**Optional add-on:** `getBalance()` adapter method for providers that expose it (OpenRouter's `/key` endpoint; Anthropic returns null). CLI: `sw chatbot balance <slug>`. Read-only, never on the hot path.
-
-**Acceptance:** real client live on `api.site-walker.net`, with their own BYO Anthropic key, daily cap configured, chats working against their WP-installed `site-walker-wp` widget.
+**Resolved during execution:**
+- Session-mint gating: yes on both `POST /sessions` and `GET /sessions/can-start`. The probe carries the same 402 so widgets can hide the affordance before any token is issued.
+- Hard-cap message storage: disk file (`HANDOFF_HARD.md`) + built-in `DEFAULT_HARD_HANDOFF` fallback constant. Operator-customisation is preferred; the default is intentionally bland so missing files don't break the flow.
+- After-write hard-cap check: keeps. One final natural reply, then terminate. Trades one over-cap reply per session for a non-jarring UX.
+- Visitor-email scope: write-only at session-bearer. Admin path only for read-back. Rationale: a stolen session token shouldn't expose a previously-captured email.
+- Sanity bounds via env vars (not DB): host-level, easy to audit, no admin-write surface that could disable them.
+- Webhook security: no HMAC, no retry, 10s timeout. Operator's receiver is responsible for idempotency on `session_id` and (if exposed publicly) IP whitelisting. If a customer asks for signed payloads or retry, that's a follow-up.
 
 ---
 

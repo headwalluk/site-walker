@@ -18,12 +18,13 @@ A widget has three things to do:
 
 Three endpoints cover this:
 
-| Endpoint               | Method | Purpose                                                             |
-| ---------------------- | ------ | ------------------------------------------------------------------- |
-| `/sessions/can-start`  | GET    | Probe whether a session *could* be minted — no token issued.        |
-| `/sessions`            | POST   | Mint a session token. Returns the welcome message too.              |
-| `/chat`                | POST   | Send one user turn. Returns the assistant's reply.                  |
-| `/messages`            | GET    | Rehydrate full conversation history for an existing session.        |
+| Endpoint                     | Method | Purpose                                                             |
+| ---------------------------- | ------ | ------------------------------------------------------------------- |
+| `/sessions/can-start`        | GET    | Probe whether a session *could* be minted — no token issued.        |
+| `/sessions`                  | POST   | Mint a session token. Returns the welcome message too.              |
+| `/chat`                      | POST   | Send one user turn. Returns the assistant's reply.                  |
+| `/messages`                  | GET    | Rehydrate full conversation history for an existing session.        |
+| `/sessions/visitor-email`    | POST   | Capture a visitor email against the session (write-only — no GET).  |
 
 The base URL in development is `http://127.0.0.1:47830`. In production the instance lives at `https://api.site-walker.net` (or wherever the operator has deployed it).
 
@@ -84,12 +85,15 @@ The token is opaque, 64 hex characters, and has no client-side expiry concept to
 
 **Failure shapes (all `{ "error": "<code>" }`):**
 
-| Status | `error` value         | Meaning                                                                          |
-| ------ | --------------------- | -------------------------------------------------------------------------------- |
-| 400    | `origin_required`     | The browser didn't send an `Origin` header. Unusual — most browsers always do.   |
-| 403    | `origin_not_allowed`  | Your host isn't on the chatbot's allowlist. Operator action required.            |
-| 403    | `geo_blocked`         | The visitor's IP is in (blocklist mode) or out of (allowlist mode) the chatbot's country list. Hide the chat affordance for this visitor. |
-| 503    | `capacity_exceeded`   | Per-IP / per-chatbot rate limit reached. Phase 1 stub; lights up in M11.         |
+| Status | `error` value             | Meaning                                                                          |
+| ------ | ------------------------- | -------------------------------------------------------------------------------- |
+| 400    | `origin_required`         | The browser didn't send an `Origin` header. Unusual — most browsers always do.   |
+| 402    | `budget_exhausted_daily`  | The chatbot's daily USD spend cap has been reached. Hide the chat affordance for the rest of the day; minting will become available again at the next UTC midnight (or once the operator raises the cap). `detail` carries `cap_usd` and `spend_usd`. |
+| 403    | `origin_not_allowed`      | Your host isn't on the chatbot's allowlist. Operator action required.            |
+| 403    | `geo_blocked`             | The visitor's IP is in (blocklist mode) or out of (allowlist mode) the chatbot's country list. Hide the chat affordance for this visitor. |
+| 503    | `capacity_exceeded`       | Per-IP / per-chatbot rate limit reached. Phase 1 stub; lights up in M11.         |
+
+`GET /sessions/can-start` returns the same 402 in the same circumstances, so a widget that probes on mount will see the daily-cap state before it tries to mint.
 
 ### `POST /chat` — send a user turn
 
@@ -122,16 +126,46 @@ The message is trimmed server-side and must be between 1 and 8000 characters aft
 
 **Failure shapes:**
 
-| Status | `error` value           | Meaning                                                                            |
-| ------ | ----------------------- | ---------------------------------------------------------------------------------- |
-| 400    | `message_required`      | Body missing, or `message` empty / whitespace-only.                                |
-| 400    | `message_too_long`      | `message` exceeds 8000 chars. `detail` carries `length` and `limit`.               |
-| 401    | `token_required`        | `Authorization` header missing.                                                    |
-| 401    | `invalid_token`         | Token isn't recognised. Drop the cached token and mint a fresh session.            |
-| 403    | `geo_blocked`           | The visitor's IP is no longer accepted by the chatbot's geo policy (operator may have changed it mid-session). Drop the cached token; this visitor can't continue. |
-| 413    | `context_overflow`      | System prompt + history + new message exceeds the chatbot's declared context window. `detail` carries `total_prompt_tokens`, `context_window`, `headroom_tokens`. Recoverable — see "Error handling" below. |
-| 502    | `model_error`           | Upstream LLM call failed (rate limit, network, etc.). Retry after a delay.         |
-| 503    | `model_not_configured`  | Operator hasn't set a model for this chatbot. Operator action required.            |
+| Status | `error` value             | Meaning                                                                            |
+| ------ | ------------------------- | ---------------------------------------------------------------------------------- |
+| 400    | `message_required`        | Body missing, or `message` empty / whitespace-only.                                |
+| 400    | `message_too_long`        | `message` exceeds 8000 chars. `detail` carries `length` and `limit`.               |
+| 401    | `token_required`          | `Authorization` header missing.                                                    |
+| 401    | `invalid_token`           | Token isn't recognised (revoked, never existed, or older than 24h since last activity). Drop the cached token and mint a fresh session. |
+| 402    | `budget_exhausted_daily`  | The chatbot's daily USD spend cap is reached. Mid-session — show the cap to the visitor and hide the input. Mints will resume at the next UTC midnight. |
+| 403    | `geo_blocked`             | The visitor's IP is no longer accepted by the chatbot's geo policy (operator may have changed it mid-session). Drop the cached token; this visitor can't continue. |
+| 413    | `context_overflow`        | System prompt + history + new message exceeds the chatbot's declared context window. `detail` carries `total_prompt_tokens`, `context_window`, `headroom_tokens`. Recoverable — see "Error handling" below. |
+| 502    | `model_error`             | Upstream LLM call failed (rate limit, network, etc.). Retry after a delay.         |
+| 503    | `model_not_configured`    | Operator hasn't set a model for this chatbot. Operator action required.            |
+
+**Per-session cap (soft + hard handoff).** Some chatbots also carry a per-session USD cap. The chat path handles it automatically — no new error codes appear:
+
+- **Soft handoff (configurable threshold).** Once session spend crosses the threshold (default 80% of the cap), a `HANDOFF_SOFT.md` system block is injected so the model can gently nudge the visitor to leave their email. The widget sees a normal `200` reply.
+- **Hard cap.** When session spend reaches the cap, the assistant's reply is still returned to the visitor (the final natural reply) and the response carries `"session_terminated": true`. The widget should hide the input on this signal. Any subsequent `POST /chat` to the same session returns the chatbot's `HANDOFF_HARD.md` content (or a built-in default) with `"message_id": 0` and `"session_terminated": true` — no LLM call happens server-side.
+
+### `POST /sessions/visitor-email` — capture a visitor email (write-only)
+
+```http
+POST /sessions/visitor-email
+Authorization: Bearer e071b5ca42a16a8cdad993cee2d94a070960206f46b94506fc885d33250c661c
+Content-Type: application/json
+
+{
+  "email": "visitor@example.com"
+}
+```
+
+**Success (204):** empty body. There is **no GET counterpart at the session-bearer scope** — the email is stored for the operator's webhook + admin tooling only, and the widget can't read it back. This is deliberate: a captured email is privileged information that shouldn't be retrievable from the visitor's browser.
+
+If the chatbot is configured with a `handoff_webhook_url` **and** the session is already terminated, posting the email also fires the handoff webhook to the operator (best-effort, no retry). If the session is still live, the email is stored quietly; the webhook fires later when the hard cap terminates the session.
+
+**Failure shapes:**
+
+| Status | `error` value         | Meaning                                                                |
+| ------ | --------------------- | ---------------------------------------------------------------------- |
+| 400    | `validation_failed`   | Body missing `email`, or the value isn't a string that loosely looks like an email (must contain `@` and a `.` after it, ≤255 chars). |
+| 401    | `token_required`      | `Authorization` header missing.                                        |
+| 401    | `invalid_token`       | Token isn't recognised or the session has been idle for >24h.          |
 
 When `model_error` fires, the user's message **is still persisted** in the session log. If you retry the same turn, you'll get duplicates server-side; consider showing an error UI instead of auto-retrying.
 

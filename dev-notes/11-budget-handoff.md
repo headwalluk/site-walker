@@ -1,8 +1,8 @@
 # Budget-driven conversation handoff
 
-Design notes for the M20 budget-cap behaviour, capturing the design conversation on 2026-05-20. **Not yet authoritative** — the concrete design lands during the M20 design pass, informed by real cost data from M18. Captured here so the reasoning isn't lost between now and then.
+Design notes for the M20 budget-cap behaviour. Original design captured 2026-05-20; **shipped** in v0.16.0 on 2026-05-21. The "open design questions" section below records what got resolved and how.
 
-**Status:** design-in-flight. Settled during M20.
+**Status:** shipped. The first half of this doc remains the durable motivation; the new "What shipped" section at the end is the authoritative implementation reference.
 
 Companion to:
 - [`10-saas-shape.md`](10-saas-shape.md) — M20 budget caps section, which this expands on
@@ -107,5 +107,79 @@ Pick one for v1; the others can land later if customers ask.
 
 ## What this doc is not
 
-- **Not the M20 implementation plan.** That gets written during the M20 design pass, once M18 has run long enough to see real cost shapes against real workloads.
-- **Not a commitment to M9's deletion.** M9-style trimming stays available as a fallback if M18 cost data shows real conversations regularly bust context windows before they bust budgets. Most likely outcome: M9 dies; the schema delta here (`sessions.terminated_at`, `chatbots.handoff_*`) is the whole story. But the decision waits for data.
+- **Not a commitment to M9's deletion.** M9-style trimming stays available as a fallback if real conversations turn out to bust context windows before they bust budgets. Most likely outcome: M9 dies; the schema delta here (`sessions.terminated_at`, `chatbots.handoff_*`) is the whole story. Decision still waits for production cost data.
+
+---
+
+## What shipped (v0.16.0, 2026-05-21)
+
+The resolved design, against the question list above:
+
+1. **Email capture: webhook.** A single optional `chatbots.handoff_webhook_url`. Fired best-effort (no retry, 10s timeout, no HMAC v1) when a session is terminated **and** the visitor has supplied an email. JSON payload: `{ event: 'session_handoff', chatbot_slug, session_id, visitor_email, terminated_at, spend_usd }`. `sessions.handoff_notified_at` stamps successful delivery so a future job could replay non-delivered ones; the operator's receiver is responsible for idempotency.
+2. **Soft threshold: per-chatbot.** `chatbots.handoff_threshold_pct TINYINT UNSIGNED NOT NULL DEFAULT 80`. Validated to `[1, 100]` on PATCH and the CLI.
+3. **Soft block content: disk file.** `data/chatbots/<slug>/HANDOFF_SOFT.md`. Loaded conditionally via `loadHandoffBlock('soft')`. Skipped silently when absent — the model just doesn't get the nudge.
+4. **Hard-cap message: operator-templated, with fallback.** `data/chatbots/<slug>/HANDOFF_HARD.md` is preferred. When absent, a built-in `DEFAULT_HARD_HANDOFF` constant in `src/services/chat.ts` carries a generic "please leave your email" message. The constant has no operator details — the fallback is intentionally bland so an operator who hasn't authored a custom one isn't stuck.
+5. **Session-terminated state.** `sessions.terminated_at TIMESTAMP NULL`. After it's set: `POST /chat` returns the canned hard-cap response with `message_id: 0`, `session_terminated: true`, and never calls the adapter. No new message rows are written.
+6. **Email-capture timing: widget-side.** Dedicated `POST /sessions/visitor-email` route, session-bearer-authenticated, write-only. The email never traverses the LLM. The route has no GET counterpart at the session-bearer scope — admin-only readback prevents an obvious privilege escalation if the visitor's session token leaks.
+7. **Re-engagement: per-session, not per-visitor.** Confirmed as designed. Plus a `sessions.last_active_at`-anchored 24h idle expiry baked into `findSessionByToken` — older-than-24h tokens read back as `null`, so a shared device can't expose conversation history from yesterday.
+
+### Schema delta (migration 0005)
+
+```
+chatbots:
+  + daily_budget_usd       DECIMAL(10,4) NULL        -- per-day USD cap
+  + session_budget_usd     DECIMAL(10,4) NULL        -- per-conversation USD cap
+  + handoff_threshold_pct  TINYINT UNSIGNED NOT NULL DEFAULT 80
+  + handoff_webhook_url    VARCHAR(255) NULL
+
+sessions:
+  + terminated_at          TIMESTAMP NULL
+  + visitor_email          VARCHAR(255) NULL
+  + handoff_notified_at    TIMESTAMP NULL
+```
+
+### Chat-path state machine
+
+The chat handler is now a five-step path (`src/services/chat.ts`):
+
+```
+1.  if session.terminated_at !== null:
+        return canned HANDOFF_HARD (or DEFAULT_HARD_HANDOFF), message_id=0, terminated=true
+2.  if chatbot.daily_budget_usd set AND today's spend >= cap:
+        throw ChatError('budget_exhausted_daily')  → 402
+3.  if chatbot.session_budget_usd set AND session-spend-before >= cap * threshold/100:
+        load HANDOFF_SOFT.md → assemblePrompt(extraBlocks=[soft])
+4.  run adapter, persist user + assistant messages
+5.  if chatbot.session_budget_usd set AND session-spend-after >= cap:
+        sessions.terminated_at = NOW()
+        result.session_terminated = true
+        if chatbot.handoff_webhook_url AND session.visitor_email:
+            void notifyHandoff(...)  // fire-and-forget
+```
+
+The hard-cap check is **after-write** — the visitor gets one final natural reply, then the session terminates. That's a deliberate choice for UX (a mid-sentence cutoff would be jarring) at the cost of one over-cap reply per session.
+
+### Sanity-bound caps
+
+A stolen account-admin key could otherwise set `daily_budget_usd = 1_000_000` and drain the operator's BYO LLM credit. Two host-side env vars cap what any admin path (HTTP PATCH or CLI) will accept:
+
+- `SW_MAX_DAILY_BUDGET_USD` (default `10000`)
+- `SW_MAX_SESSION_BUDGET_USD` (default `100`)
+
+Operators raise these only if they genuinely need higher caps. Documented in [`../docs/env.md`](../docs/env.md).
+
+### Surface
+
+- **Chat path:** `POST /chat` adds `session_terminated: boolean` to the success body. New error `402 budget_exhausted_daily` on `POST /chat`, `POST /sessions`, and `GET /sessions/can-start` — the cap is enforced both at session-mint time *and* per chat turn, so a token minted just before midnight that crosses the cap mid-day still fails fast.
+- **Visitor email:** `POST /sessions/visitor-email` (session-bearer, write-only). Returns 204 with no body. Validates the email shape loosely (≤255 chars, contains `@` and a `.`). Fires the handoff webhook iff the session is already terminated *and* the chatbot has `handoff_webhook_url` set.
+- **Admin PATCH:** `PATCH /admin/chatbots/{slug}` extended to accept `daily_budget_usd`, `session_budget_usd`, `handoff_threshold_pct`, `handoff_webhook_url`. Bounded values; `null` clears.
+- **CLI:** `sw chatbot set-budget` (with `--daily`, `--session`, `--threshold`; `none` literal to clear) and `sw chatbot set-handoff-webhook <slug> <url|none>`.
+
+### Webhook security stance (v1)
+
+No HMAC, no retry, 10s timeout. Operator's receiver SHOULD:
+- Be idempotent on `session_id`.
+- Whitelist the originating IP if the receiver is on the public internet.
+- Not assume freshness (we may stamp `handoff_notified_at` *after* the receiver acked).
+
+If a real customer needs signed payloads or retry-with-backoff, that's a follow-up. The v1 shape is consistent with the rest of the project's "fail loud, no ambiguous fallback" stance: a webhook delivery failure is logged and the visitor is never blocked.

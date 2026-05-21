@@ -26,6 +26,7 @@ import {
 import { resolveModel, setContextWindow, setModel, setParameters } from '../services/models.js';
 import { getChatbotUsage, parseSinceDuration } from '../services/cost.js';
 import { DEFAULT_DATA_DIR } from '../services/system-blocks.js';
+import { env } from '../config/env.js';
 import { makeVerifyAccountAdminBearer } from './admin-auth.js';
 
 /**
@@ -59,6 +60,11 @@ const chatbotSchema = {
     model_slug: { type: ['string', 'null'] },
     model_parameters: { type: ['object', 'null'], additionalProperties: true },
     model_context_window: { type: ['integer', 'null'] },
+    // M20: DECIMAL columns are strings out of mysql2; nullable.
+    daily_budget_usd: { type: ['string', 'null'] },
+    session_budget_usd: { type: ['string', 'null'] },
+    handoff_threshold_pct: { type: 'integer' },
+    handoff_webhook_url: { type: ['string', 'null'] },
     created_at: { type: 'string', format: 'date-time' },
     updated_at: { type: 'string', format: 'date-time' },
   },
@@ -251,6 +257,10 @@ const adminChatbotsPlugin: FastifyPluginAsync<AdminChatbotsPluginOpts> = async (
     model_slug?: unknown;
     model_parameters?: unknown;
     model_context_window?: unknown;
+    daily_budget_usd?: unknown;
+    session_budget_usd?: unknown;
+    handoff_threshold_pct?: unknown;
+    handoff_webhook_url?: unknown;
   };
 
   fastify.patch<{ Params: { slug: string }; Body: ChatbotPatchBody }>(
@@ -368,6 +378,99 @@ const adminChatbotsPlugin: FastifyPluginAsync<AdminChatbotsPluginOpts> = async (
           return reply.status(400).send({
             error: 'validation_failed',
             detail: { message: '`model_context_window` must be positive integer or null.' },
+          });
+        }
+      }
+
+      // M20: budget caps + handoff webhook. Sanity-bound via env so a stolen
+      // admin key can't set a $1,000,000 cap. NULL clears the column. Numbers
+      // accepted as either `number` or `string` (the latter so JSON like
+      // "0.50" — the DECIMAL-serialised form — round-trips cleanly).
+      const validateCap = (
+        raw: unknown,
+        field: 'daily_budget_usd' | 'session_budget_usd',
+        upper: number,
+      ): { ok: true; value: string | null } | { ok: false; message: string } => {
+        if (raw === null) return { ok: true, value: null };
+        const asNum = typeof raw === 'number' ? raw : typeof raw === 'string' ? Number(raw) : NaN;
+        if (!Number.isFinite(asNum) || asNum <= 0) {
+          return { ok: false, message: `\`${field}\` must be a positive number or null.` };
+        }
+        if (asNum > upper) {
+          return {
+            ok: false,
+            message: `\`${field}\` ${asNum} exceeds environment cap ${upper} (\`SW_MAX_${field.toUpperCase()}\`).`,
+          };
+        }
+        // Store with 4-dp precision to match the DECIMAL(10,4) column.
+        return { ok: true, value: asNum.toFixed(4) };
+      };
+
+      if (Object.prototype.hasOwnProperty.call(body, 'daily_budget_usd')) {
+        const r = validateCap(body.daily_budget_usd, 'daily_budget_usd', env.maxDailyBudgetUsd);
+        if (!r.ok) {
+          return reply
+            .status(400)
+            .send({ error: 'validation_failed', detail: { message: r.message } });
+        }
+        sets.daily_budget_usd = r.value;
+      }
+
+      if (Object.prototype.hasOwnProperty.call(body, 'session_budget_usd')) {
+        const r = validateCap(
+          body.session_budget_usd,
+          'session_budget_usd',
+          env.maxSessionBudgetUsd,
+        );
+        if (!r.ok) {
+          return reply
+            .status(400)
+            .send({ error: 'validation_failed', detail: { message: r.message } });
+        }
+        sets.session_budget_usd = r.value;
+      }
+
+      if (Object.prototype.hasOwnProperty.call(body, 'handoff_threshold_pct')) {
+        const pct = body.handoff_threshold_pct;
+        if (typeof pct !== 'number' || !Number.isInteger(pct) || pct < 1 || pct > 100) {
+          return reply.status(400).send({
+            error: 'validation_failed',
+            detail: { message: '`handoff_threshold_pct` must be an integer in [1, 100].' },
+          });
+        }
+        sets.handoff_threshold_pct = pct;
+      }
+
+      if (Object.prototype.hasOwnProperty.call(body, 'handoff_webhook_url')) {
+        if (body.handoff_webhook_url === null) {
+          sets.handoff_webhook_url = null;
+        } else if (typeof body.handoff_webhook_url === 'string') {
+          let url: URL;
+          try {
+            url = new URL(body.handoff_webhook_url);
+          } catch {
+            return reply.status(400).send({
+              error: 'validation_failed',
+              detail: { message: '`handoff_webhook_url` must be a parseable URL or null.' },
+            });
+          }
+          if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+            return reply.status(400).send({
+              error: 'validation_failed',
+              detail: { message: '`handoff_webhook_url` scheme must be http or https.' },
+            });
+          }
+          if (body.handoff_webhook_url.length > 255) {
+            return reply.status(400).send({
+              error: 'validation_failed',
+              detail: { message: '`handoff_webhook_url` must be ≤255 chars.' },
+            });
+          }
+          sets.handoff_webhook_url = body.handoff_webhook_url;
+        } else {
+          return reply.status(400).send({
+            error: 'validation_failed',
+            detail: { message: '`handoff_webhook_url` must be a string or null.' },
           });
         }
       }

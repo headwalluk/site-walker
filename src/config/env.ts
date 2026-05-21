@@ -34,6 +34,15 @@ export interface RuntimeEnv {
    * refuses to continue if any chatbot has a stricter mode configured.
    */
   readonly geoipDbPath: string | undefined;
+  /**
+   * Defensive upper bound on `chatbots.daily_budget_usd`. The CLI and admin
+   * PATCH refuse to set a higher value with `validation_failed`. Operators
+   * who genuinely need a higher cap raise this in `.env`; the default
+   * catches typos and miscreant operators trying to set absurd amounts.
+   */
+  readonly maxDailyBudgetUsd: number;
+  /** Defensive upper bound on `chatbots.session_budget_usd`. Same shape. */
+  readonly maxSessionBudgetUsd: number;
 }
 
 function parsePort(raw: string | undefined, name: string, fallback: number): number {
@@ -48,6 +57,15 @@ function parsePort(raw: string | undefined, name: string, fallback: number): num
 function nonEmptyOrDefault(raw: string | undefined, fallback: string): string {
   if (raw === undefined || raw === '') return fallback;
   return raw;
+}
+
+function parsePositiveDecimal(raw: string | undefined, name: string, fallback: number): number {
+  if (raw === undefined || raw === '') return fallback;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) {
+    throw new Error(`Env var ${name} must be a positive number, got "${raw}".`);
+  }
+  return n;
 }
 
 /**
@@ -76,6 +94,16 @@ export function loadEnv(): RuntimeEnv {
       process.env.GEOIP_DB_PATH && process.env.GEOIP_DB_PATH !== ''
         ? process.env.GEOIP_DB_PATH
         : undefined,
+    maxDailyBudgetUsd: parsePositiveDecimal(
+      process.env.SW_MAX_DAILY_BUDGET_USD,
+      'SW_MAX_DAILY_BUDGET_USD',
+      10000,
+    ),
+    maxSessionBudgetUsd: parsePositiveDecimal(
+      process.env.SW_MAX_SESSION_BUDGET_USD,
+      'SW_MAX_SESSION_BUDGET_USD',
+      100,
+    ),
   });
   return env;
 }
