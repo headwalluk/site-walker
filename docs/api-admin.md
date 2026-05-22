@@ -2,9 +2,7 @@
 
 Operator + provisioning HTTP surface, shipped in M19 (v0.15.0). Audience: developers integrating `site-walker-wp` (account-admin path) and `site-walker-for-woo` (provisioning path), plus self-hosters who prefer HTTP over `./bin/sw`.
 
-For the **browser-side** API (Origin + session-token, the chat path itself), see [`api-usage.md`](api-usage.md). That doc is for widget developers; this one is for back-office integrations.
-
-> **M20 surface change:** the browser chat path now returns `402 budget_exhausted_daily` when a chatbot's daily USD spend cap is reached, and `POST /chat` carries `session_terminated: true` once a per-session cap is hit. Those codes don't appear on `/admin/*` — they're chat-path concerns, documented in [`api-usage.md`](api-usage.md). The admin side just configures the caps via `PATCH /admin/chatbots/{slug}` (see below).
+For the **browser-side** API (Origin + session-token, the chat path itself, including all the ways a chat request can be refused), see [`api-usage.md`](api-usage.md). That doc is for widget developers; this one is for back-office integrations. The admin surface configures the chatbot; it doesn't carry the chat-denial vocabulary (`budget_exhausted_daily`, `geo_blocked`, `session_terminated`, etc.) — those are exclusively on the browser API.
 
 ## Audience + scope
 
@@ -162,4 +160,4 @@ All admin routes are documented in the OpenAPI spec served at `/openapi.json` (a
 
 - **Not the chat path.** Chat traffic (`POST /sessions`, `POST /chat`, `GET /messages`) is browser-origin-authenticated and lives under separate routes. See [`api-usage.md`](api-usage.md).
 - **Not a sales-channel API.** Subscription/billing happens in WooCommerce at `site-walker.net`. This API is for back-office integration **only**.
-- **Not paginated.** v1 surfaces return full lists. If a real customer with 100+ chatbots shows up, M19 grows pagination.
+- **Not paginated.** v1 surfaces return full lists. If a real customer with 100+ chatbots shows up, pagination becomes a follow-up — none today.

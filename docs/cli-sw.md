@@ -533,7 +533,7 @@ Tokens are estimated as `ceil(chars / 3)` — quick and cheap, not exact. Use th
 
 ## `sw sessions`
 
-Read-only browse over the session log. Useful for spot-checking what visitors have been saying during development. M13 will bring a richer review surface (filtering, redaction, retention); these commands are the dev-time slice of that.
+Read-only browse over the session log. Useful for spot-checking what visitors have been saying during development. A richer review surface (filtering, redaction, retention sweeps) is on the post-pivot deferred list; these commands are the dev-time slice of that.
 
 ### `sw sessions list [-c|--chatbot <slug>] [-n|--limit <n>]`
 

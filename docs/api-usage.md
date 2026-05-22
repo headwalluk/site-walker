@@ -91,7 +91,7 @@ The token is opaque, 64 hex characters, and has no client-side expiry concept to
 | 402    | `budget_exhausted_daily`  | The chatbot's daily USD spend cap has been reached. Hide the chat affordance for the rest of the day; minting will become available again at the next UTC midnight (or once the operator raises the cap). `detail` carries `cap_usd` and `spend_usd`. |
 | 403    | `origin_not_allowed`      | Your host isn't on the chatbot's allowlist. Operator action required.            |
 | 403    | `geo_blocked`             | The visitor's IP is in (blocklist mode) or out of (allowlist mode) the chatbot's country list. Hide the chat affordance for this visitor. |
-| 503    | `capacity_exceeded`       | Per-IP / per-chatbot rate limit reached. Phase 1 stub; lights up in M11.         |
+| 503    | `capacity_exceeded`       | Per-IP / per-chatbot rate limit reached. Stub today (no real backend; never returned in practice); will start firing when rate limiting lands. |
 
 `GET /sessions/can-start` returns the same 402 in the same circumstances, so a widget that probes on mount will see the daily-cap state before it tries to mint.
 
@@ -138,6 +138,8 @@ The message is trimmed server-side and must be between 1 and 8000 characters aft
 | 502    | `model_error`             | Upstream LLM call failed (rate limit, network, etc.). Retry after a delay.         |
 | 503    | `model_not_configured`    | Operator hasn't set a model for this chatbot. Operator action required.            |
 
+When `model_error` fires, the user's message **is still persisted** in the session log. If you retry the same turn, you'll get duplicates server-side; consider showing an error UI instead of auto-retrying.
+
 **Per-session cap (soft + hard handoff).** Some chatbots also carry a per-session USD cap. The chat path handles it automatically — no new error codes appear:
 
 - **Soft handoff (configurable threshold).** Once session spend crosses the threshold (default 80% of the cap), a `HANDOFF_SOFT.md` system block is injected so the model can gently nudge the visitor to leave their email. The widget sees a normal `200` reply.
@@ -166,8 +168,6 @@ If the chatbot is configured with a `handoff_webhook_url` **and** the session is
 | 400    | `validation_failed`   | Body missing `email`, or the value isn't a string that loosely looks like an email (must contain `@` and a `.` after it, ≤255 chars). |
 | 401    | `token_required`      | `Authorization` header missing.                                        |
 | 401    | `invalid_token`       | Token isn't recognised or the session has been idle for >24h.          |
-
-When `model_error` fires, the user's message **is still persisted** in the session log. If you retry the same turn, you'll get duplicates server-side; consider showing an error UI instead of auto-retrying.
 
 ### `GET /messages` — rehydrate
 
@@ -206,8 +206,44 @@ Messages are ordered ascending by `created_at`. The welcome message is **not** p
 | Status | `error` value     | Meaning                                                                  |
 | ------ | ----------------- | ------------------------------------------------------------------------ |
 | 401    | `token_required`  | Missing `Authorization`.                                                 |
-| 401    | `invalid_token`   | Token isn't recognised. Drop the cached token and start over.            |
+| 401    | `invalid_token`   | Token isn't recognised (revoked, never existed, or older than 24h since last activity). Drop the cached token and start over. |
 | 403    | `geo_blocked`     | The visitor's IP no longer fits the chatbot's geo policy. Same handling as for `POST /chat` above. |
+
+## Denials at a glance
+
+Every way a chat can be refused — by status, error code, where it fires, and what the widget should do. Use this as the single reference; the per-endpoint error tables above are the same information sliced by route.
+
+All error responses share the same envelope:
+
+```json
+{ "error": "<code>", "detail"?: { ... } }
+```
+
+`detail` is route-specific and is the only thing that varies between codes (some carry useful numbers; most don't).
+
+| Trigger                                          | Where it fires                                                  | Response                                              | Widget action                                                  |
+| ------------------------------------------------ | --------------------------------------------------------------- | ----------------------------------------------------- | -------------------------------------------------------------- |
+| Browser sent no `Origin` header                  | `POST /sessions`, `GET /sessions/can-start`                     | `400 origin_required`                                 | Diagnostic only — most browsers always send `Origin`.          |
+| `Origin` not on the chatbot's allowlist          | `POST /sessions`, `GET /sessions/can-start`                     | `403 origin_not_allowed`                              | Don't render the widget. Tell the operator to add your host.   |
+| Visitor IP fails the chatbot's geo policy        | `POST /sessions`, `GET /sessions/can-start`, `POST /chat`, `GET /messages` | `403 geo_blocked`                            | Don't render the widget for this visitor; drop any cached token.|
+| **Chatbot's daily USD spend cap reached**        | `POST /sessions`, `GET /sessions/can-start`, `POST /chat`       | `402 budget_exhausted_daily` (with `detail.cap_usd`, `detail.spend_usd`) | Don't render the widget; mints resume at the next UTC midnight. Mid-session, hide the input. |
+| **Per-session USD cap reached (hard cap)**       | `POST /chat`                                                    | `200 { reply, session_terminated: true, message_id }` | Render the assistant's reply, then disable the input. Any further `/chat` returns a canned `HANDOFF_HARD.md` with `message_id: 0` and the same `session_terminated: true` flag — no LLM call. |
+| `Authorization` header missing                   | `POST /chat`, `GET /messages`, `POST /sessions/visitor-email`   | `401 token_required`                                  | Bug in the widget — make sure `Authorization: Bearer <token>` is set. |
+| Token unknown, revoked, or session idle >24h     | `POST /chat`, `GET /messages`, `POST /sessions/visitor-email`   | `401 invalid_token`                                   | Clear the cached token, mint a fresh session, restart UI.       |
+| Body missing / empty / whitespace `message`      | `POST /chat`                                                    | `400 message_required`                                | Don't send. Enforce a non-empty check in the widget.            |
+| `message` exceeds 8000 chars                     | `POST /chat`                                                    | `400 message_too_long` (with `detail.length`, `detail.limit`) | Enforce the same cap in the widget for a friendlier UX.     |
+| Body missing / malformed `email`                 | `POST /sessions/visitor-email`                                  | `400 validation_failed` (with `detail.message`)       | Validate the shape client-side before posting.                 |
+| Prompt + history would overflow the context window | `POST /chat`                                                  | `413 context_overflow` (with `detail.total_prompt_tokens`, `detail.context_window`, `detail.headroom_tokens`) | Tell the visitor the conversation has grown too long; optionally mint a fresh session. |
+| Upstream LLM call failed                         | `POST /chat`                                                    | `502 model_error`                                     | Show a retry hint, but **don't** auto-retry — the user's turn is already persisted. |
+| Operator hasn't configured a model               | `POST /chat`                                                    | `503 model_not_configured`                            | Tell the operator. Visitor sees a generic "not available" message. |
+| Capacity / rate-limit stub                       | `POST /sessions`, `GET /sessions/can-start`                     | `503 capacity_exceeded`                               | Stub today (no backend); will start firing when rate limiting lands. Treat like a transient "try again later". |
+
+A few things worth pulling out of the table:
+
+- **`402 budget_exhausted_daily` is the one to wire up early.** A self-hosted operator with a tight Anthropic budget will trip this before they trip anything else. The widget should treat 402 from the mint path as "the chat is unavailable right now" and not retry on a loop.
+- **The hard-cap path is the only "denial" that comes back as a `200`.** Look for `session_terminated: true` on every `POST /chat` success body and disable the input when it's set — the first time the visitor sees one final natural reply; subsequent calls return a canned `HANDOFF_HARD.md`.
+- **`403 geo_blocked` is sticky to the visitor's IP, not their session.** An operator who changes the geo policy mid-session can lock out an active visitor; treat it the same way as `invalid_token` (drop the token, but don't retry mint — mint will also `403`).
+- **There is no "session expired" error.** Tokens are valid until the session is idle for 24h, at which point the server returns `401 invalid_token` rather than a distinct code. The widget treats expiry and revocation identically.
 
 ## CORS
 
@@ -352,7 +388,7 @@ If the visitor explicitly opts out of "remember this conversation" (privacy UI, 
 - **Single conversation per session:** one session, one growing message log. There's no "new conversation" affordance built into the API; minting a fresh session token (e.g. by clearing `localStorage` and reloading) is how you start over.
 - **No streaming yet.** Each `POST /chat` is request-then-response. Show a "Thinking…" indicator during the in-flight period. Token streaming is on the roadmap.
 - **No client-controllable model.** The model is set per-chatbot by the operator; widgets can't override it per session. Comparison testing today means swapping the chatbot's model via `sw chatbot set-model` between conversations.
-- **No retention sweep yet.** Sessions and messages persist indefinitely. M13 will add retention + privacy controls.
+- **No retention sweep yet.** Sessions and messages persist indefinitely on disk. The 24h idle-expiry on `findSessionByToken` stops a stale token resurrecting an old conversation, but the rows are still there until an operator deletes them. A scheduled retention sweep is on the post-pivot deferred list.
 
 ## See also
 
