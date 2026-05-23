@@ -1,7 +1,7 @@
 # site-walker — Project Tracker
 
 **Last Updated:** 23 May 2026
-**Current Version:** 0.17.0
+**Current Version:** 0.17.1
 **Current Phase:** **SaaS-pivot block complete — first-customer onboarding next.** Prototype era ended at v0.11.0. v0.12.0 landed M16 (multi-tenant rename + accounts). v0.13.0 lands M17 (DB-backed provider registry + chatbot BYO keys; TOML config path deleted). v0.13.1 patched the `sw provider add --local` flag-defaulting bug. v0.14.0 lands M18 (cost-accounting foundation + `sw chatbot usage` + Anthropic prompt-caching substrate). v0.15.0 lands M19 (admin HTTP API: 22 routes, two bearer-auth scopes, full OpenAPI, integration tests). **v0.16.0 lands M20 (budget caps + soft/hard handoff + visitor-email capture)** — the SaaS-pivot block is closed. Next phase: real-customer onboarding on `api.site-walker.net`, then the pre-pivot deferred items (M7 finish, old M9/M11/M12/M13/M14/M15) come back into focus informed by first-customer feedback.
 **Overall Progress (post-M20, v0.16.0):** M1–M6 complete, M7 + M8 partial, M16/M17/M18/M19/M20 complete in v0.12.0/v0.13.0/v0.14.0/v0.15.0/v0.16.0. Admin HTTP surface live with full M20 budget-cap controls. Daily + per-session spend caps enforced end-to-end; soft-handoff prompt injection at configurable threshold; hard-cap session termination with `HANDOFF_HARD.md` template + webhook delivery; visitor-email capture write-only at the session-bearer scope. 281 tests, format + lint clean.
 

@@ -57,7 +57,7 @@ Origin: https://www.acme-corp.example
 { "ok": true }
 ```
 
-**Failure shapes:** identical to `POST /sessions` minus the success body — `400 origin_required`, `403 origin_not_allowed`, `403 geo_blocked`, `503 capacity_exceeded`.
+**Failure shapes:** identical to `POST /sessions` minus the success body — `400 origin_required`, `402 budget_exhausted_daily`, `403 origin_not_allowed`, `403 geo_blocked`, `503 chatbot_closed`, `503 capacity_exceeded`.
 
 If the probe returns 200, a subsequent `POST /sessions` from the same browser will almost certainly succeed too. (Almost — the operator could change the policy between the two calls. Don't treat the probe as a guarantee, just an early signal.)
 
@@ -95,6 +95,18 @@ The token is opaque, 64 hex characters, and has no client-side expiry concept to
 | 503    | `capacity_exceeded`       | Per-IP / per-chatbot rate limit reached. Stub today (no real backend; never returned in practice); will start firing when rate limiting lands. |
 
 `GET /sessions/can-start` returns the same 402 and 503 codes in the same circumstances, so a widget that probes on mount will see the daily-cap and out-of-hours states before it tries to mint.
+
+### Admin-mode sessions (M21)
+
+A session token can also arrive via a different mint path: when a logged-in site administrator loads a page on the WordPress backend, the plugin's PHP layer mints an "admin-mode" session against the [admin API](api-admin.md) and relays the token to the browser via an Ajax response. From the widget's perspective the resulting token works on every route below the same way — same `Authorization: Bearer` header, same `/chat`, `/messages`, `/sessions/visitor-email` semantics — but there are three things a widget should know:
+
+1. **The session response carries `is_admin_mode: true`.** Regular `POST /sessions` returns `{ session_token, welcome_message }`; the admin path additionally returns `is_admin_mode: true`. The widget will normally receive the whole envelope from the WP backend (not from this API directly), but treat any session whose envelope carries `is_admin_mode: true` as a power-user session.
+2. **The welcome message is prefixed with `**Admin mode**\n\n`.** That's a deliberate visual cue so the admin can tell at a glance they're in a different mode from the public chat. Render it as the first assistant turn the same way you'd render a regular welcome — the prefix is markdown that should appear on screen.
+3. **Operator-imposed gates are bypassed on the chat path.** Admin-mode sessions don't get refused for closed hours, geo policy, or a busted daily-cap — they're a tool for site staff, not a customer. Session caps still apply (against `admin_session_budget_usd` rather than `session_budget_usd`); soft-handoff and the operator's handoff webhook are suppressed. Practically, this means a widget that detects `is_admin_mode: true` doesn't need to handle 402/403/503 differently — those refusals just won't fire on admin sessions.
+
+The widget's behaviour from token receipt onward is identical whether the session came from `POST /sessions` or from the admin path. There is no separate browser-side route to interact with for admin mode; the difference is entirely how the token was minted.
+
+Signalling from WP to the widget: the recommended pattern is for the WP plugin to add a `data-is-logged-in="1"` attribute (or similar) to the widget's container element when rendering the admin page. The widget's JS sees the attribute, calls back to the WP backend via Ajax, and the WP backend (which holds the account admin key) mints the admin-mode session. The account admin key never reaches the browser. The attribute itself isn't a credential — a non-admin who manually sets it can call the WP backend but won't pass its capability check.
 
 ### `POST /chat` — send a user turn
 

@@ -73,6 +73,8 @@ When a chatbot has a per-session USD cap configured and the cap is reached, the 
 
 Daily-cap errors (`402 budget_exhausted_daily`) surface at **startup** — `./bin/chat` calls `POST /sessions` before entering the loop, and if the chatbot's daily cap is already spent, the client exits with `POST /sessions failed (402): budget_exhausted_daily`. Once you're in the loop, no daily-cap error will fire; sessions ride out their own session-cap budget.
 
+Same shape for operational-hours errors (`503 chatbot_closed`): if the chatbot has an availability schedule set and you launch `./bin/chat` outside an open window, the client exits at startup with `POST /sessions failed (503): chatbot_closed`. The chat path itself never returns this code — once you're in, you stay in. `./bin/chat` does not currently support admin-mode sessions (which would bypass both gates); the workaround for testing a closed chatbot is to temporarily clear its `availability` via `sw chatbot set-hours <slug> none`.
+
 A successful response prints just the assistant's reply; the client doesn't echo your own input or print the message ID. The full conversation is queryable via `GET /messages`.
 
 ## Caveats

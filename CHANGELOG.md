@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.17.1] - 2026-05-23
+
+Docs-only follow-up to v0.17.0 to close gaps that surfaced during a WP-plugin handoff audit. No code changes; no test changes.
+
+### Changed
+- **`docs/api-usage.md`** — `GET /sessions/can-start` failure-shape summary line was stale (missed `402 budget_exhausted_daily` and `503 chatbot_closed`); fixed.
+- **`docs/api-usage.md`** — new "Admin-mode sessions (M21)" section documenting the **browser-side** angle of admin mode (the admin API documents the PHP-backend angle): the `is_admin_mode: true` envelope field, the `**Admin mode**\n\n` welcome-message prefix, which gates are bypassed on the chat path, and the recommended `data-is-logged-in="1"` signalling pattern from the WP page to the widget. The widget JS developer can now build admin-mode handling from `docs/api-usage.md` alone.
+- **`docs/cli-chat.md`** — added a note that `./bin/chat` exits at startup with `503 chatbot_closed` when the chatbot is outside its operational hours (parallels the `402` startup-time paragraph from 0.16.1), plus the `sw chatbot set-hours <slug> none` workaround for testing a closed chatbot.
+- **`docs/env.md`** — clarified that `SW_MAX_SESSION_BUDGET_USD` bounds both `session_budget_usd` and `admin_session_budget_usd` (the two share the env cap).
+
 ## [0.17.0] - 2026-05-23
 
 M21 lands the last two pre-v1.0.0 API features: per-chatbot **operational availability** (timezone + weekly schedule, enforced at session-mint) and **admin-mode sessions** (a power-user surface for logged-in WP administrators that bypasses operator-imposed gates). Both share the same mint-gating seam, hence one milestone. Full design + resolved-question summary in `dev-notes/14-availability-and-admin-mode.md`.
