@@ -14,16 +14,18 @@ Companion planning docs:
 - [`10-saas-shape.md`](10-saas-shape.md) — SaaS architecture (four-repo topology, account model, BYO keys, admin HTTP API, M16–M20 phasing)
 - [`11-budget-handoff.md`](11-budget-handoff.md) — budget-driven conversation handoff (soft-handoff at 80% spend, hard-cap → email capture). Recasts old M9 history-trimming as part of M20's budget-cap UX. Settled during M20 design pass.
 - [`13-hierarchical-system-blocks.md`](13-hierarchical-system-blocks.md) — promote `data/chatbots/<slug>/` from a flat directory to a topic-aware tree; LLM activates topics on demand via `<load-topic>` tagged tokens. Design-in-flight, targeted at v1.1.0 (post-first-customer).
+- [`14-availability-and-admin-mode.md`](14-availability-and-admin-mode.md) — per-chatbot operational hours (timezone + weekly schedule) + admin-mode session type for logged-in WP administrators. Design-in-flight, M21 target (pre-v1.0.0).
 
 ## Next up
 
-Post-M20, 2026-05-21. The SaaS-pivot block is closed. The work ahead is real-customer onboarding + opportunistic technical follow-ups:
+Post-M20, 2026-05-23. The SaaS-pivot block is closed. The work ahead is real-customer onboarding + the two pre-v1.0.0 features clients are already asking for:
 
-1. **First paying client on `api.site-walker.net`.** End-to-end test of the whole stack with BYO Anthropic key, daily cap configured (informed by real M18 usage data once we have a couple of real chatbots running for a week), the `site-walker-wp` widget installed on the customer's WordPress, and the operator's CRM wired to `handoff_webhook_url` for email capture. The whole point of the SaaS pivot.
-2. **Reverse proxy for `api.site-walker.net`.** Dev proxy at `apix.site-walker.net` → `sentinel:47830` is already up via Apache on `nexus.headwall.co.uk` (IP-locked to the developer's home IP). Production `api.site-walker.net` needs DNS/cert work + no IP lock.
-3. **Anthropic prompt caching (via OpenRouter).** Substrate already in DB (M18). Adapter-side work: send `cache_control` markers on system-blocks prefix, parse cache stats from response, gate by model, skip below the minimum-cacheable threshold. ~70-80% input-billing savings expected for chatbots with stable system blocks and many conversations per cache window. See [`10-saas-shape.md`](10-saas-shape.md).
+1. **M21 — Operational availability + admin mode.** Per-chatbot hours-of-operation gating at session-mint, plus an "admin mode" session type for logged-in WP administrators (Woo store admins using the bot to navigate their own catalogue, alongside the secondary "test the config before launch" use). Both features share the same mint-gating seam, hence one milestone. Full design + 11 open questions in [`14-availability-and-admin-mode.md`](14-availability-and-admin-mode.md). **Gates v1.0.0** — first paying client will want both.
+2. **First paying client on `api.site-walker.net`.** End-to-end test of the whole stack with BYO Anthropic key, daily cap configured (informed by real M18 usage data once we have a couple of real chatbots running for a week), the `site-walker-wp` widget installed on the customer's WordPress, and the operator's CRM wired to `handoff_webhook_url` for email capture. The whole point of the SaaS pivot.
+3. **Reverse proxy for `api.site-walker.net`.** Dev proxy at `apix.site-walker.net` → `sentinel:47830` is already up via Apache on `nexus.headwall.co.uk` (IP-locked to the developer's home IP). Production `api.site-walker.net` needs DNS/cert work + no IP lock.
+4. **Anthropic prompt caching (via OpenRouter).** Substrate already in DB (M18). Adapter-side work: send `cache_control` markers on system-blocks prefix, parse cache stats from response, gate by model, skip below the minimum-cacheable threshold. ~70-80% input-billing savings expected for chatbots with stable system blocks and many conversations per cache window. See [`10-saas-shape.md`](10-saas-shape.md).
 
-After the first paying client lands: auto-mode content ingestion, condensation pipeline, operational hours, and OAuth-style plugin linking all come after that.
+After v1.0.0 / the first paying client lands: hierarchical system blocks ([`13-hierarchical-system-blocks.md`](13-hierarchical-system-blocks.md), v1.1.0 candidate), auto-mode content ingestion, condensation pipeline, and OAuth-style plugin linking.
 
 In parallel with the above (operator-side, outside this repo):
 - **Reverse proxy for `api.site-walker.net`.** Dev proxy at `apix.site-walker.net` → `sentinel:47830` is already up via Apache on `nexus.headwall.co.uk` (IP-locked to the developer's home IP). Production `api.site-walker.net` needs DNS/cert work + no IP lock. Exercises the `trustProxy: true` + `X-Forwarded-For` plumbing that 0.10.0 wired in.
@@ -527,6 +529,33 @@ Per-chatbot caps + soft/hard handoff behaviour + visitor-email capture. Full des
 - Visitor-email scope: write-only at session-bearer. Admin path only for read-back. Rationale: a stolen session token shouldn't expose a previously-captured email.
 - Sanity bounds via env vars (not DB): host-level, easy to audit, no admin-write surface that could disable them.
 - Webhook security: no HMAC, no retry, 10s timeout. Operator's receiver is responsible for idempotency on `session_id` and (if exposed publicly) IP whitelisting. If a customer asks for signed payloads or retry, that's a follow-up.
+
+### Milestone 21: Operational availability + admin mode
+
+**Target Completion:** Pre-v1.0.0
+**Status:** 🔴 Not started
+**Priority:** High — gates the first paying customer launch
+
+Two features grouped because they share the same session-mint gating seam. Per-chatbot operational hours (timezone + weekly schedule); enforced at session-mint, not per turn (0.16.1 precedent). Plus admin-mode sessions: a power-user surface for logged-in WP administrators (Woo store admins using the bot to navigate their own catalogue, alongside the secondary "test the config" use). Admin-mode sessions skip Origin/geo/availability/daily-cap/capacity gates, use a separate per-session cap, suppress soft-handoff + webhook firing, and aggregate spend separately in reporting.
+
+Full design + 11 open questions in [`14-availability-and-admin-mode.md`](14-availability-and-admin-mode.md).
+
+**Todo:**
+
+- [ ] Migration `0006_availability_and_admin_mode.js` — add `chatbots.timezone VARCHAR(64) NULL`, `chatbots.availability JSON NULL`, `chatbots.admin_session_budget_usd DECIMAL(10,4) NULL`, `sessions.is_admin_mode BOOLEAN NOT NULL DEFAULT FALSE`.
+- [ ] `src/services/availability.ts` — IANA TZ validator, schedule JSON parser, `isOpenNow(chatbot, now)` returning `{ open, nextOpenAt }`. Pure functions + unit tests.
+- [ ] Enforce availability at `POST /sessions` + `GET /sessions/can-start` only. New error code `chatbot_closed` (503 with `Retry-After` capped at 3600s + `detail.next_open_at` ISO).
+- [ ] Extend `Chatbot` interface with `timezone`, `availability`, `admin_session_budget_usd`; extend `Session` with `is_admin_mode`.
+- [ ] Extend `PATCH /admin/chatbots/{slug}` to accept `timezone`, `availability`, `admin_session_budget_usd`. IANA TZ + schedule grammar validation; null clears; `admin_session_budget_usd` bounded by `SW_MAX_SESSION_BUDGET_USD`.
+- [ ] CLI: `sw chatbot set-timezone <slug> <tz>`, `sw chatbot set-hours <slug> <json-or-grammar>` (grammar shorthand like `mon-fri:09:00-17:00`; JSON-via-stdin fallback). Extend `sw chatbot set-budget` with `--admin-session <usd-or-none>`.
+- [ ] New route `POST /admin/chatbots/{slug}/sessions` — account-admin-authenticated, empty body, returns `{ session_token, welcome_message, is_admin_mode: true }`. Stamps `sessions.is_admin_mode = TRUE`. Skips Origin/geo/availability/daily-cap/capacity at mint.
+- [ ] `runChat()`: when `session.is_admin_mode`, skip Origin/geo checks; use `admin_session_budget_usd` for hard-cap; suppress soft-handoff inject; suppress webhook firing on hard-cap termination.
+- [ ] `getChatbotDailySpend` adds `WHERE sessions.is_admin_mode = FALSE`. Admin spend doesn't displace customer daily-cap budget.
+- [ ] `sw chatbot usage` + `GET /admin/chatbots/{slug}/usage` return split totals: `customer_cost_usd` + `admin_cost_usd`, with token counts to match.
+- [ ] `sw sessions list` marks admin-mode rows with an `[admin]` suffix.
+- [ ] Tests: availability open/closed boundaries; midnight + 24:00 handling; admin-mode mint route auth; admin-mode session skips every gate listed in the design doc's per-gate table; admin-mode hard-cap terminates *without* firing the webhook; admin-mode spend excluded from daily aggregation but included in usage reporting.
+- [ ] Docs: `docs/api-admin.md` (new `POST /admin/chatbots/{slug}/sessions` + extended PATCH allowlist); `docs/api-usage.md` (new `503 chatbot_closed` in denial table); `docs/cli-sw.md` (set-timezone, set-hours, set-budget --admin-session); `docs/env.md` (no new vars expected); `dev-notes/14-availability-and-admin-mode.md` gets a "What shipped" section.
+- [ ] CHANGELOG + milestone wrap-up (likely 0.17.0).
 
 ---
 
