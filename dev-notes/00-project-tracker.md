@@ -13,6 +13,7 @@ Companion planning docs:
 - [`03-llm-providers.md`](03-llm-providers.md) — TOML provider registry, per-chatbot model selection, protocol adapters, normalised parameters, context-window handling. **Superseded in M17 by DB-backed provider registry** ([`10-saas-shape.md`](10-saas-shape.md)).
 - [`10-saas-shape.md`](10-saas-shape.md) — SaaS architecture (four-repo topology, account model, BYO keys, admin HTTP API, M16–M20 phasing)
 - [`11-budget-handoff.md`](11-budget-handoff.md) — budget-driven conversation handoff (soft-handoff at 80% spend, hard-cap → email capture). Recasts old M9 history-trimming as part of M20's budget-cap UX. Settled during M20 design pass.
+- [`13-hierarchical-system-blocks.md`](13-hierarchical-system-blocks.md) — promote `data/chatbots/<slug>/` from a flat directory to a topic-aware tree; LLM activates topics on demand via `<load-topic>` tagged tokens. Design-in-flight, targeted at v1.1.0 (post-first-customer).
 
 ## Next up
 
