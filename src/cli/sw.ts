@@ -13,7 +13,9 @@ import {
   removeOrigin,
   setPersona,
   setWelcomeMessage,
+  type AvailabilityConfig,
 } from '../services/chatbots.js';
+import { assertValidSchedule, assertValidTimezone } from '../services/availability.js';
 import {
   createAccount,
   deleteAccount,
@@ -622,9 +624,9 @@ chatbot
 chatbot
   .command('set-budget')
   .description(
-    'set per-chatbot spend caps (M20). `daily`/`session` are USD amounts or the ' +
-      'literal `none` to clear. `threshold` is the soft-handoff % of the session ' +
-      'cap (integer 1–100). Bounded by SW_MAX_DAILY_BUDGET_USD / SW_MAX_SESSION_BUDGET_USD.',
+    'set per-chatbot spend caps. `daily`/`session`/`admin-session` are USD amounts or the ' +
+      'literal `none` to clear. `threshold` is the soft-handoff % of the session cap ' +
+      '(integer 1–100). Bounded by SW_MAX_DAILY_BUDGET_USD / SW_MAX_SESSION_BUDGET_USD.',
   )
   .argument('<slug>', 'chatbot slug')
   .option('--daily <usd-or-none>', 'daily spend cap in USD, or "none" to clear (e.g. --daily 2.50)')
@@ -632,8 +634,119 @@ chatbot
     '--session <usd-or-none>',
     'per-session spend cap in USD, or "none" to clear (e.g. --session 0.25)',
   )
+  .option(
+    '--admin-session <usd-or-none>',
+    'M21: per-session cap for admin-mode sessions; "none" = unbounded (admin is trusted).',
+  )
   .option('--threshold <pct>', 'soft-handoff threshold, as % of session cap (integer 1–100)')
-  .action(async (slug: string, opts: { daily?: string; session?: string; threshold?: string }) => {
+  .action(
+    async (
+      slug: string,
+      opts: { daily?: string; session?: string; adminSession?: string; threshold?: string },
+    ) => {
+      try {
+        const row = await getChatbotBySlug(db, slug);
+        if (!row) {
+          console.error(`Chatbot not found: slug="${slug}"`);
+          process.exitCode = 1;
+          return;
+        }
+        if (
+          opts.daily === undefined &&
+          opts.session === undefined &&
+          opts.adminSession === undefined &&
+          opts.threshold === undefined
+        ) {
+          console.error('Pass at least one of --daily, --session, --admin-session, --threshold.');
+          process.exitCode = 1;
+          return;
+        }
+
+        const sets: Record<string, string | number | null> = {};
+
+        const parseCap = (
+          raw: string,
+          field: string,
+          upper: number,
+          envVar: string,
+        ): string | null => {
+          if (raw.toLowerCase() === 'none') return null;
+          const n = Number(raw);
+          if (!Number.isFinite(n) || n <= 0) {
+            throw new Error(`--${field} must be a positive number or "none", got "${raw}".`);
+          }
+          if (n > upper) {
+            throw new Error(
+              `--${field} ${n} exceeds environment cap ${upper}. Raise ${envVar} in .env if you genuinely need this.`,
+            );
+          }
+          return n.toFixed(4);
+        };
+
+        try {
+          if (opts.daily !== undefined) {
+            sets.daily_budget_usd = parseCap(
+              opts.daily,
+              'daily',
+              env.maxDailyBudgetUsd,
+              'SW_MAX_DAILY_BUDGET_USD',
+            );
+          }
+          if (opts.session !== undefined) {
+            sets.session_budget_usd = parseCap(
+              opts.session,
+              'session',
+              env.maxSessionBudgetUsd,
+              'SW_MAX_SESSION_BUDGET_USD',
+            );
+          }
+          if (opts.adminSession !== undefined) {
+            sets.admin_session_budget_usd = parseCap(
+              opts.adminSession,
+              'admin-session',
+              env.maxSessionBudgetUsd,
+              'SW_MAX_SESSION_BUDGET_USD',
+            );
+          }
+          if (opts.threshold !== undefined) {
+            const n = Number(opts.threshold);
+            if (!Number.isInteger(n) || n < 1 || n > 100) {
+              throw new Error(
+                `--threshold must be an integer in [1, 100], got "${opts.threshold}".`,
+              );
+            }
+            sets.handoff_threshold_pct = n;
+          }
+        } catch (err) {
+          console.error((err as Error).message);
+          process.exitCode = 1;
+          return;
+        }
+
+        await db('chatbots').where({ id: row.id }).update(sets);
+        const after = await getChatbotBySlug(db, slug);
+        console.log(`Updated budgets for chatbot "${slug}":`);
+        console.log(`  daily_budget_usd:         ${after?.daily_budget_usd ?? '(none)'}`);
+        console.log(`  session_budget_usd:       ${after?.session_budget_usd ?? '(none)'}`);
+        console.log(
+          `  admin_session_budget_usd: ${after?.admin_session_budget_usd ?? '(none/unbounded)'}`,
+        );
+        console.log(`  handoff_threshold_pct:    ${after?.handoff_threshold_pct}`);
+      } finally {
+        await db.destroy();
+      }
+    },
+  );
+
+chatbot
+  .command('set-timezone')
+  .description(
+    "M21: set the chatbot's IANA timezone (e.g. Europe/London). NULL means UTC. " +
+      "The WP plugin syncs this from the WordPress site's configured TZ.",
+  )
+  .argument('<slug>', 'chatbot slug')
+  .argument('<tz-or-none>', 'IANA timezone identifier, or "none" to clear (use UTC)')
+  .action(async (slug: string, tzOrNone: string) => {
     try {
       const row = await getChatbotBySlug(db, slug);
       if (!row) {
@@ -641,54 +754,88 @@ chatbot
         process.exitCode = 1;
         return;
       }
-      if (opts.daily === undefined && opts.session === undefined && opts.threshold === undefined) {
-        console.error('Pass at least one of --daily, --session, --threshold.');
+      let value: string | null;
+      if (tzOrNone.toLowerCase() === 'none') {
+        value = null;
+      } else {
+        try {
+          assertValidTimezone(tzOrNone);
+        } catch (err) {
+          console.error((err as Error).message);
+          process.exitCode = 1;
+          return;
+        }
+        value = tzOrNone;
+      }
+      await db('chatbots').where({ id: row.id }).update({ timezone: value });
+      console.log(
+        value === null
+          ? `Cleared timezone for slug="${slug}" (effective: UTC).`
+          : `Set timezone="${value}" for slug="${slug}".`,
+      );
+    } finally {
+      await db.destroy();
+    }
+  });
+
+chatbot
+  .command('set-hours')
+  .description(
+    "M21: set the chatbot's weekly availability schedule. Pass JSON via stdin, or " +
+      '"none" as the argument to clear the schedule (always-open). JSON shape: ' +
+      '`{ "schedule": { "mon": ["09:00-17:00"], ... } }`. See dev-notes/14.',
+  )
+  .argument('<slug>', 'chatbot slug')
+  .argument('[schedule-or-none]', 'literal "none" to clear; otherwise omit and pipe JSON via stdin')
+  .action(async (slug: string, scheduleOrNone: string | undefined) => {
+    try {
+      const row = await getChatbotBySlug(db, slug);
+      if (!row) {
+        console.error(`Chatbot not found: slug="${slug}"`);
         process.exitCode = 1;
         return;
       }
-
-      const sets: Record<string, string | number | null> = {};
-
-      const parseCap = (raw: string, field: string, upper: number): string | null => {
-        if (raw.toLowerCase() === 'none') return null;
-        const n = Number(raw);
-        if (!Number.isFinite(n) || n <= 0) {
-          throw new Error(`--${field} must be a positive number or "none", got "${raw}".`);
+      let value: string | null;
+      if (scheduleOrNone && scheduleOrNone.toLowerCase() === 'none') {
+        value = null;
+      } else {
+        // Read JSON from stdin (admin pipes a file or echoes a heredoc).
+        const chunks: Buffer[] = [];
+        for await (const chunk of process.stdin) {
+          chunks.push(chunk as Buffer);
         }
-        if (n > upper) {
-          throw new Error(
-            `--${field} ${n} exceeds environment cap ${upper}. Raise SW_MAX_${field.toUpperCase()}_BUDGET_USD in .env if you genuinely need this.`,
+        const raw = Buffer.concat(chunks).toString('utf8').trim();
+        if (raw.length === 0) {
+          console.error(
+            'sw chatbot set-hours expects schedule JSON on stdin, or "none" as the argument. ' +
+              'Example:\n  echo \'{"schedule":{"mon":["09:00-17:00"]}}\' | ./bin/sw chatbot set-hours acme-corp',
           );
+          process.exitCode = 1;
+          return;
         }
-        return n.toFixed(4);
-      };
-
-      try {
-        if (opts.daily !== undefined) {
-          sets.daily_budget_usd = parseCap(opts.daily, 'daily', env.maxDailyBudgetUsd);
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(raw);
+        } catch (err) {
+          console.error(`Schedule JSON failed to parse: ${(err as Error).message}`);
+          process.exitCode = 1;
+          return;
         }
-        if (opts.session !== undefined) {
-          sets.session_budget_usd = parseCap(opts.session, 'session', env.maxSessionBudgetUsd);
+        try {
+          assertValidSchedule(parsed as AvailabilityConfig);
+        } catch (err) {
+          console.error((err as Error).message);
+          process.exitCode = 1;
+          return;
         }
-        if (opts.threshold !== undefined) {
-          const n = Number(opts.threshold);
-          if (!Number.isInteger(n) || n < 1 || n > 100) {
-            throw new Error(`--threshold must be an integer in [1, 100], got "${opts.threshold}".`);
-          }
-          sets.handoff_threshold_pct = n;
-        }
-      } catch (err) {
-        console.error((err as Error).message);
-        process.exitCode = 1;
-        return;
+        value = JSON.stringify(parsed);
       }
-
-      await db('chatbots').where({ id: row.id }).update(sets);
-      const after = await getChatbotBySlug(db, slug);
-      console.log(`Updated budgets for chatbot "${slug}":`);
-      console.log(`  daily_budget_usd:      ${after?.daily_budget_usd ?? '(none)'}`);
-      console.log(`  session_budget_usd:    ${after?.session_budget_usd ?? '(none)'}`);
-      console.log(`  handoff_threshold_pct: ${after?.handoff_threshold_pct}`);
+      await db('chatbots').where({ id: row.id }).update({ availability: value });
+      console.log(
+        value === null
+          ? `Cleared availability schedule for slug="${slug}" (always open).`
+          : `Set availability schedule for slug="${slug}".`,
+      );
     } finally {
       await db.destroy();
     }
@@ -802,18 +949,29 @@ chatbot
         }
       }
 
-      const usage = await getChatbotUsage(db, chatbotRow.id, since);
+      const [customer, admin] = await Promise.all([
+        getChatbotUsage(db, chatbotRow.id, since, 'customer'),
+        getChatbotUsage(db, chatbotRow.id, since, 'admin'),
+      ]);
 
       console.log(`Usage for chatbot "${slug}" (period: ${periodLabel}):`);
-      console.log(`  Messages:        ${usage.messageCount}`);
-      console.log(`  Tokens in:       ${usage.tokensIn}`);
-      console.log(`  Tokens out:      ${usage.tokensOut}`);
-      console.log(`  Cost (USD est):  $${usage.costUsd.toFixed(6)}`);
-
-      if (usage.cacheReadTokens > 0 || usage.cacheCreationTokens > 0) {
-        console.log('');
-        console.log(`  Cache writes:    ${usage.cacheCreationTokens} tokens`);
-        console.log(`  Cache reads:     ${usage.cacheReadTokens} tokens`);
+      console.log('  Customer sessions:');
+      console.log(`    Messages:        ${customer.messageCount}`);
+      console.log(`    Tokens in:       ${customer.tokensIn}`);
+      console.log(`    Tokens out:      ${customer.tokensOut}`);
+      console.log(`    Cost (USD est):  $${customer.costUsd.toFixed(6)}`);
+      if (customer.cacheReadTokens > 0 || customer.cacheCreationTokens > 0) {
+        console.log(`    Cache writes:    ${customer.cacheCreationTokens} tokens`);
+        console.log(`    Cache reads:     ${customer.cacheReadTokens} tokens`);
+      }
+      console.log('  Admin-mode sessions:');
+      console.log(`    Messages:        ${admin.messageCount}`);
+      console.log(`    Tokens in:       ${admin.tokensIn}`);
+      console.log(`    Tokens out:      ${admin.tokensOut}`);
+      console.log(`    Cost (USD est):  $${admin.costUsd.toFixed(6)}`);
+      if (admin.cacheReadTokens > 0 || admin.cacheCreationTokens > 0) {
+        console.log(`    Cache writes:    ${admin.cacheCreationTokens} tokens`);
+        console.log(`    Cache reads:     ${admin.cacheReadTokens} tokens`);
       }
 
       // Warn when the chatbot's current model is on a metered provider but
@@ -1288,7 +1446,7 @@ sessions
       const slugW = Math.max(7, ...rows.map((r) => r.chatbot_slug.length));
       const idW = Math.max(2, ...rows.map((r) => String(r.id).length));
       console.log(
-        `${'id'.padStart(idW)}  ${'chatbot'.padEnd(slugW)}  token (prefix)     msgs  last_active`,
+        `${'id'.padStart(idW)}  ${'chatbot'.padEnd(slugW)}  token (prefix)     msgs  last_active           mode`,
       );
       for (const r of rows) {
         const tokenPrefix = r.token.slice(0, 16) + '…';
@@ -1296,9 +1454,10 @@ sessions
           r.last_active_at instanceof Date
             ? r.last_active_at.toISOString()
             : String(r.last_active_at);
+        const mode = r.is_admin_mode ? '[admin]' : '';
         console.log(
           `${String(r.id).padStart(idW)}  ${r.chatbot_slug.padEnd(slugW)}  ${tokenPrefix}  ` +
-            `${String(r.message_count).padStart(4)}  ${lastActive}`,
+            `${String(r.message_count).padStart(4)}  ${lastActive}  ${mode}`,
         );
       }
     } finally {

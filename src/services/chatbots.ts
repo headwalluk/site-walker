@@ -7,6 +7,26 @@ export interface ModelParameters {
   stop?: string[];
 }
 
+/**
+ * M21: per-chatbot weekly schedule. Per-day arrays of "HH:MM-HH:MM"
+ * strings. Missing day key or empty array = closed all day. `24:00` is
+ * supported as the end-of-day marker; `close <= open` is rejected on
+ * write — wrap-around overnight windows must be split into two entries.
+ */
+export interface AvailabilitySchedule {
+  mon?: string[];
+  tue?: string[];
+  wed?: string[];
+  thu?: string[];
+  fri?: string[];
+  sat?: string[];
+  sun?: string[];
+}
+
+export interface AvailabilityConfig {
+  schedule: AvailabilitySchedule;
+}
+
 export interface Chatbot {
   id: number;
   account_id: string;
@@ -35,6 +55,15 @@ export interface Chatbot {
   handoff_threshold_pct: number;
   /** M20: operator's webhook URL for handoff notifications. NULL = no webhook. */
   handoff_webhook_url: string | null;
+  /** M21: IANA timezone identifier (e.g. "Europe/London"). NULL = UTC. */
+  timezone: string | null;
+  /**
+   * M21: weekly schedule. NULL = always open. JSON column; mysql2 returns
+   * a string and `normaliseChatbotRow()` parses it before callers see it.
+   */
+  availability: AvailabilityConfig | null;
+  /** M21: per-session cap for admin-mode sessions only. NULL = unbounded. */
+  admin_session_budget_usd: string | null;
   created_at: Date;
   updated_at: Date;
 }
@@ -117,10 +146,13 @@ export async function setPersona(db: Knex, slug: string, persona: string): Promi
 
 function normaliseChatbotRow(row: Chatbot | undefined): Chatbot | null {
   if (!row) return null;
-  // MariaDB's JSON column comes back as a string through mysql2; parse it
-  // here so callers can rely on the declared `ModelParameters | null` shape.
+  // MariaDB's JSON columns come back as strings through mysql2; parse them
+  // here so callers can rely on the declared interface shapes.
   if (typeof row.model_parameters === 'string') {
     row.model_parameters = JSON.parse(row.model_parameters) as ModelParameters;
+  }
+  if (typeof row.availability === 'string') {
+    row.availability = JSON.parse(row.availability) as AvailabilityConfig;
   }
   return row;
 }
@@ -263,5 +295,5 @@ export async function findChatbotByOrigin(db: Knex, rawOrigin: string): Promise<
     .where('o.origin', origin)
     .select('c.*')
     .first();
-  return row ?? null;
+  return normaliseChatbotRow(row);
 }

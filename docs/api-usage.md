@@ -91,9 +91,10 @@ The token is opaque, 64 hex characters, and has no client-side expiry concept to
 | 402    | `budget_exhausted_daily`  | The chatbot's daily USD spend cap has been reached. Hide the chat affordance for the rest of the day; minting will become available again at the next UTC midnight (or once the operator raises the cap). `detail` carries `cap_usd` and `spend_usd`. |
 | 403    | `origin_not_allowed`      | Your host isn't on the chatbot's allowlist. Operator action required.            |
 | 403    | `geo_blocked`             | The visitor's IP is in (blocklist mode) or out of (allowlist mode) the chatbot's country list. Hide the chat affordance for this visitor. |
+| 503    | `chatbot_closed`          | The chatbot is configured with operational hours, and the request landed outside an open window. Carries `detail.next_open_at` (ISO timestamp, or `null` if the schedule has no future opening) and a `Retry-After` header (in seconds, capped at 3600). |
 | 503    | `capacity_exceeded`       | Per-IP / per-chatbot rate limit reached. Stub today (no real backend; never returned in practice); will start firing when rate limiting lands. |
 
-`GET /sessions/can-start` returns the same 402 in the same circumstances, so a widget that probes on mount will see the daily-cap state before it tries to mint.
+`GET /sessions/can-start` returns the same 402 and 503 codes in the same circumstances, so a widget that probes on mount will see the daily-cap and out-of-hours states before it tries to mint.
 
 ### `POST /chat` — send a user turn
 
@@ -226,6 +227,7 @@ All error responses share the same envelope:
 | `Origin` not on the chatbot's allowlist          | `POST /sessions`, `GET /sessions/can-start`                     | `403 origin_not_allowed`                              | Don't render the widget. Tell the operator to add your host.   |
 | Visitor IP fails the chatbot's geo policy        | `POST /sessions`, `GET /sessions/can-start`, `POST /chat`, `GET /messages` | `403 geo_blocked`                            | Don't render the widget for this visitor; drop any cached token.|
 | **Chatbot's daily USD spend cap reached**        | `POST /sessions`, `GET /sessions/can-start`                     | `402 budget_exhausted_daily` (with `detail.cap_usd`, `detail.spend_usd`) | Don't render the widget; mints resume at the next UTC midnight. Already-minted sessions are **not** affected — they run to the end of their own session-cap budget. |
+| **Outside the chatbot's operational hours**      | `POST /sessions`, `GET /sessions/can-start`                     | `503 chatbot_closed` (with `detail.next_open_at`, plus a `Retry-After` header in seconds, capped at 3600) | Hide the widget until the next opening time. Sessions minted while open keep running past closing time — only new mints are refused. |
 | **Per-session USD cap reached (hard cap)**       | `POST /chat`                                                    | `200 { reply, session_terminated: true, message_id }` | Render the assistant's reply, then disable the input. Any further `/chat` returns a canned `HANDOFF_HARD.md` with `message_id: 0` and the same `session_terminated: true` flag — no LLM call. |
 | `Authorization` header missing                   | `POST /chat`, `GET /messages`, `POST /sessions/visitor-email`   | `401 token_required`                                  | Bug in the widget — make sure `Authorization: Bearer <token>` is set. |
 | Token unknown, revoked, or session idle >24h     | `POST /chat`, `GET /messages`, `POST /sessions/visitor-email`   | `401 invalid_token`                                   | Clear the cached token, mint a fresh session, restart UI.       |

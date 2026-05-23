@@ -11,6 +11,7 @@ import {
   isDailyBudgetExhausted,
   parseCapDecimal,
 } from './services/budget.js';
+import { isOpenNow } from './services/availability.js';
 import adminAccountsPlugin from './routes/admin-accounts.js';
 import adminChatbotsPlugin from './routes/admin-chatbots.js';
 import { notifyHandoff } from './services/handoff-webhook.js';
@@ -460,6 +461,20 @@ export async function buildServer(opts: BuildServerOpts): Promise<FastifyInstanc
         }
       }
 
+      // M21: refuse new sessions outside the chatbot's operational hours.
+      const availability = isOpenNow(chatbot, new Date());
+      if (!availability.open) {
+        const nextOpenAt = availability.nextOpenAt;
+        if (nextOpenAt) {
+          const seconds = Math.max(1, Math.ceil((nextOpenAt.getTime() - Date.now()) / 1000));
+          reply.header('retry-after', String(Math.min(seconds, 3600)));
+        }
+        return reply.status(503).send({
+          error: 'chatbot_closed',
+          detail: { next_open_at: nextOpenAt?.toISOString() ?? null },
+        });
+      }
+
       const session = await createSession(db, chatbot.id);
       return reply.status(201).send({
         session_token: session.token,
@@ -548,6 +563,21 @@ export async function buildServer(opts: BuildServerOpts): Promise<FastifyInstanc
             detail: { cap_usd: dailyCap, spend_usd: dailySpend },
           });
         }
+      }
+
+      // M21: same availability gate as POST /sessions, so the probe reflects
+      // closing hours before a widget even tries to mint.
+      const availability = isOpenNow(chatbot, new Date());
+      if (!availability.open) {
+        const nextOpenAt = availability.nextOpenAt;
+        if (nextOpenAt) {
+          const seconds = Math.max(1, Math.ceil((nextOpenAt.getTime() - Date.now()) / 1000));
+          reply.header('retry-after', String(Math.min(seconds, 3600)));
+        }
+        return reply.status(503).send({
+          error: 'chatbot_closed',
+          detail: { next_open_at: nextOpenAt?.toISOString() ?? null },
+        });
       }
 
       return reply.send({ ok: true });
@@ -682,19 +712,22 @@ export async function buildServer(opts: BuildServerOpts): Promise<FastifyInstanc
       if (!session) {
         return reply.status(401).send({ error: 'invalid_token' });
       }
-      const geo = await enforceGeo(db, session.chatbot_id, req.ip, geoChecker);
-      if (!geo.allowed) {
-        req.log.info(
-          {
-            ip: req.ip,
-            country: geo.country,
-            chatbotId: session.chatbot_id,
-            mode: geo.mode,
-            reason: geo.reason,
-          },
-          'GET /messages: geo_blocked',
-        );
-        return reply.status(403).send({ error: 'geo_blocked' });
+      // M21: admin-mode sessions skip the geo check throughout the chat path.
+      if (!session.is_admin_mode) {
+        const geo = await enforceGeo(db, session.chatbot_id, req.ip, geoChecker);
+        if (!geo.allowed) {
+          req.log.info(
+            {
+              ip: req.ip,
+              country: geo.country,
+              chatbotId: session.chatbot_id,
+              mode: geo.mode,
+              reason: geo.reason,
+            },
+            'GET /messages: geo_blocked',
+          );
+          return reply.status(403).send({ error: 'geo_blocked' });
+        }
       }
       const messages = await listMessages(db, session.id);
       return reply.send({ messages });
@@ -765,19 +798,22 @@ export async function buildServer(opts: BuildServerOpts): Promise<FastifyInstanc
       if (!session) {
         return reply.status(401).send({ error: 'invalid_token' });
       }
-      const geo = await enforceGeo(db, session.chatbot_id, req.ip, geoChecker);
-      if (!geo.allowed) {
-        req.log.info(
-          {
-            ip: req.ip,
-            country: geo.country,
-            chatbotId: session.chatbot_id,
-            mode: geo.mode,
-            reason: geo.reason,
-          },
-          'POST /chat: geo_blocked',
-        );
-        return reply.status(403).send({ error: 'geo_blocked' });
+      // M21: admin-mode sessions skip the geo check throughout the chat path.
+      if (!session.is_admin_mode) {
+        const geo = await enforceGeo(db, session.chatbot_id, req.ip, geoChecker);
+        if (!geo.allowed) {
+          req.log.info(
+            {
+              ip: req.ip,
+              country: geo.country,
+              chatbotId: session.chatbot_id,
+              mode: geo.mode,
+              reason: geo.reason,
+            },
+            'POST /chat: geo_blocked',
+          );
+          return reply.status(403).send({ error: 'geo_blocked' });
+        }
       }
 
       try {

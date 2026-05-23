@@ -190,13 +190,19 @@ export async function runChat(input: RunChatInput): Promise<RunChatResult> {
     ? await loadDiskBlocks(chatbot.slug, blocksBaseDir)
     : await loadDiskBlocks(chatbot.slug);
 
-  // M20: if the session has crossed the soft-handoff threshold (default
-  // 80% of session_budget_usd), inject HANDOFF_SOFT.md as the most-recent
-  // system block so the model sees "wind this conversation toward a human".
-  const sessionCap = parseCapDecimal(chatbot.session_budget_usd);
+  // M20 + M21: session cap source depends on whether this is an admin-mode
+  // session (admin_session_budget_usd) or a customer session (session_budget_usd).
+  // The soft-handoff inject + webhook firing are also suppressed for admin
+  // sessions — the "wind down to a human" cue is meaningless when the
+  // visitor IS the human.
+  const sessionCap = parseCapDecimal(
+    session.is_admin_mode ? chatbot.admin_session_budget_usd : chatbot.session_budget_usd,
+  );
   const sessionSpendBefore = sessionCap !== null ? await getSessionSpend(db, session.id) : 0;
   const softThresholdUsd =
-    sessionCap !== null ? (sessionCap * chatbot.handoff_threshold_pct) / 100 : null;
+    !session.is_admin_mode && sessionCap !== null
+      ? (sessionCap * chatbot.handoff_threshold_pct) / 100
+      : null;
   const softTriggered = softThresholdUsd !== null && sessionSpendBefore >= softThresholdUsd;
   const extraBlocks: { name: string; content: string }[] = [];
   if (softTriggered) {
@@ -296,17 +302,22 @@ export async function runChat(input: RunChatInput): Promise<RunChatResult> {
     if (isSessionBudgetExhausted(sessionSpendAfter, sessionCap)) {
       await db('sessions').where({ id: session.id }).update({ terminated_at: db.fn.now() });
       result.session_terminated = true;
-      // Fire-and-forget webhook (does nothing if handoff_webhook_url unset).
-      // We refetch the session to pick up the freshly-set terminated_at; if
-      // the visitor has captured an email earlier the webhook carries it.
-      const refreshed = await findSessionByToken(db, sessionToken);
-      if (refreshed) {
-        void notifyHandoff({
-          db,
-          chatbot,
-          session: refreshed,
-          spendUsd: sessionSpendAfter,
-        });
+      // M21: admin-mode sessions terminate normally (safety belt) but DO NOT
+      // fire the handoff webhook — the operator would just be receiving a
+      // notification about themselves.
+      if (!session.is_admin_mode) {
+        // Fire-and-forget webhook (does nothing if handoff_webhook_url unset).
+        // We refetch the session to pick up the freshly-set terminated_at; if
+        // the visitor has captured an email earlier the webhook carries it.
+        const refreshed = await findSessionByToken(db, sessionToken);
+        if (refreshed) {
+          void notifyHandoff({
+            db,
+            chatbot,
+            session: refreshed,
+            spendUsd: sessionSpendAfter,
+          });
+        }
       }
     }
   }

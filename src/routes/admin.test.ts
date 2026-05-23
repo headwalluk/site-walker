@@ -508,6 +508,162 @@ test('admin: PATCH /admin/chatbots/{slug} rejects out-of-bounds + malformed M20 
   }
 });
 
+test('admin: PATCH /admin/chatbots/{slug} sets M21 timezone + availability + admin_session_budget_usd', async (t) => {
+  const db = makeTestDb();
+  setProvisioningKey(VALID_PROVISIONING);
+  const ctx = await seedAdminContext(db);
+  const slug = uniqueSlug('chatbot');
+  await db('chatbots').insert({ account_id: ctx.account.id, slug, name: slug });
+
+  const fastify = await buildServer({ db, logger: false });
+  t.after(async () => {
+    setProvisioningKey(null);
+    await fastify.close();
+    await db('accounts').where({ id: ctx.account.id }).del();
+    await db.destroy();
+  });
+
+  const res = await fastify.inject({
+    method: 'PATCH',
+    url: `/admin/chatbots/${slug}`,
+    headers: { authorization: `Bearer ${ctx.rawKey}` },
+    payload: {
+      timezone: 'Europe/London',
+      availability: { schedule: { mon: ['09:00-17:00'], tue: ['09:00-12:00', '13:00-17:00'] } },
+      admin_session_budget_usd: 5.0,
+    },
+  });
+  assert.equal(res.statusCode, 200, res.payload);
+  const body = res.json();
+  assert.equal(body.timezone, 'Europe/London');
+  assert.deepEqual(body.availability, {
+    schedule: { mon: ['09:00-17:00'], tue: ['09:00-12:00', '13:00-17:00'] },
+  });
+  assert.equal(Number(body.admin_session_budget_usd), 5.0);
+
+  // Clearing.
+  const clear = await fastify.inject({
+    method: 'PATCH',
+    url: `/admin/chatbots/${slug}`,
+    headers: { authorization: `Bearer ${ctx.rawKey}` },
+    payload: { timezone: null, availability: null, admin_session_budget_usd: null },
+  });
+  assert.equal(clear.statusCode, 200);
+  const cleared = clear.json();
+  assert.equal(cleared.timezone, null);
+  assert.equal(cleared.availability, null);
+  assert.equal(cleared.admin_session_budget_usd, null);
+});
+
+test('admin: PATCH /admin/chatbots/{slug} rejects malformed M21 fields', async (t) => {
+  const db = makeTestDb();
+  setProvisioningKey(VALID_PROVISIONING);
+  const ctx = await seedAdminContext(db);
+  const slug = uniqueSlug('chatbot');
+  await db('chatbots').insert({ account_id: ctx.account.id, slug, name: slug });
+
+  const fastify = await buildServer({ db, logger: false });
+  t.after(async () => {
+    setProvisioningKey(null);
+    await fastify.close();
+    await db('accounts').where({ id: ctx.account.id }).del();
+    await db.destroy();
+  });
+
+  const cases: Array<{ payload: Record<string, unknown>; reason: string }> = [
+    { payload: { timezone: 'Mars/Olympus_Mons' }, reason: 'unknown IANA tz' },
+    { payload: { timezone: 'not-a-tz' }, reason: 'garbage tz' },
+    { payload: { availability: { wrong: {} } }, reason: 'missing schedule key' },
+    {
+      payload: { availability: { schedule: { funday: ['09:00-17:00'] } } },
+      reason: 'unknown day key',
+    },
+    {
+      payload: { availability: { schedule: { mon: ['17:00-09:00'] } } },
+      reason: 'close before open',
+    },
+    { payload: { availability: { schedule: { mon: ['nope'] } } }, reason: 'malformed window' },
+    { payload: { admin_session_budget_usd: 999999 }, reason: 'admin cap over env limit' },
+    { payload: { admin_session_budget_usd: 0 }, reason: 'admin cap zero' },
+  ];
+
+  for (const c of cases) {
+    const res = await fastify.inject({
+      method: 'PATCH',
+      url: `/admin/chatbots/${slug}`,
+      headers: { authorization: `Bearer ${ctx.rawKey}` },
+      payload: c.payload,
+    });
+    assert.equal(res.statusCode, 400, `expected 400 for ${c.reason}, got ${res.statusCode}`);
+    assert.equal(res.json().error, 'validation_failed');
+  }
+});
+
+test('admin: POST /admin/chatbots/{slug}/sessions mints an admin-mode session with prefixed welcome', async (t) => {
+  const db = makeTestDb();
+  setProvisioningKey(VALID_PROVISIONING);
+  const ctx = await seedAdminContext(db);
+  const slug = uniqueSlug('chatbot');
+  await db('chatbots').insert({
+    account_id: ctx.account.id,
+    slug,
+    name: slug,
+    welcome_message: 'Hi! How can I help?',
+  });
+
+  const fastify = await buildServer({ db, logger: false });
+  t.after(async () => {
+    setProvisioningKey(null);
+    await fastify.close();
+    await db('accounts').where({ id: ctx.account.id }).del();
+    await db.destroy();
+  });
+
+  const res = await fastify.inject({
+    method: 'POST',
+    url: `/admin/chatbots/${slug}/sessions`,
+    headers: { authorization: `Bearer ${ctx.rawKey}` },
+  });
+  assert.equal(res.statusCode, 201, res.payload);
+  const body = res.json();
+  assert.equal(body.is_admin_mode, true);
+  assert.match(body.welcome_message, /^\*\*Admin mode\*\*\n\nHi! How can I help\?$/);
+  assert.equal(typeof body.session_token, 'string');
+  assert.equal(body.session_token.length, 64);
+
+  // The DB row has is_admin_mode = TRUE.
+  const sessionRow = await db('sessions').where({ token: body.session_token }).first();
+  // mysql2 returns BOOLEAN as 0/1; coerce.
+  assert.equal(Boolean(sessionRow.is_admin_mode), true);
+});
+
+test('admin: POST /admin/chatbots/{slug}/sessions enforces cross-account guard', async (t) => {
+  const db = makeTestDb();
+  setProvisioningKey(VALID_PROVISIONING);
+  const ctxA = await seedAdminContext(db);
+  const ctxB = await seedAdminContext(db);
+  const slug = uniqueSlug('chatbot');
+  // Chatbot belongs to account B.
+  await db('chatbots').insert({ account_id: ctxB.account.id, slug, name: slug });
+
+  const fastify = await buildServer({ db, logger: false });
+  t.after(async () => {
+    setProvisioningKey(null);
+    await fastify.close();
+    await db('accounts').whereIn('id', [ctxA.account.id, ctxB.account.id]).del();
+    await db.destroy();
+  });
+
+  // Account A's admin key tries to mint against account B's chatbot.
+  const res = await fastify.inject({
+    method: 'POST',
+    url: `/admin/chatbots/${slug}/sessions`,
+    headers: { authorization: `Bearer ${ctxA.rawKey}` },
+  });
+  assert.equal(res.statusCode, 404);
+  assert.equal(res.json().error, 'not_found');
+});
+
 test('admin: DELETE /admin/chatbots/{slug} returns cascade counts', async (t) => {
   const db = makeTestDb();
   setProvisioningKey(VALID_PROVISIONING);

@@ -98,31 +98,44 @@ export interface ChatbotUsage {
  * Aggregate usage stats for a chatbot. Returns zeroes when no rows match.
  * `since`, when supplied, narrows to `messages.created_at >= since`. Uses
  * the M18 composite index `(chatbot_id, created_at)`.
+ *
+ * M21: `segment` narrows to customer-only or admin-only rows; omitted means
+ * both lumped together (legacy behaviour). The CLI and admin /usage endpoint
+ * call this twice to produce the customer/admin split for the operator.
  */
 export async function getChatbotUsage(
   db: Knex,
   chatbotId: number,
   since?: Date,
+  segment?: 'customer' | 'admin',
 ): Promise<ChatbotUsage> {
   const query = db('messages')
-    .where({ chatbot_id: chatbotId })
-    .count<{ message_count: string | number }[]>({ message_count: '*' })
-    .sum<{ total_tokens_in: string | number | null }[]>({ total_tokens_in: 'tokens_in' })
-    .sum<{ total_tokens_out: string | number | null }[]>({ total_tokens_out: 'tokens_out' })
-    .sum<{ total_cost: string | number | null }[]>({ total_cost: 'cost_usd_estimate' })
-    .sum<
-      {
-        total_cache_writes: string | number | null;
-      }[]
-    >({ total_cache_writes: 'cache_creation_input_tokens' })
-    .sum<
-      {
-        total_cache_reads: string | number | null;
-      }[]
-    >({ total_cache_reads: 'cache_read_input_tokens' });
+    .join('sessions', 'sessions.id', 'messages.session_id')
+    .where('messages.chatbot_id', chatbotId)
+    .count<{ message_count: string | number }[]>({ message_count: 'messages.id' })
+    .sum<{ total_tokens_in: string | number | null }[]>({
+      total_tokens_in: 'messages.tokens_in',
+    })
+    .sum<{ total_tokens_out: string | number | null }[]>({
+      total_tokens_out: 'messages.tokens_out',
+    })
+    .sum<{ total_cost: string | number | null }[]>({
+      total_cost: 'messages.cost_usd_estimate',
+    })
+    .sum<{ total_cache_writes: string | number | null }[]>({
+      total_cache_writes: 'messages.cache_creation_input_tokens',
+    })
+    .sum<{ total_cache_reads: string | number | null }[]>({
+      total_cache_reads: 'messages.cache_read_input_tokens',
+    });
 
   if (since) {
-    query.andWhere('created_at', '>=', since);
+    query.andWhere('messages.created_at', '>=', since);
+  }
+  if (segment === 'customer') {
+    query.andWhere('sessions.is_admin_mode', false);
+  } else if (segment === 'admin') {
+    query.andWhere('sessions.is_admin_mode', true);
   }
 
   const row = (await query.first()) as

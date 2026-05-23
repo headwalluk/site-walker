@@ -25,6 +25,12 @@ export function utcMidnightToday(now: Date = new Date()): Date {
  * Sum a chatbot's spend across `messages.cost_usd_estimate` for the
  * UTC-anchored daily window. Uses the M18 composite index
  * `(chatbot_id, created_at)`.
+ *
+ * M21: excludes admin-mode sessions from the aggregate. Admin spend is
+ * tracked (every `messages` row still gets `cost_usd_estimate`) and surfaces
+ * in `sw chatbot usage` separately, but it doesn't displace customer-facing
+ * daily-cap budget — otherwise an admin's morning of testing would lock
+ * out real visitors for the rest of the day.
  */
 export async function getChatbotDailySpend(
   db: Knex,
@@ -32,9 +38,11 @@ export async function getChatbotDailySpend(
   since: Date = utcMidnightToday(),
 ): Promise<number> {
   const row = await db('messages')
-    .where({ chatbot_id: chatbotId })
-    .andWhere('created_at', '>=', since)
-    .sum<{ total: string | number | null }[]>({ total: 'cost_usd_estimate' })
+    .join('sessions', 'sessions.id', 'messages.session_id')
+    .where('messages.chatbot_id', chatbotId)
+    .andWhere('messages.created_at', '>=', since)
+    .andWhere('sessions.is_admin_mode', false)
+    .sum<{ total: string | number | null }[]>({ total: 'messages.cost_usd_estimate' })
     .first();
   return Number(row?.total ?? 0);
 }

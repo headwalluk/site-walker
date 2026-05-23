@@ -259,27 +259,71 @@ Set model_context_window=4096 for slug="acme-corp".
 
 This is the figure the `POST /chat` budget check refers to. The check refuses the request with `413 context_overflow` when `system + history + new user` tokens plus a headroom (12.5% of the window, 512-token floor) exceeds the window. Leave it unset (NULL) to skip the check entirely.
 
-### `sw chatbot set-budget <slug> [--daily <usd|none>] [--session <usd|none>] [--threshold <pct>]`
+### `sw chatbot set-budget <slug> [--daily <usd|none>] [--session <usd|none>] [--admin-session <usd|none>] [--threshold <pct>]`
 
-Set per-chatbot spend caps (M20). All three options are independent and any combination is accepted (at least one must be present).
+Set per-chatbot spend caps. All four options are independent and any combination is accepted (at least one must be present).
 
 ```
-$ ./bin/sw chatbot set-budget acme-corp --daily 2.50 --session 0.25 --threshold 80
+$ ./bin/sw chatbot set-budget acme-corp --daily 2.50 --session 0.25 --admin-session 5.00 --threshold 80
 Updated budgets for chatbot "acme-corp":
-  daily_budget_usd:      2.5000
-  session_budget_usd:    0.2500
-  handoff_threshold_pct: 80
+  daily_budget_usd:         2.5000
+  session_budget_usd:       0.2500
+  admin_session_budget_usd: 5.0000
+  handoff_threshold_pct:    80
 
 $ ./bin/sw chatbot set-budget acme-corp --daily none
 Updated budgets for chatbot "acme-corp":
-  daily_budget_usd:      (none)
-  session_budget_usd:    0.2500
-  handoff_threshold_pct: 80
+  daily_budget_usd:         (none)
+  session_budget_usd:       0.2500
+  admin_session_budget_usd: 5.0000
+  handoff_threshold_pct:    80
 ```
 
-- **`--daily <usd|none>`** — daily USD spend cap. Once today's spend (UTC midnight–to-now) reaches it, `POST /sessions`, `GET /sessions/can-start`, and `POST /chat` all return `402 budget_exhausted_daily` until the next UTC midnight. `none` clears the cap (= unlimited). Bounded above by `SW_MAX_DAILY_BUDGET_USD` ([`env.md`](env.md)) — the CLI refuses to set a higher value.
-- **`--session <usd|none>`** — per-conversation USD cap. Triggers the soft-handoff inject at `--threshold` % and terminates the session once spend crosses the cap (the last natural reply is still delivered). `none` clears the cap. Bounded by `SW_MAX_SESSION_BUDGET_USD`.
-- **`--threshold <pct>`** — integer in `[1, 100]`. Soft-handoff trigger as a % of the session cap. Defaults to `80`. Has no effect when `session_budget_usd` is unset.
+- **`--daily <usd|none>`** — daily USD spend cap. Once today's customer-only spend (UTC midnight–to-now) reaches it, `POST /sessions` and `GET /sessions/can-start` return `402 budget_exhausted_daily` until the next UTC midnight. `none` clears the cap (= unlimited). Bounded above by `SW_MAX_DAILY_BUDGET_USD` ([`env.md`](env.md)) — the CLI refuses to set a higher value. **Admin-mode spend is excluded from this aggregate** so an admin's morning of testing doesn't displace customer budget.
+- **`--session <usd|none>`** — per-conversation USD cap for customer-facing sessions. Triggers the soft-handoff inject at `--threshold` % and terminates the session once spend crosses the cap (the last natural reply is still delivered). `none` clears the cap. Bounded by `SW_MAX_SESSION_BUDGET_USD`.
+- **`--admin-session <usd|none>`** — M21: per-conversation cap for **admin-mode** sessions only. NULL/`none` = unbounded (admin is trusted; the operator who minted the session is presumed to be watching what they're spending). When set, acts as a safety belt against runaway admin chats. Bounded by `SW_MAX_SESSION_BUDGET_USD`. Soft-handoff inject + webhook firing are suppressed for admin sessions regardless of this value.
+- **`--threshold <pct>`** — integer in `[1, 100]`. Soft-handoff trigger as a % of the session cap. Defaults to `80`. Has no effect when `session_budget_usd` is unset (or for admin-mode sessions, which never see the soft-handoff inject).
+
+### `sw chatbot set-timezone <slug> <tz-or-none>`
+
+M21: set the chatbot's IANA timezone identifier. The WP plugin syncs this from the WordPress site's configured TZ; the API has no way to infer it. Pass `none` to clear (effective: UTC).
+
+```
+$ ./bin/sw chatbot set-timezone acme-corp Europe/London
+Set timezone="Europe/London" for slug="acme-corp".
+
+$ ./bin/sw chatbot set-timezone acme-corp none
+Cleared timezone for slug="acme-corp" (effective: UTC).
+```
+
+Validated against the runtime's ICU data via `Intl.DateTimeFormat({ timeZone: <candidate> })` — anything Node accepts as a tz is accepted here; anything it doesn't is rejected.
+
+### `sw chatbot set-hours <slug> [none]`
+
+M21: set the chatbot's weekly availability schedule. Pass JSON via **stdin**, or `none` as the argument to clear (always-open). The JSON shape:
+
+```json
+{
+  "schedule": {
+    "mon": ["09:00-17:00"],
+    "tue": ["09:00-12:00", "13:00-17:00"],
+    "fri": ["00:00-09:00", "17:00-24:00"]
+  }
+}
+```
+
+Per-day arrays of `"HH:MM-HH:MM"` strings. Missing day key = closed all day. Empty array = closed all day. `24:00` accepted as end-of-day; `close <= open` rejected (use two windows for overnight ranges). Whitespace around the dash is tolerated.
+
+```
+$ echo '{"schedule":{"mon":["09:00-17:00"],"tue":["09:00-17:00"]}}' | \
+    ./bin/sw chatbot set-hours acme-corp
+Set availability schedule for slug="acme-corp".
+
+$ ./bin/sw chatbot set-hours acme-corp none
+Cleared availability schedule for slug="acme-corp" (always open).
+```
+
+Once set, `POST /sessions` and `GET /sessions/can-start` return `503 chatbot_closed` (with `Retry-After` and `detail.next_open_at`) outside the schedule's windows. Already-minted sessions keep running past closing time. Full design: [`../dev-notes/14-availability-and-admin-mode.md`](../dev-notes/14-availability-and-admin-mode.md).
 
 ### `sw chatbot set-handoff-webhook <slug> <url|none>`
 
@@ -358,29 +402,32 @@ Fails with a clear error if `model_slug` no longer resolves (provider or model r
 
 Aggregate token + USD cost totals for a chatbot. Costs and tokens are recorded per assistant message at chat time (since v0.14.0 / M18). Defaults to all-time when `--since` is omitted; otherwise narrows to the relative window.
 
+As of v0.17.0 (M21), output is split into customer-facing and admin-mode rows so operators can immediately see "ah — it was the boss racking up the Anthropic bill today":
+
 ```
 $ ./bin/sw chatbot usage headwall-devx
 Usage for chatbot "headwall-devx" (period: all-time):
-  Messages:        47
-  Tokens in:       12480
-  Tokens out:      5821
-  Cost (USD est):  $0.041605
-
-$ ./bin/sw chatbot usage headwall-devx --since 24h
-Usage for chatbot "headwall-devx" (period: last 24h (since 2026-05-19T18:00:00.000Z)):
-  Messages:        12
-  Tokens in:       3200
-  Tokens out:      1490
-  Cost (USD est):  $0.010650
+  Customer sessions:
+    Messages:        42
+    Tokens in:       11200
+    Tokens out:      5200
+    Cost (USD est):  $0.038200
+  Admin-mode sessions:
+    Messages:        5
+    Tokens in:       1280
+    Tokens out:      621
+    Cost (USD est):  $0.003405
 ```
+
+Customer-session spend is what counts toward `daily_budget_usd`. Admin-mode spend is tracked but excluded from the daily-cap aggregate — see `set-budget` above for the rationale.
 
 `--since` accepts relative durations only: `Ns` (seconds), `Nm` (minutes), `Nh` (hours), `Nd` (days). Single-unit form — `1h30m` is not supported (aggregate to the slightly bigger `2h` window instead). Malformed values are rejected with a clear error.
 
-**Cache lines** (post-M20 milestone surface — currently always 0 until Anthropic prompt-cache wiring lands):
+**Cache lines** (post-M20 milestone surface — currently always 0 until Anthropic prompt-cache wiring lands) appear under either or both segments when non-zero:
 
 ```
-  Cache writes:    1024 tokens
-  Cache reads:     8192 tokens
+    Cache writes:    1024 tokens
+    Cache reads:     8192 tokens
 ```
 
 These appear only when at least one message in the window recorded non-zero cache activity.
@@ -541,18 +588,18 @@ List sessions, most-recently-active first. Defaults to 20 rows; `--limit` is cap
 
 ```
 $ ./bin/sw sessions list --limit 3
- id  chatbot          token (prefix)     msgs  last_active
-331  acme-corp        241ae15bf2220e75…     5  2026-05-20T15:10:42.000Z
+ id  chatbot          token (prefix)     msgs  last_active               mode
+331  acme-corp        241ae15bf2220e75…     5  2026-05-20T15:10:42.000Z  [admin]
 282  acme-corp        1de6f38b6bdfda59…     8  2026-05-20T14:59:59.000Z
 281  acme-corp        14d36acd82babc42…     6  2026-05-20T14:43:41.000Z
 
 $ ./bin/sw sessions list --chatbot devx-headwall --limit 2
- id  chatbot        token (prefix)     msgs  last_active
+ id  chatbot        token (prefix)     msgs  last_active               mode
 280  devx-headwall  25b3f834f7eea800…    10  2026-05-20T14:19:19.000Z
 279  devx-headwall  98c2930d3a4b9d9a…     4  2026-05-20T13:35:56.000Z
 ```
 
-The token prefix is the first 16 characters with an ellipsis — enough to spot the session you're after, never enough to be worth copying as auth.
+The token prefix is the first 16 characters with an ellipsis — enough to spot the session you're after, never enough to be worth copying as auth. The `mode` column carries `[admin]` for sessions minted via `POST /admin/chatbots/{slug}/sessions` (M21); regular customer-facing sessions show an empty cell.
 
 ### `sw sessions show <token-or-id>`
 

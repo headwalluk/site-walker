@@ -16,8 +16,11 @@ import {
   removeOrigin,
   setPersona,
   setWelcomeMessage,
+  type AvailabilityConfig,
   type Chatbot,
 } from '../services/chatbots.js';
+import { assertValidSchedule, assertValidTimezone } from '../services/availability.js';
+import { createSession } from '../services/sessions.js';
 import {
   setChatbotGeoCountries,
   setChatbotGeoMode,
@@ -65,6 +68,10 @@ const chatbotSchema = {
     session_budget_usd: { type: ['string', 'null'] },
     handoff_threshold_pct: { type: 'integer' },
     handoff_webhook_url: { type: ['string', 'null'] },
+    // M21: operational hours + admin-mode cap
+    timezone: { type: ['string', 'null'] },
+    availability: { type: ['object', 'null'], additionalProperties: true },
+    admin_session_budget_usd: { type: ['string', 'null'] },
     created_at: { type: 'string', format: 'date-time' },
     updated_at: { type: 'string', format: 'date-time' },
   },
@@ -261,6 +268,9 @@ const adminChatbotsPlugin: FastifyPluginAsync<AdminChatbotsPluginOpts> = async (
     session_budget_usd?: unknown;
     handoff_threshold_pct?: unknown;
     handoff_webhook_url?: unknown;
+    timezone?: unknown;
+    availability?: unknown;
+    admin_session_budget_usd?: unknown;
   };
 
   fastify.patch<{ Params: { slug: string }; Body: ChatbotPatchBody }>(
@@ -388,7 +398,7 @@ const adminChatbotsPlugin: FastifyPluginAsync<AdminChatbotsPluginOpts> = async (
       // "0.50" — the DECIMAL-serialised form — round-trips cleanly).
       const validateCap = (
         raw: unknown,
-        field: 'daily_budget_usd' | 'session_budget_usd',
+        field: 'daily_budget_usd' | 'session_budget_usd' | 'admin_session_budget_usd',
         upper: number,
       ): { ok: true; value: string | null } | { ok: false; message: string } => {
         if (raw === null) return { ok: true, value: null };
@@ -397,9 +407,13 @@ const adminChatbotsPlugin: FastifyPluginAsync<AdminChatbotsPluginOpts> = async (
           return { ok: false, message: `\`${field}\` must be a positive number or null.` };
         }
         if (asNum > upper) {
+          // admin_session_budget_usd shares the SW_MAX_SESSION_BUDGET_USD env cap
+          // (it's the same kind of bound, just applied to a different column).
+          const envVar =
+            field === 'daily_budget_usd' ? 'SW_MAX_DAILY_BUDGET_USD' : 'SW_MAX_SESSION_BUDGET_USD';
           return {
             ok: false,
-            message: `\`${field}\` ${asNum} exceeds environment cap ${upper} (\`SW_MAX_${field.toUpperCase()}\`).`,
+            message: `\`${field}\` ${asNum} exceeds environment cap ${upper} (\`${envVar}\`).`,
           };
         }
         // Store with 4-dp precision to match the DECIMAL(10,4) column.
@@ -473,6 +487,65 @@ const adminChatbotsPlugin: FastifyPluginAsync<AdminChatbotsPluginOpts> = async (
             detail: { message: '`handoff_webhook_url` must be a string or null.' },
           });
         }
+      }
+
+      // M21: timezone — IANA tz; validated via Intl.DateTimeFormat.
+      if (Object.prototype.hasOwnProperty.call(body, 'timezone')) {
+        if (body.timezone === null) {
+          sets.timezone = null;
+        } else if (typeof body.timezone === 'string') {
+          try {
+            assertValidTimezone(body.timezone);
+          } catch (err) {
+            return reply.status(400).send({
+              error: 'validation_failed',
+              detail: { message: (err as Error).message },
+            });
+          }
+          sets.timezone = body.timezone;
+        } else {
+          return reply.status(400).send({
+            error: 'validation_failed',
+            detail: { message: '`timezone` must be a string IANA tz or null.' },
+          });
+        }
+      }
+
+      // M21: availability — JSON shape validated by assertValidSchedule.
+      if (Object.prototype.hasOwnProperty.call(body, 'availability')) {
+        if (body.availability === null) {
+          sets.availability = null;
+        } else if (typeof body.availability === 'object') {
+          try {
+            assertValidSchedule(body.availability as AvailabilityConfig);
+          } catch (err) {
+            return reply.status(400).send({
+              error: 'validation_failed',
+              detail: { message: (err as Error).message },
+            });
+          }
+          sets.availability = JSON.stringify(body.availability);
+        } else {
+          return reply.status(400).send({
+            error: 'validation_failed',
+            detail: { message: '`availability` must be a schedule object or null.' },
+          });
+        }
+      }
+
+      // M21: admin_session_budget_usd — same validator as session_budget_usd.
+      if (Object.prototype.hasOwnProperty.call(body, 'admin_session_budget_usd')) {
+        const r = validateCap(
+          body.admin_session_budget_usd,
+          'admin_session_budget_usd',
+          env.maxSessionBudgetUsd,
+        );
+        if (!r.ok) {
+          return reply
+            .status(400)
+            .send({ error: 'validation_failed', detail: { message: r.message } });
+        }
+        sets.admin_session_budget_usd = r.value;
       }
 
       if (Object.keys(sets).length > 0) {
@@ -1001,6 +1074,47 @@ const adminChatbotsPlugin: FastifyPluginAsync<AdminChatbotsPluginOpts> = async (
               cost_usd: { type: 'number' },
               cache_creation_tokens: { type: 'integer' },
               cache_read_tokens: { type: 'integer' },
+              // M21: customer + admin split. Top-level fields above remain the
+              // combined-totals view for backwards compatibility; integrators
+              // who want the split read these nested objects.
+              customer: {
+                type: 'object',
+                properties: {
+                  message_count: { type: 'integer' },
+                  tokens_in: { type: 'integer' },
+                  tokens_out: { type: 'integer' },
+                  cost_usd: { type: 'number' },
+                  cache_creation_tokens: { type: 'integer' },
+                  cache_read_tokens: { type: 'integer' },
+                },
+                required: [
+                  'message_count',
+                  'tokens_in',
+                  'tokens_out',
+                  'cost_usd',
+                  'cache_creation_tokens',
+                  'cache_read_tokens',
+                ],
+              },
+              admin: {
+                type: 'object',
+                properties: {
+                  message_count: { type: 'integer' },
+                  tokens_in: { type: 'integer' },
+                  tokens_out: { type: 'integer' },
+                  cost_usd: { type: 'number' },
+                  cache_creation_tokens: { type: 'integer' },
+                  cache_read_tokens: { type: 'integer' },
+                },
+                required: [
+                  'message_count',
+                  'tokens_in',
+                  'tokens_out',
+                  'cost_usd',
+                  'cache_creation_tokens',
+                  'cache_read_tokens',
+                ],
+              },
               period: {
                 type: 'object',
                 properties: {
@@ -1018,6 +1132,8 @@ const adminChatbotsPlugin: FastifyPluginAsync<AdminChatbotsPluginOpts> = async (
               'cost_usd',
               'cache_creation_tokens',
               'cache_read_tokens',
+              'customer',
+              'admin',
               'period',
               'warnings',
             ],
@@ -1043,7 +1159,11 @@ const adminChatbotsPlugin: FastifyPluginAsync<AdminChatbotsPluginOpts> = async (
           });
         }
       }
-      const usage = await getChatbotUsage(db, chatbot.id, since);
+      const [usage, customer, admin] = await Promise.all([
+        getChatbotUsage(db, chatbot.id, since),
+        getChatbotUsage(db, chatbot.id, since, 'customer'),
+        getChatbotUsage(db, chatbot.id, since, 'admin'),
+      ]);
 
       const warnings: string[] = [];
       if (chatbot.model_slug) {
@@ -1069,13 +1189,19 @@ const adminChatbotsPlugin: FastifyPluginAsync<AdminChatbotsPluginOpts> = async (
         }
       }
 
+      const flattenUsage = (u: typeof usage) => ({
+        message_count: u.messageCount,
+        tokens_in: u.tokensIn,
+        tokens_out: u.tokensOut,
+        cost_usd: u.costUsd,
+        cache_creation_tokens: u.cacheCreationTokens,
+        cache_read_tokens: u.cacheReadTokens,
+      });
+
       return reply.send({
-        message_count: usage.messageCount,
-        tokens_in: usage.tokensIn,
-        tokens_out: usage.tokensOut,
-        cost_usd: usage.costUsd,
-        cache_creation_tokens: usage.cacheCreationTokens,
-        cache_read_tokens: usage.cacheReadTokens,
+        ...flattenUsage(usage),
+        customer: flattenUsage(customer),
+        admin: flattenUsage(admin),
         period: {
           since: since ? since.toISOString() : null,
           until: until.toISOString(),
@@ -1198,6 +1324,67 @@ const adminChatbotsPlugin: FastifyPluginAsync<AdminChatbotsPluginOpts> = async (
       }
       const summary = await getChatbotGeoSummary(db, chatbot.slug);
       return reply.send({ mode: summary.modeCode, countries: summary.countries });
+    },
+  );
+
+  // -------------------------------------------------------------------------
+  // M21: admin-mode session mint
+  // -------------------------------------------------------------------------
+
+  /**
+   * Mint a session that bypasses operator-imposed gates (Origin allowlist,
+   * geo, availability, daily-cap, capacity stub). Authenticated by the
+   * account admin bearer key — the WP plugin's PHP layer calls this after
+   * confirming the WP user holds the right capability. The account admin
+   * key never reaches the browser; the session token returned here behaves
+   * like any other browser session token from that point on, except that
+   * `sessions.is_admin_mode` is TRUE.
+   *
+   * Per dev-notes/14-availability-and-admin-mode.md.
+   */
+  fastify.post<{ Params: { slug: string } }>(
+    '/:slug/sessions',
+    {
+      schema: {
+        tags: ['admin'],
+        summary: 'Mint an admin-mode session for a logged-in site administrator',
+        description:
+          'Account-admin authenticated. Returns a normal session token plus the ' +
+          "chatbot's welcome message prefixed with `**Admin mode**\\n\\n`. The session " +
+          'is marked `is_admin_mode=true` and will bypass Origin/geo/availability/daily-cap ' +
+          'gates throughout the chat path. The session cap is honoured against ' +
+          '`admin_session_budget_usd` (NULL = unbounded).',
+        security: [{ adminBearerAuth: [] }],
+        params: {
+          type: 'object',
+          properties: { slug: { type: 'string' } },
+          required: ['slug'],
+        },
+        response: {
+          201: {
+            type: 'object',
+            properties: {
+              session_token: { type: 'string' },
+              welcome_message: { type: 'string' },
+              is_admin_mode: { type: 'boolean' },
+            },
+            required: ['session_token', 'welcome_message', 'is_admin_mode'],
+          },
+          401: errorResponseSchema,
+          404: errorResponseSchema,
+        },
+      },
+    },
+    async (req, reply) => {
+      const chatbot = await resolveChatbotForAccount(req, reply, req.params.slug);
+      if (!chatbot) return;
+      const session = await createSession(db, chatbot.id, { isAdminMode: true });
+      const baseWelcome = chatbot.welcome_message ?? 'Hi! How can I help?';
+      return reply.status(201).send({
+        session_token: session.token,
+        welcome_message: `**Admin mode**\n\n${baseWelcome}`,
+        is_admin_mode: true,
+      });
     },
   );
 };

@@ -22,6 +22,13 @@ export interface Session {
   visitor_email: string | null;
   /** Set when the M20 handoff webhook delivered successfully. */
   handoff_notified_at: Date | null;
+  /**
+   * M21: TRUE for sessions minted via `POST /admin/chatbots/{slug}/sessions`.
+   * Honoured throughout the chat path — bypass Origin + geo gates, use
+   * `chatbots.admin_session_budget_usd` for hard-cap, suppress soft-handoff
+   * inject + webhook firing. Excluded from `getChatbotDailySpend`.
+   */
+  is_admin_mode: boolean;
 }
 
 /**
@@ -82,9 +89,17 @@ function generateToken(): string {
   return randomBytes(32).toString('hex');
 }
 
-export async function createSession(db: Knex, chatbotId: number): Promise<Session> {
+export async function createSession(
+  db: Knex,
+  chatbotId: number,
+  opts: { isAdminMode?: boolean } = {},
+): Promise<Session> {
   const token = generateToken();
-  const [id] = await db('sessions').insert({ chatbot_id: chatbotId, token });
+  const [id] = await db('sessions').insert({
+    chatbot_id: chatbotId,
+    token,
+    is_admin_mode: opts.isAdminMode === true,
+  });
   const row = await db<Session>('sessions').where({ id }).first();
   if (!row) {
     throw new Error(`createSession: insert succeeded but read-back failed for id=${id}`);
@@ -105,6 +120,9 @@ export async function findSessionByToken(db: Knex, token: string): Promise<Sessi
   if (row.last_active_at.getTime() < idleCutoff.getTime()) {
     return null;
   }
+  // mysql2 returns BOOLEAN as 0/1; surface a real boolean so downstream
+  // truthiness checks (e.g. `if (session.is_admin_mode)`) behave correctly.
+  row.is_admin_mode = Boolean(row.is_admin_mode);
   return row;
 }
 
@@ -135,7 +153,7 @@ export async function listSessions(
     .leftJoin('messages as m', 'm.session_id', 's.id')
     .select<
       SessionWithMeta[]
-    >('s.id', 's.chatbot_id', 's.token', 's.summary', 's.created_at', 's.last_active_at', { chatbot_slug: 'c.slug' })
+    >('s.id', 's.chatbot_id', 's.token', 's.summary', 's.created_at', 's.last_active_at', 's.is_admin_mode', { chatbot_slug: 'c.slug' })
     .count<{ message_count: string | number }[]>({ message_count: 'm.id' })
     .groupBy(
       's.id',
@@ -144,6 +162,7 @@ export async function listSessions(
       's.summary',
       's.created_at',
       's.last_active_at',
+      's.is_admin_mode',
       'c.slug',
     )
     .orderBy('s.last_active_at', 'desc')
@@ -154,7 +173,12 @@ export async function listSessions(
   }
 
   const rows = (await query) as Array<SessionWithMeta & { message_count: string | number }>;
-  return rows.map((r) => ({ ...r, message_count: Number(r.message_count) }));
+  return rows.map((r) => ({
+    ...r,
+    message_count: Number(r.message_count),
+    // mysql2 returns BOOLEAN as 0/1; surface a real boolean.
+    is_admin_mode: Boolean(r.is_admin_mode),
+  }));
 }
 
 /**

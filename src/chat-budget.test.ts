@@ -527,3 +527,172 @@ test('M20 hard cap: terminated session falls back to DEFAULT_HARD_HANDOFF when H
   assert.equal(res.statusCode, 200);
   assert.match(res.json().reply, /talk to a human/);
 });
+
+// ---------------------------------------------------------------------------
+// M21: admin-mode sessions — chat path branches
+// ---------------------------------------------------------------------------
+
+test('M21 admin mode: soft-handoff inject is suppressed even past the threshold', async (t) => {
+  const fx = await seedMeteredChatbot({ inputPrice: 1.0, outputPrice: 5.0 });
+  // Same setup as the M20 soft-handoff test, but the session is admin-mode.
+  await fx.db('chatbots').where({ id: fx.chatbot.id }).update({
+    session_budget_usd: 0.005,
+    admin_session_budget_usd: 0.005,
+    handoff_threshold_pct: 80,
+  });
+  const blocksDir = path.join('data', 'chatbots', fx.slug);
+  await mkdir(blocksDir, { recursive: true });
+  await writeFile(path.join(blocksDir, 'HANDOFF_SOFT.md'), 'should NOT appear', 'utf8');
+
+  const session = await createSession(fx.db, fx.chatbot.id, { isAdminMode: true });
+  await appendMessage(fx.db, session.id, 'assistant', 'prior', {
+    chatbotId: fx.chatbot.id,
+    costUsd: 0.004,
+  });
+
+  const capture: ChatRequest[] = [];
+  const fastify = await buildServer({
+    db: fx.db,
+    logger: false,
+    adapterFactory: () => ({
+      protocol: 'openrouter',
+      chat: async (req: ChatRequest): Promise<ChatResponse> => {
+        capture.push(req);
+        return { reply: 'reply', tokensUsed: { prompt: 10, completion: 10 } };
+      },
+    }),
+  });
+  t.after(async () => {
+    await fastify.close();
+    await rm(blocksDir, { recursive: true, force: true });
+    await fx.cleanup();
+  });
+
+  const sessionRow = await fx.db('sessions').where({ id: session.id }).first();
+  const res = await fastify.inject({
+    method: 'POST',
+    url: '/chat',
+    headers: { authorization: `Bearer ${sessionRow.token}` },
+    payload: { message: 'hi' },
+  });
+  assert.equal(res.statusCode, 200);
+  const systemMessage = capture[0].messages.find((m) => m.role === 'system');
+  assert.ok(systemMessage);
+  assert.ok(
+    !/HANDOFF_SOFT/.test(systemMessage.content),
+    `HANDOFF_SOFT should not be in the prompt for admin sessions; got: ${systemMessage.content}`,
+  );
+});
+
+test('M21 admin mode: hard-cap terminates the session but does NOT fire the handoff webhook', async (t) => {
+  const fx = await seedMeteredChatbot({ inputPrice: 1.0, outputPrice: 5.0 });
+  await fx.db('chatbots').where({ id: fx.chatbot.id }).update({
+    admin_session_budget_usd: 0.0005,
+    handoff_webhook_url: 'http://webhook.invalid/should-not-fire',
+  });
+  const session = await createSession(fx.db, fx.chatbot.id, { isAdminMode: true });
+  await appendMessage(fx.db, session.id, 'assistant', 'prior', {
+    chatbotId: fx.chatbot.id,
+    costUsd: 0.0004,
+  });
+
+  // The handoff webhook helper logs and swallows fetch errors, so the only
+  // way to verify "did NOT fire" is to assert handoff_notified_at stays NULL.
+  const fastify = await buildServer({
+    db: fx.db,
+    logger: false,
+    adapterFactory: () => tokensAdapter({ prompt: 100, completion: 50 }, 'final reply'),
+  });
+  t.after(async () => {
+    await fastify.close();
+    await fx.cleanup();
+  });
+
+  const sessionRow = await fx.db('sessions').where({ id: session.id }).first();
+  const res = await fastify.inject({
+    method: 'POST',
+    url: '/chat',
+    headers: { authorization: `Bearer ${sessionRow.token}` },
+    payload: { message: 'something' },
+  });
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.json().session_terminated, true);
+
+  // Give any rogue fire-and-forget webhook a moment to land, then assert
+  // handoff_notified_at is still NULL — proof that notifyHandoff was not
+  // called for this admin-mode session.
+  await new Promise((r) => setTimeout(r, 50));
+  const after = await fx.db('sessions').where({ id: session.id }).first();
+  assert.ok(after.terminated_at instanceof Date);
+  assert.equal(after.handoff_notified_at, null);
+});
+
+test('M21 admin mode: admin spend is excluded from getChatbotDailySpend aggregation', async (t) => {
+  // The mint-time daily-cap gate uses getChatbotDailySpend. Admin spend
+  // must not count towards that aggregate — otherwise an admin's morning
+  // of testing would lock out real visitors for the rest of the day.
+  const fx = await seedMeteredChatbot({ inputPrice: 1.0, outputPrice: 5.0 });
+  await fx.db('chatbots').where({ id: fx.chatbot.id }).update({ daily_budget_usd: 0.001 });
+
+  // Seed $0.05 of admin-mode spend (way over the $0.001 daily cap).
+  const adminSession = await createSession(fx.db, fx.chatbot.id, { isAdminMode: true });
+  await appendMessage(fx.db, adminSession.id, 'assistant', 'admin reply', {
+    chatbotId: fx.chatbot.id,
+    costUsd: 0.05,
+  });
+
+  const fastify = await buildServer({
+    db: fx.db,
+    logger: false,
+    adapterFactory: () => tokensAdapter({ prompt: 10, completion: 10 }),
+  });
+  t.after(async () => {
+    await fastify.close();
+    await fx.cleanup();
+  });
+
+  // A regular visitor should still be able to mint a session — the daily
+  // cap excludes the admin spend.
+  const res = await fastify.inject({
+    method: 'POST',
+    url: '/sessions',
+    headers: { origin: fx.origin },
+  });
+  assert.equal(res.statusCode, 201, res.payload);
+});
+
+test('M21 admin mode: admin_session_budget_usd NULL means unbounded (no terminate)', async (t) => {
+  const fx = await seedMeteredChatbot({ inputPrice: 1.0, outputPrice: 5.0 });
+  // No admin_session_budget_usd set. The customer session cap is set but
+  // shouldn't apply to admin-mode sessions.
+  await fx.db('chatbots').where({ id: fx.chatbot.id }).update({
+    session_budget_usd: 0.0001, // would terminate immediately if applied
+    admin_session_budget_usd: null,
+  });
+  const session = await createSession(fx.db, fx.chatbot.id, { isAdminMode: true });
+  await appendMessage(fx.db, session.id, 'assistant', 'lots of prior spend', {
+    chatbotId: fx.chatbot.id,
+    costUsd: 0.5, // way past the customer cap
+  });
+
+  const fastify = await buildServer({
+    db: fx.db,
+    logger: false,
+    adapterFactory: () => tokensAdapter({ prompt: 100, completion: 50 }, 'still going'),
+  });
+  t.after(async () => {
+    await fastify.close();
+    await fx.cleanup();
+  });
+
+  const sessionRow = await fx.db('sessions').where({ id: session.id }).first();
+  const res = await fastify.inject({
+    method: 'POST',
+    url: '/chat',
+    headers: { authorization: `Bearer ${sessionRow.token}` },
+    payload: { message: 'keep going' },
+  });
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.json().reply, 'still going');
+  assert.equal(res.json().session_terminated, undefined);
+});

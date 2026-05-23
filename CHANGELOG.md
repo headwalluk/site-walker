@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.17.0] - 2026-05-23
+
+M21 lands the last two pre-v1.0.0 API features: per-chatbot **operational availability** (timezone + weekly schedule, enforced at session-mint) and **admin-mode sessions** (a power-user surface for logged-in WP administrators that bypasses operator-imposed gates). Both share the same mint-gating seam, hence one milestone. Full design + resolved-question summary in `dev-notes/14-availability-and-admin-mode.md`.
+
+With this release the API is feature-complete for first-customer onboarding. The next-step focus is real-client work on `api.site-walker.net`, not new API surface.
+
+### Added
+- **Migration `0006_availability_and_admin_mode.js`** (additive). Adds `chatbots.timezone VARCHAR(64) NULL`, `chatbots.availability JSON NULL`, `chatbots.admin_session_budget_usd DECIMAL(10,4) NULL`, `sessions.is_admin_mode BOOLEAN NOT NULL DEFAULT FALSE`.
+- **`src/services/availability.ts`** — pure functions for IANA timezone validation (`assertValidTimezone`, via `Intl.DateTimeFormat`), schedule parsing (`parseWindow`, `assertValidSchedule`), and the open/closed check (`isOpenNow(chatbot, now)` returning `{ open, nextOpenAt }`). Strings-of-`"HH:MM-HH:MM"` shape per day; `24:00` supported as end-of-day; `close <= open` rejected (no implicit wrap-around).
+- **`POST /sessions` + `GET /sessions/can-start`** — new `503 chatbot_closed` error code with `Retry-After` header (seconds, capped at 3600) and `detail.next_open_at` (ISO timestamp, or `null` if the schedule has no future opening). Mint-only — already-minted sessions keep running past closing time.
+- **`POST /admin/chatbots/{slug}/sessions`** — account-admin-authenticated route that mints an admin-mode session. Returns `{ session_token, welcome_message, is_admin_mode: true }` with the welcome prefixed by `**Admin mode**\n\n`. The session is stamped `sessions.is_admin_mode = TRUE` and bypasses Origin/geo/availability/daily-cap/capacity gates throughout the chat path. The account admin key never reaches the browser — the WP plugin's PHP layer calls this and relays the token back via Ajax.
+- **`PATCH /admin/chatbots/{slug}`** extended with three new fields: `timezone`, `availability` (validated against the schedule grammar), `admin_session_budget_usd`. Same bounds + `null`-clears semantics as the existing M20 fields. `admin_session_budget_usd` shares the `SW_MAX_SESSION_BUDGET_USD` env cap.
+- **CLI:** `sw chatbot set-timezone <slug> <tz-or-none>`, `sw chatbot set-hours <slug> [none]` (JSON via stdin when not clearing), and `sw chatbot set-budget --admin-session <usd-or-none>`.
+- **Usage reporting split:** `sw chatbot usage <slug>` now shows separate Customer + Admin-mode totals. `GET /admin/chatbots/{slug}/usage` keeps the top-level combined view (backwards compatible) and adds `customer` + `admin` nested objects with the split. `sw sessions list` rows carry an `[admin]` marker for admin-mode sessions — the audit story is: "ah — it was the boss racking up the Anthropic bill today."
+- **Tests:** 35 new (316 total). `availability.test.ts` covers the pure-function surface; `chat-availability.test.ts` covers mint-time enforcement + `Retry-After` cap; `chat-budget.test.ts` gains M21 cases for soft-handoff suppression, hard-cap termination without webhook firing, unbounded admin-cap behaviour, and admin-spend exclusion from `getChatbotDailySpend`; `admin.test.ts` covers PATCH M21 fields (happy + 8 malformed-rejection cases), admin-mode mint happy path, and cross-account guard.
+
+### Changed
+- **`runChat()`** in `src/services/chat.ts` branches on `session.is_admin_mode`: session-cap reads `admin_session_budget_usd` instead of `session_budget_usd`; soft-handoff inject is suppressed; hard-cap termination still fires (safety belt) but the handoff webhook is suppressed (operator shouldn't get a notification about themselves).
+- **`POST /chat` + `GET /messages`** skip the per-turn geo check when `session.is_admin_mode` (admins may be travelling).
+- **`getChatbotDailySpend`** joins `sessions` and excludes `is_admin_mode = TRUE` rows from the aggregate. Admin spend is tracked at message level and surfaces in usage reporting, but doesn't displace customer daily-cap budget.
+- **`getChatbotUsage`** accepts an optional `segment: 'customer' | 'admin'` filter; omitted means combined.
+- **`findChatbotByOrigin`** now runs results through `normaliseChatbotRow` (latent bug: JSON columns were coming back as strings on the browser-mint path — only surfaced because M21 added a per-request read of the `availability` JSON column).
+- **`findSessionByToken` + `listSessions`** coerce `is_admin_mode` to a real boolean (mysql2 returns BOOLEAN as 0/1).
+
+### Notes
+- The schedule grammar deliberately does not support overnight wrap-around or per-day overrides (public holidays, one-off closures). Operators split overnight ranges into two windows and handle one-offs by editing the schedule on the day. If a real customer asks, both are follow-ups.
+- Admin-mode session concurrency is unlimited; sessions are cheap and the admin-cap is the safety belt against runaway.
+- No new env vars in this release. `SW_MAX_SESSION_BUDGET_USD` is the bound on both `session_budget_usd` and `admin_session_budget_usd`.
+
 ## [0.16.1] - 2026-05-23
 
 Behaviour change to M20's daily-budget enforcement: the daily cap is now checked **only at session-mint** (`POST /sessions`, `GET /sessions/can-start`), not on every `POST /chat`. Once a visitor holds a session token they keep going to the end of their own session-cap budget, even if other concurrent sessions push the chatbot over its daily cap mid-day. The session cap is what bounds any individual conversation; the daily cap is a "front door" gate for new visitors only.

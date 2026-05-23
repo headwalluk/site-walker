@@ -2,7 +2,7 @@
 
 Design notes for two features grouped together because they share the same session-mint gating seam: **per-chatbot operational hours** (the chatbot is only available at certain times on certain days) and **admin mode** (a power-user session type for logged-in site administrators that bypasses operator-imposed gates). Captured 2026-05-23.
 
-**Status:** design-in-flight. Target: **v1.0.0**. Both features gate the first paying customer launch — clients will want hours-of-operation up-front (cost control + don't-answer-at-3am brand), and they'll want admin mode for staff productivity (Woo store admins using the bot to navigate their own catalogue, alongside the secondary use of "test config before launch").
+**Status:** shipped in v0.17.0 on 2026-05-23. See "What shipped" at the end of this doc for the resolved-design summary + behaviour reference.
 
 Companion to:
 
@@ -178,3 +178,59 @@ Admin-mode spend is **recorded** the same as regular spend (every `messages` row
 - **Not a maintenance-mode kill switch.** `chatbots.is_paused` (deny-all-sessions regardless of schedule) is a related but separate feature; punt unless a customer asks.
 - **Not a per-admin budget.** Admins are trusted; `admin_session_budget_usd` is per-session, not per-admin-per-day. If a customer needs "no one admin can spend more than $X/day", that's a follow-up.
 - **Not multi-tenancy at the WP-user level.** The WP plugin's PHP layer authenticates WP users; our API only sees "the WP plugin minted an admin session" and trusts that. We don't track which WP user.
+
+---
+
+## What shipped (v0.17.0, 2026-05-23)
+
+The resolved design, against the 11 open questions above:
+
+1. **Schedule JSON shape: strings.** `"mon": ["09:00-17:00"]`. The parser lives in `src/services/availability.ts::parseWindow` and is ~15 lines including the close-after-open and 24:00 validation.
+2. **`24:00` literal supported; `close <= open` rejected; no wrap-around.** Operators who need overnight windows split into two entries.
+3. **Per-day overrides — out of scope.** Operators handle one-offs by editing the schedule on the day in question.
+4. **`chatbots.is_paused` kill-switch — not implemented.** No customer has asked yet.
+5. **`Retry-After` capped at 3600s.** `detail.next_open_at` carries the actual time for widgets that want to render it.
+6. **Admin-mode mint route — empty body.** Operator's account admin key is the only credential; the chatbot slug comes from the URL.
+7. **Admin-mode welcome message — same chatbot welcome, prefixed with `**Admin mode**\n\n`.** Concrete confirmation for the admin that they're in admin mode without changing the chatbot's voice.
+8. **Admin-mode `/messages` — same as customer-facing.** No special handling. Widget knows from the mint response.
+9. **Tests parallel to M20** — `chat-budget.test.ts` gains M21 cases covering soft-handoff suppression, hard-cap termination without webhook firing, and unbounded admin-cap behaviour.
+10. **Admin concurrency — unlimited.** Sessions are cheap.
+11. **Origin recording on admin-mode sessions — NULL.** The `[admin]` marker in `sw sessions list` is the audit signal.
+
+### Schema delta (migration 0006)
+
+```
+chatbots:
+  + timezone                 VARCHAR(64) NULL
+  + availability             JSON NULL
+  + admin_session_budget_usd DECIMAL(10,4) NULL
+
+sessions:
+  + is_admin_mode            BOOLEAN NOT NULL DEFAULT FALSE
+```
+
+### Surface added
+
+- **`POST /admin/chatbots/{slug}/sessions`** — account-admin-authenticated. Returns `{ session_token, welcome_message, is_admin_mode: true }`. Stamps `sessions.is_admin_mode = TRUE`. Skips all mint-time gates.
+- **`PATCH /admin/chatbots/{slug}`** — extended to accept `timezone`, `availability`, `admin_session_budget_usd`. IANA tz + schedule grammar validated; `admin_session_budget_usd` bounded by `SW_MAX_SESSION_BUDGET_USD`.
+- **`POST /sessions` + `GET /sessions/can-start`** — new `503 chatbot_closed` with `Retry-After` (seconds, capped at 3600) and `detail.next_open_at` (ISO or null).
+- **CLI:** `sw chatbot set-timezone`, `sw chatbot set-hours` (JSON via stdin), `sw chatbot set-budget --admin-session`. `sw chatbot usage` output now splits customer + admin totals. `sw sessions list` rows carry `[admin]` for admin-mode sessions.
+
+### Per-gate behaviour as built
+
+`runChat()` in `src/services/chat.ts` honours `session.is_admin_mode`:
+- Session-cap source: `admin_session_budget_usd` if admin, else `session_budget_usd`.
+- Soft-handoff inject suppressed for admin (threshold logic short-circuits).
+- Hard-cap termination still fires, but the handoff webhook is suppressed.
+
+`POST /chat` + `GET /messages` skip the per-turn geo check when `session.is_admin_mode`.
+
+`src/services/budget.ts::getChatbotDailySpend` joins through `sessions` and excludes `is_admin_mode = TRUE` rows from the aggregate. `src/services/cost.ts::getChatbotUsage` accepts a `segment: 'customer' | 'admin'` filter; the CLI and admin `/usage` endpoint call it twice and surface the split.
+
+### Tests
+
+316 total (24 new across `availability`, `chat-availability`, `chat-budget`, `admin`):
+- `availability.test.ts` — TZ validation, window parsing, schedule validation, `isOpenNow` for in-window / out-of-window / lunch-gap / 24:00 / Sat-Sun / always-open / always-closed.
+- `chat-availability.test.ts` — `POST /sessions` and `GET /sessions/can-start` 503 behaviour, NULL = always-open, `Retry-After` cap.
+- `chat-budget.test.ts` — soft-handoff suppression for admin sessions, hard-cap termination without webhook firing, unbounded admin-cap (NULL `admin_session_budget_usd`), admin spend excluded from `getChatbotDailySpend`.
+- `admin.test.ts` — PATCH M21 fields happy-path + malformed-rejection cases, admin-mode mint route happy path + cross-account guard.
