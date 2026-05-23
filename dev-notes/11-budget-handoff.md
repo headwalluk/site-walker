@@ -140,17 +140,15 @@ sessions:
 
 ### Chat-path state machine
 
-The chat handler is now a five-step path (`src/services/chat.ts`):
+The chat handler is a four-step path (`src/services/chat.ts`):
 
 ```
 1.  if session.terminated_at !== null:
         return canned HANDOFF_HARD (or DEFAULT_HARD_HANDOFF), message_id=0, terminated=true
-2.  if chatbot.daily_budget_usd set AND today's spend >= cap:
-        throw ChatError('budget_exhausted_daily')  → 402
-3.  if chatbot.session_budget_usd set AND session-spend-before >= cap * threshold/100:
+2.  if chatbot.session_budget_usd set AND session-spend-before >= cap * threshold/100:
         load HANDOFF_SOFT.md → assemblePrompt(extraBlocks=[soft])
-4.  run adapter, persist user + assistant messages
-5.  if chatbot.session_budget_usd set AND session-spend-after >= cap:
+3.  run adapter, persist user + assistant messages
+4.  if chatbot.session_budget_usd set AND session-spend-after >= cap:
         sessions.terminated_at = NOW()
         result.session_terminated = true
         if chatbot.handoff_webhook_url AND session.visitor_email:
@@ -158,6 +156,8 @@ The chat handler is now a five-step path (`src/services/chat.ts`):
 ```
 
 The hard-cap check is **after-write** — the visitor gets one final natural reply, then the session terminates. That's a deliberate choice for UX (a mid-sentence cutoff would be jarring) at the cost of one over-cap reply per session.
+
+**The daily cap is not checked here.** It's enforced only at session-mint (`POST /sessions`, `GET /sessions/can-start`). See "Behaviour change in 0.16.1" below.
 
 ### Sanity-bound caps
 
@@ -170,7 +170,7 @@ Operators raise these only if they genuinely need higher caps. Documented in [`.
 
 ### Surface
 
-- **Chat path:** `POST /chat` adds `session_terminated: boolean` to the success body. New error `402 budget_exhausted_daily` on `POST /chat`, `POST /sessions`, and `GET /sessions/can-start` — the cap is enforced both at session-mint time *and* per chat turn, so a token minted just before midnight that crosses the cap mid-day still fails fast.
+- **Chat path:** `POST /chat` adds `session_terminated: boolean` to the success body. New error `402 budget_exhausted_daily` on `POST /sessions` and `GET /sessions/can-start` (see "Behaviour change in 0.16.1" below — initial M20 shipped enforcing this on `POST /chat` too; 0.16.1 lifted that).
 - **Visitor email:** `POST /sessions/visitor-email` (session-bearer, write-only). Returns 204 with no body. Validates the email shape loosely (≤255 chars, contains `@` and a `.`). Fires the handoff webhook iff the session is already terminated *and* the chatbot has `handoff_webhook_url` set.
 - **Admin PATCH:** `PATCH /admin/chatbots/{slug}` extended to accept `daily_budget_usd`, `session_budget_usd`, `handoff_threshold_pct`, `handoff_webhook_url`. Bounded values; `null` clears.
 - **CLI:** `sw chatbot set-budget` (with `--daily`, `--session`, `--threshold`; `none` literal to clear) and `sw chatbot set-handoff-webhook <slug> <url|none>`.
@@ -183,3 +183,17 @@ No HMAC, no retry, 10s timeout. Operator's receiver SHOULD:
 - Not assume freshness (we may stamp `handoff_notified_at` *after* the receiver acked).
 
 If a real customer needs signed payloads or retry-with-backoff, that's a follow-up. The v1 shape is consistent with the rest of the project's "fail loud, no ambiguous fallback" stance: a webhook delivery failure is logged and the visitor is never blocked.
+
+### Behaviour change in 0.16.1
+
+**0.16.0 (M20 initial ship):** the daily cap was re-checked on every `POST /chat`. A session minted at 9am under cap could find itself returning `402 budget_exhausted_daily` at 2pm because *other* sessions had pushed the chatbot over its daily cap. This was correct in the sense that "the cap is the cap", but bad UX: it cut off the visitor in front of the widget for someone else's spend.
+
+**0.16.1:** the daily cap is enforced **only at session-mint** (`POST /sessions`, `GET /sessions/can-start`). Once a session has a token, the visitor rides it out to the session-cap, which is what bounds the individual conversation.
+
+The trade-off the operator should size for: effective max daily spend at the chatbot becomes
+
+```
+daily_budget_usd + (live_sessions_at_cap_bust × session_budget_usd)
+```
+
+So with `daily_budget_usd=$10`, `session_budget_usd=$1`, and 15 sessions in flight when the daily cap busts, the chatbot could realistically end the day at `$25` before everything quiets down. The bound is deterministic — operator sizes `daily_budget_usd` with headroom (or tightens `session_budget_usd`). For pre-sales bots, paying a few extra dollars to avoid cutting off a hot lead is almost always the right trade.

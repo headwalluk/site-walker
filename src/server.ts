@@ -57,7 +57,6 @@ const CHAT_ERROR_STATUS = {
   model_not_configured: 503,
   chatbot_api_key_missing: 503,
   model_error: 502,
-  budget_exhausted_daily: 402,
 } as const satisfies Record<ChatError['code'], number>;
 
 function clientPrefersHtml(acceptHeader: string | undefined): boolean {
@@ -741,7 +740,6 @@ export async function buildServer(opts: BuildServerOpts): Promise<FastifyInstanc
           },
           400: errorResponseSchema,
           401: errorResponseSchema,
-          402: errorResponseSchema,
           403: errorResponseSchema,
           413: errorResponseSchema,
           500: errorResponseSchema,

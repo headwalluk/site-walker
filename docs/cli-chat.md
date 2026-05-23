@@ -65,12 +65,13 @@ The client stays in the loop on non-2xx HTTP responses and prints the API's erro
 | 400    | `message_required`    | Empty / whitespace-only input. (The client filters these client-side too — you shouldn't normally see it.)     |
 | 400    | `message_too_long`    | Input exceeds 8000 characters.                                                                                 |
 | 401    | `invalid_token`       | Session token was rejected. The session may have been deleted; restart `./bin/chat` to mint a fresh one.        |
-| 402    | `budget_exhausted_daily` | The chatbot's daily USD spend cap has been reached. Wait until the next UTC midnight, raise the cap, or accept that no more chats can run today. `detail` carries `cap_usd` and `spend_usd`. |
 | 413    | `context_overflow`    | System blocks + history + new message exceeds the chatbot's `model_context_window` with headroom. Trim blocks, raise the window, or end the conversation and start a fresh session. |
 | 502    | `model_error`         | The upstream LLM call failed (network error, model not loaded, etc.). The user message stays in the audit log; no assistant row was written. |
 | 503    | `model_not_configured`| The chatbot has no `model_slug`. Run `sw chatbot set-model`.                                                   |
 
 When a chatbot has a per-session USD cap configured and the cap is reached, the API doesn't return an error — it returns a normal `200` reply alongside `session_terminated: true`. `./bin/chat` doesn't surface that flag today; it just prints the reply. Subsequent turns return the chatbot's `HANDOFF_HARD.md` content (or a built-in fallback) verbatim, with no upstream LLM call.
+
+Daily-cap errors (`402 budget_exhausted_daily`) surface at **startup** — `./bin/chat` calls `POST /sessions` before entering the loop, and if the chatbot's daily cap is already spent, the client exits with `POST /sessions failed (402): budget_exhausted_daily`. Once you're in the loop, no daily-cap error will fire; sessions ride out their own session-cap budget.
 
 A successful response prints just the assistant's reply; the client doesn't echo your own input or print the message ID. The full conversation is queryable via `GET /messages`.
 

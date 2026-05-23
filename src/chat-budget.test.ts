@@ -108,16 +108,18 @@ async function mintSession(
 // Daily cap
 // ---------------------------------------------------------------------------
 
-test('M20 daily cap: chat refused with 402 budget_exhausted_daily when cap already hit', async (t) => {
+test('0.16.1 daily cap: an already-minted session keeps going even when the daily cap busts mid-flight', async (t) => {
+  // Behaviour change from 0.16.0: the daily cap is enforced only at
+  // session-mint (POST /sessions, GET /sessions/can-start). Once a visitor
+  // has a token, they don't get cut off mid-conversation because *other*
+  // visitors pushed the chatbot over its daily cap. The session cap is
+  // what bounds the individual conversation.
   const fx = await seedMeteredChatbot({ inputPrice: 1.0, outputPrice: 5.0 });
-  // Cap the chatbot at $0.001 daily AND seed enough spend to bust it.
   await fx.db('chatbots').where({ id: fx.chatbot.id }).update({ daily_budget_usd: 0.001 });
-  // Pre-existing assistant message worth $0.002 → already over the $0.001 cap.
-  // Mint the session BEFORE the cap-busting spend appears so we can still
-  // acquire a token. (POST /sessions itself now refuses minting on a busted
-  // daily cap — covered separately below.)
+  // Mint the session, THEN simulate other sessions busting the daily cap.
   const session = await createSession(fx.db, fx.chatbot.id);
-  await appendMessage(fx.db, session.id, 'assistant', 'older spend', {
+  const otherSession = await createSession(fx.db, fx.chatbot.id);
+  await appendMessage(fx.db, otherSession.id, 'assistant', 'other-visitor spend', {
     chatbotId: fx.chatbot.id,
     costUsd: 0.002,
   });
@@ -137,10 +139,10 @@ test('M20 daily cap: chat refused with 402 budget_exhausted_daily when cap alrea
     method: 'POST',
     url: '/chat',
     headers: { authorization: `Bearer ${sessionRow.token}` },
-    payload: { message: 'should be refused' },
+    payload: { message: 'this should still be answered' },
   });
-  assert.equal(res.statusCode, 402);
-  assert.equal(res.json().error, 'budget_exhausted_daily');
+  assert.equal(res.statusCode, 200, res.payload);
+  assert.equal(res.json().reply, 'reply');
 });
 
 test('M20 daily cap: POST /sessions refuses to mint when daily cap is already spent', async (t) => {

@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.16.1] - 2026-05-23
+
+Behaviour change to M20's daily-budget enforcement: the daily cap is now checked **only at session-mint** (`POST /sessions`, `GET /sessions/can-start`), not on every `POST /chat`. Once a visitor holds a session token they keep going to the end of their own session-cap budget, even if other concurrent sessions push the chatbot over its daily cap mid-day. The session cap is what bounds any individual conversation; the daily cap is a "front door" gate for new visitors only.
+
+The trade-off the operator now sizes for is `daily_budget_usd + (live_sessions × session_budget_usd)` as effective max daily spend. For pre-sales bots that's almost always worth a few extra dollars to avoid cutting off a hot lead.
+
+### Changed
+- `runChat()` in `src/services/chat.ts` no longer performs a daily-cap pre-check. The check at `POST /sessions` and `GET /sessions/can-start` is unchanged.
+- `ChatErrorCode` no longer includes `budget_exhausted_daily`; `CHAT_ERROR_STATUS` and the `POST /chat` OpenAPI response schema no longer list `402`.
+- `dev-notes/11-budget-handoff.md` chat-path state machine: now four steps, with a "Behaviour change in 0.16.1" section recording the rationale + trade-off math.
+- `docs/api-usage.md` denial table + `POST /chat` error table updated; `docs/cli-chat.md` `./bin/chat` error table updated (402 surfaces at startup, not in the loop).
+
+### Tests
+- The chat-budget test that asserted `402 budget_exhausted_daily` mid-session was inverted into a positive assertion: a session minted under cap keeps going (200) when other sessions bust the daily cap mid-flight. Mint-time + probe-time daily-cap tests are unchanged. 281 tests pass.
+
 ## [0.16.0] - 2026-05-21
 
 The fifth and final SaaS-pivot milestone (M20). Adds per-chatbot daily + per-session spend caps with soft- and hard-handoff behaviour, visitor-email capture, and an operator webhook for terminated-session notification. With this, the SaaS-pivot block (M16–M20) is closed; next phase is real-customer onboarding on `api.site-walker.net`.

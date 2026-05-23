@@ -10,13 +10,7 @@ import { appendMessage, findSessionByToken, listMessages, type Message } from '.
 import { defaultHeadroom, resolveModel, type ResolvedModel } from './models.js';
 import { assemblePrompt, loadDiskBlocks, loadHandoffBlock } from './system-blocks.js';
 import { getChatbotById, type Chatbot } from './chatbots.js';
-import {
-  getChatbotDailySpend,
-  getSessionSpend,
-  isDailyBudgetExhausted,
-  isSessionBudgetExhausted,
-  parseCapDecimal,
-} from './budget.js';
+import { getSessionSpend, isSessionBudgetExhausted, parseCapDecimal } from './budget.js';
 import { notifyHandoff } from './handoff-webhook.js';
 
 export const MAX_MESSAGE_CHARS = 8000;
@@ -37,8 +31,7 @@ export type ChatErrorCode =
   | 'context_overflow'
   | 'model_not_configured'
   | 'chatbot_api_key_missing'
-  | 'model_error'
-  | 'budget_exhausted_daily';
+  | 'model_error';
 
 /**
  * Service-layer errors carry a stable `code` the route handler maps to a
@@ -180,21 +173,14 @@ export async function runChat(input: RunChatInput): Promise<RunChatResult> {
     throw new ChatError('model_not_configured', (err as Error).message);
   }
 
-  // M20: daily-cap check. The chatbot's resolved provider/model is settled,
-  // so we know cost computation will work; if the daily window is already
-  // spent, refuse this turn before we do any LLM work.
-  const dailyCap = parseCapDecimal(chatbot.daily_budget_usd);
-  if (dailyCap !== null) {
-    const dailySpend = await getChatbotDailySpend(db, chatbot.id);
-    if (isDailyBudgetExhausted(dailySpend, dailyCap)) {
-      throw new ChatError(
-        'budget_exhausted_daily',
-        `chatbot "${chatbot.slug}" has spent $${dailySpend.toFixed(4)} today against the ` +
-          `$${dailyCap.toFixed(4)} daily cap. Next window starts at 00:00 UTC.`,
-        { cap_usd: dailyCap, spend_usd: dailySpend },
-      );
-    }
-  }
+  // The daily cap is enforced at session-mint (POST /sessions, GET
+  // /sessions/can-start) and deliberately NOT here. Once a session has a
+  // token, the visitor in front of the widget shouldn't be cut off
+  // mid-conversation because *other* sessions pushed the chatbot over its
+  // daily cap. The session cap (below) is what bounds any individual
+  // conversation; effective max daily spend at the chatbot is therefore
+  // `daily_budget_usd + (live_sessions × session_budget_usd)`, which the
+  // operator sizes accordingly.
 
   // Surface a missing api_key for metered providers before we do any further
   // work (assemble blocks, count tokens). Caller gets a clean 503.
