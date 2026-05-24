@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.19.0] - 2026-05-24
+
+M23 lands in-memory rate limiting on the public chat path — second of the v1.0.0 milestones. Single-process deployment, no Redis (Redis is paired with cluster mode, both below the v1.0.0 line as M11).
+
+### Added
+- **`@fastify/rate-limit` plugin** registered globally with `global: false` so routes opt in via `config.rateLimit`. Per-IP caps on `POST /sessions` and `POST /chat`, using the existing `trustProxy: true` to honour `X-Forwarded-For` behind reverse proxies.
+- **`src/services/rate-limit.ts`** — `ChatbotRateLimiter` class: fixed 60-second window, in-memory `Map<chatbotId:scope, {count, windowStart}>`, clock-injectable for tests. Called from the `POST /sessions` and `POST /chat` route handlers after chatbot resolution (per-chatbot dimension can't ride on the plugin's sync `keyGenerator`).
+- **`429 rate_limit_exceeded`** error code, same `{ error, detail }` shape as the rest of the API. `detail.retry_after_seconds` carries the wait time. Standard `Retry-After` header set in both the per-IP and per-chatbot paths so widgets see one vocabulary regardless of which layer refused.
+- **Five new env vars** (defaults shown):
+  - `SW_RATELIMIT_ENABLED=true` — master switch, accepts `true`/`false`/`1`/`0`/`yes`/`no`.
+  - `SW_RATELIMIT_SESSIONS_PER_IP_PER_MINUTE=10`
+  - `SW_RATELIMIT_SESSIONS_PER_CHATBOT_PER_MINUTE=60`
+  - `SW_RATELIMIT_CHAT_PER_IP_PER_MINUTE=20`
+  - `SW_RATELIMIT_CHAT_PER_CHATBOT_PER_MINUTE=120`
+  - Conservative starting points — calibrate against real M18 usage data once we have a week or two of real traffic.
+- **`BuildServerOpts.rateLimit`** — opts override env so tests can dial caps to single digits without touching `process.env` (the env module is a module-load singleton). Tests pass tiny caps + injected clock for deterministic 429 reproduction.
+- **20 new tests** (349 total). 7 pure-unit on the limiter (window roll-over, refused calls don't extend ban, per-chatbot independence, per-scope independence, retry-after-seconds math). 5 env-config tests (defaults, boolean parsing, validation). 8 HTTP integration tests via `fastify.inject` with `X-Forwarded-For` (per-IP cap, per-chatbot cap, disabled mode, can-start exempt, /messages exempt).
+
+### Changed
+- **`POST /sessions` + `POST /chat`** response schemas extended with `429: errorResponseSchema`.
+- **`@fastify/rate-limit` `errorResponseBuilder`** returns `{ statusCode: 429, error: 'rate_limit_exceeded', detail: {...} }` — the plugin treats the return value as a thrown error and Fastify reads `statusCode` off it; without that field it defaults to 500.
+
+### Removed
+- **`hasCapacity()` stub** in `src/server.ts` and the `503 capacity_exceeded` error code. Always returned `true` since M3; the tracker had it pencilled in for M11's expansion, but rate limiting subsumes the operational concern at v1.0.0 scale. If a real concurrency check is wanted later (in-memory in-flight chat counter), it lands as a focused addition with clear semantics. Doc references in `docs/api-usage.md` updated to point at `429 rate_limit_exceeded` instead.
+
+### Notes
+- **Not rate-limited** by design: `GET /sessions/can-start` (idempotent probe), `GET /messages` (cheap rehydrate), `POST /sessions/visitor-email` (visitor-bearer write-once), and all `/admin/*` (bearer-key auth is the throttle; a misconfigured WP plugin shouldn't be punished as an attacker).
+- **Admin-mode chat traffic is rate-limited normally.** It still comes from a browser with a real IP; the per-IP cap is generous enough that no human typing trips it. Skipping admin-mode would mean an extra synchronous session lookup in the rate-limit path just to handle the rare "admin tests the bot" case — not worth the complexity.
+- **Abuse heuristics** (repeated-identical-message detection, prompt-injection-shaped payloads, suspiciously high token consumption per session) deliberately stay grouped with M11 cluster mode + Redis below the v1.0.0 line — they need persistence across requests, can't ride on a 60-second fixed-window counter cleanly.
+
 ## [0.18.0] - 2026-05-24
 
 M22 lands the first of the v1.0.0 milestones: read-only admin HTTP for session and conversation review. The WP plugin's chat-review UI is the immediate consumer; the surface is general enough that any HTTP client can use it. Pagination only in v1 — no date / segment / geo filters yet (deliberately deferred per the M22 design pass; concrete filters land when a real WP-admin layout asks for them).

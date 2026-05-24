@@ -43,6 +43,23 @@ export interface RuntimeEnv {
   readonly maxDailyBudgetUsd: number;
   /** Defensive upper bound on `chatbots.session_budget_usd`. Same shape. */
   readonly maxSessionBudgetUsd: number;
+  /**
+   * M23 rate-limit config. The window is fixed at 60 seconds — operators
+   * tune the per-minute caps, not the window. `enabled` flips the entire
+   * subsystem off (useful in dev/test); when false, no per-IP or
+   * per-chatbot check runs.
+   *
+   * Defaults are deliberately conservative — calibrate against real M18
+   * usage data once we have a couple of weeks of live traffic. See
+   * `docs/env.md` for the operator-facing description.
+   */
+  readonly rateLimit: {
+    readonly enabled: boolean;
+    readonly sessionsPerIp: number;
+    readonly sessionsPerChatbot: number;
+    readonly chatPerIp: number;
+    readonly chatPerChatbot: number;
+  };
 }
 
 function parsePort(raw: string | undefined, name: string, fallback: number): number {
@@ -66,6 +83,28 @@ function parsePositiveDecimal(raw: string | undefined, name: string, fallback: n
     throw new Error(`Env var ${name} must be a positive number, got "${raw}".`);
   }
   return n;
+}
+
+function parsePositiveInteger(raw: string | undefined, name: string, fallback: number): number {
+  if (raw === undefined || raw === '') return fallback;
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n < 1) {
+    throw new Error(`Env var ${name} must be a positive integer, got "${raw}".`);
+  }
+  return n;
+}
+
+/**
+ * Parse a boolean-shaped env var. Accepts `true` / `false` / `1` / `0` /
+ * `yes` / `no` (case-insensitive). Empty or unset → `fallback`. Anything
+ * else throws — refuse to silently treat typos as one side or the other.
+ */
+function parseBoolean(raw: string | undefined, name: string, fallback: boolean): boolean {
+  if (raw === undefined || raw === '') return fallback;
+  const v = raw.trim().toLowerCase();
+  if (v === 'true' || v === '1' || v === 'yes') return true;
+  if (v === 'false' || v === '0' || v === 'no') return false;
+  throw new Error(`Env var ${name} must be a boolean (true/false/1/0/yes/no), got "${raw}".`);
 }
 
 /**
@@ -104,6 +143,29 @@ export function loadEnv(): RuntimeEnv {
       'SW_MAX_SESSION_BUDGET_USD',
       100,
     ),
+    rateLimit: Object.freeze({
+      enabled: parseBoolean(process.env.SW_RATELIMIT_ENABLED, 'SW_RATELIMIT_ENABLED', true),
+      sessionsPerIp: parsePositiveInteger(
+        process.env.SW_RATELIMIT_SESSIONS_PER_IP_PER_MINUTE,
+        'SW_RATELIMIT_SESSIONS_PER_IP_PER_MINUTE',
+        10,
+      ),
+      sessionsPerChatbot: parsePositiveInteger(
+        process.env.SW_RATELIMIT_SESSIONS_PER_CHATBOT_PER_MINUTE,
+        'SW_RATELIMIT_SESSIONS_PER_CHATBOT_PER_MINUTE',
+        60,
+      ),
+      chatPerIp: parsePositiveInteger(
+        process.env.SW_RATELIMIT_CHAT_PER_IP_PER_MINUTE,
+        'SW_RATELIMIT_CHAT_PER_IP_PER_MINUTE',
+        20,
+      ),
+      chatPerChatbot: parsePositiveInteger(
+        process.env.SW_RATELIMIT_CHAT_PER_CHATBOT_PER_MINUTE,
+        'SW_RATELIMIT_CHAT_PER_CHATBOT_PER_MINUTE',
+        120,
+      ),
+    }),
   });
   return env;
 }

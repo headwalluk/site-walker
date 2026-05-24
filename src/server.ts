@@ -2,6 +2,7 @@ import Fastify, { type FastifyInstance } from 'fastify';
 import fastifySwagger from '@fastify/swagger';
 import fastifySwaggerUi from '@fastify/swagger-ui';
 import fastifyCors from '@fastify/cors';
+import fastifyRateLimit from '@fastify/rate-limit';
 import type { Knex } from 'knex';
 import { findChatbotByOrigin } from './services/chatbots.js';
 import { createSession, findSessionByToken, listMessages } from './services/sessions.js';
@@ -23,6 +24,7 @@ import {
 } from './services/geo.js';
 import { env as runtimeEnv } from './config/env.js';
 import { extractBearerToken } from './utils/bearer.js';
+import { ChatbotRateLimiter, type RateLimitDecision } from './services/rate-limit.js';
 import { VERSION } from './utils/version.js';
 
 const DEFAULT_WELCOME = 'Hi! How can I help?';
@@ -40,14 +42,21 @@ export interface BuildServerOpts {
    * checks for this at boot). Tests inject a stub.
    */
   geoChecker?: GeoChecker | null;
-}
-
-/**
- * Phase 1 capacity check is a stub. M11 wires real per-IP and per-chatbot
- * rate limits via Redis here.
- */
-function hasCapacity(_chatbotId: number): boolean {
-  return true;
+  /**
+   * M23 rate-limit overrides. Default reads from runtime env. When
+   * `disabled: true`, no per-IP or per-chatbot limiting applies. Tests pass
+   * small caps + an injected clock so the 429 path is reachable without
+   * 11+ requests.
+   */
+  rateLimit?: {
+    disabled?: boolean;
+    sessionsPerIp?: number;
+    chatPerIp?: number;
+    sessionsPerChatbot?: number;
+    chatPerChatbot?: number;
+    /** Clock for the per-chatbot limiter's window math (tests-only). */
+    now?: () => number;
+  };
 }
 
 const CHAT_ERROR_STATUS = {
@@ -59,6 +68,21 @@ const CHAT_ERROR_STATUS = {
   chatbot_api_key_missing: 503,
   model_error: 502,
 } as const satisfies Record<ChatError['code'], number>;
+
+/**
+ * Build the 429 response shape for both the per-IP plugin path and the
+ * per-chatbot manual path. Same `error` code, same `detail` shape, so
+ * widget developers see one vocabulary regardless of which layer refused.
+ */
+function rateLimitResponseBody(retryAfterSeconds: number): {
+  error: 'rate_limit_exceeded';
+  detail: { retry_after_seconds: number };
+} {
+  return {
+    error: 'rate_limit_exceeded',
+    detail: { retry_after_seconds: retryAfterSeconds },
+  };
+}
 
 function clientPrefersHtml(acceptHeader: string | undefined): boolean {
   if (!acceptHeader) return false;
@@ -219,6 +243,51 @@ export async function buildServer(opts: BuildServerOpts): Promise<FastifyInstanc
   // it's a no-op — req.ip falls through to the socket address.
   const fastify = Fastify({ logger, trustProxy: true });
 
+  // M23 rate-limit setup. Opts override env so tests can dial caps down
+  // without touching process.env (env module is loaded once at import).
+  const rlOverride = opts.rateLimit;
+  const rlEnabled = rlOverride?.disabled === true ? false : runtimeEnv.rateLimit.enabled;
+  const sessionsPerIp = rlOverride?.sessionsPerIp ?? runtimeEnv.rateLimit.sessionsPerIp;
+  const chatPerIp = rlOverride?.chatPerIp ?? runtimeEnv.rateLimit.chatPerIp;
+  const sessionsPerChatbot =
+    rlOverride?.sessionsPerChatbot ?? runtimeEnv.rateLimit.sessionsPerChatbot;
+  const chatPerChatbot = rlOverride?.chatPerChatbot ?? runtimeEnv.rateLimit.chatPerChatbot;
+  const chatbotRateLimiter = new ChatbotRateLimiter(
+    { sessions: sessionsPerChatbot, chat: chatPerChatbot },
+    rlOverride?.now,
+  );
+
+  if (rlEnabled) {
+    await fastify.register(fastifyRateLimit, {
+      // Per-route opt-in only. Routes that don't carry `config.rateLimit`
+      // (e.g. /admin/*, /messages, /sessions/visitor-email) are exempt by
+      // construction — no `skip` list to keep in sync.
+      global: false,
+      // The plugin treats the builder's return value as a thrown error.
+      // Fastify reads `statusCode` off it; without that field it defaults
+      // to 500. Including `statusCode: 429` keeps the response code right.
+      errorResponseBuilder: (_req, context) => ({
+        statusCode: 429,
+        ...rateLimitResponseBody(Math.ceil(context.ttl / 1000)),
+      }),
+    });
+  }
+
+  function applyChatbotRateLimit(
+    chatbotId: number,
+    scope: 'sessions' | 'chat',
+    reply: import('fastify').FastifyReply,
+  ): RateLimitDecision | null {
+    if (!rlEnabled) return null;
+    const decision = chatbotRateLimiter.check(chatbotId, scope);
+    if (!decision.allowed) {
+      reply.header('retry-after', String(decision.retryAfterSeconds));
+      void reply.status(429).send(rateLimitResponseBody(decision.retryAfterSeconds));
+      return decision;
+    }
+    return decision;
+  }
+
   await fastify.register(fastifySwagger, {
     openapi: {
       info: {
@@ -375,6 +444,11 @@ export async function buildServer(opts: BuildServerOpts): Promise<FastifyInstanc
     '/sessions',
     {
       attachValidation: true,
+      config: rlEnabled
+        ? {
+            rateLimit: { max: sessionsPerIp, timeWindow: '1 minute' },
+          }
+        : {},
       schema: {
         tags: ['sessions'],
         summary: 'Mint a session token',
@@ -410,6 +484,7 @@ export async function buildServer(opts: BuildServerOpts): Promise<FastifyInstanc
           400: errorResponseSchema,
           402: errorResponseSchema,
           403: errorResponseSchema,
+          429: errorResponseSchema,
           503: errorResponseSchema,
         },
       },
@@ -445,9 +520,10 @@ export async function buildServer(opts: BuildServerOpts): Promise<FastifyInstanc
         return reply.status(403).send({ error: 'geo_blocked' });
       }
 
-      if (!hasCapacity(chatbot.id)) {
-        return reply.status(503).send({ error: 'capacity_exceeded' });
-      }
+      // M23 per-chatbot rate limit. Per-IP cap is enforced by the
+      // @fastify/rate-limit plugin via `config.rateLimit` above.
+      const rlDecision = applyChatbotRateLimit(chatbot.id, 'sessions', reply);
+      if (rlDecision && !rlDecision.allowed) return;
 
       // M20: refuse new sessions when the daily cap is already spent.
       const dailyCap = parseCapDecimal(chatbot.daily_budget_usd);
@@ -548,9 +624,10 @@ export async function buildServer(opts: BuildServerOpts): Promise<FastifyInstanc
         return reply.status(403).send({ error: 'geo_blocked' });
       }
 
-      if (!hasCapacity(chatbot.id)) {
-        return reply.status(503).send({ error: 'capacity_exceeded' });
-      }
+      // M23: no rate limit on this route. It's an idempotent probe used
+      // by widgets to decide whether to render the chat affordance. The
+      // expensive cousin (`POST /sessions`) carries the per-IP +
+      // per-chatbot caps.
 
       // M20: refuse session-start probes when the daily cap is spent. Mirrors
       // POST /sessions so widgets can hide the chat affordance proactively.
@@ -737,6 +814,11 @@ export async function buildServer(opts: BuildServerOpts): Promise<FastifyInstanc
   fastify.post(
     '/chat',
     {
+      config: rlEnabled
+        ? {
+            rateLimit: { max: chatPerIp, timeWindow: '1 minute' },
+          }
+        : {},
       schema: {
         tags: ['chat'],
         summary: 'Send a user turn, get the assistant reply',
@@ -775,6 +857,7 @@ export async function buildServer(opts: BuildServerOpts): Promise<FastifyInstanc
           401: errorResponseSchema,
           403: errorResponseSchema,
           413: errorResponseSchema,
+          429: errorResponseSchema,
           500: errorResponseSchema,
           502: errorResponseSchema,
           503: errorResponseSchema,
@@ -815,6 +898,11 @@ export async function buildServer(opts: BuildServerOpts): Promise<FastifyInstanc
           return reply.status(403).send({ error: 'geo_blocked' });
         }
       }
+
+      // M23 per-chatbot rate limit. Per-IP cap is enforced by the
+      // @fastify/rate-limit plugin via `config.rateLimit` above.
+      const rlDecision = applyChatbotRateLimit(session.chatbot_id, 'chat', reply);
+      if (rlDecision && !rlDecision.allowed) return;
 
       try {
         const result = await runChat({

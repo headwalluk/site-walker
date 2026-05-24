@@ -1,9 +1,9 @@
 # site-walker — Project Tracker
 
 **Last Updated:** 24 May 2026
-**Current Version:** 0.18.0
-**Current Phase:** **Road to v1.0.0 — first paying client.** SaaS-pivot block closed at v0.16.0 (M20: budget caps); M21 (operational hours + admin-mode sessions, v0.17.0) landed the last pre-v1.0.0 API feature. Phase 4 (M22–M26) is the punch list for first release. **M22 (admin HTTP for session/conversation review, v0.18.0) shipped 2026-05-24** — the WP plugin's chat-review UI is unblocked. Remaining: in-memory rate limiting (M23), production deployment polish (M24), Anthropic prompt-caching adapter wiring (M25), README rewrite (M26). Everything below the v1.0.0 line is post-launch.
-**Overall Progress (post-M22, v0.18.0):** M1–M6 complete, M7 + M8 partial, M16–M22 complete (v0.12.0 through v0.18.0). Admin HTTP surface live with M20 budget caps + M21 availability + admin-mode sessions + M22 session/conversation review. Daily + per-session + admin-session caps enforced end-to-end; soft-handoff prompt injection; hard-cap session termination + webhook; per-chatbot operational hours with `503 chatbot_closed`; admin-mode sessions skip Origin/geo/availability/daily-cap gates and aggregate spend separately; paginated session-list + single-session + message-list admin endpoints with aggregated cost/token totals. 329 tests, format + lint clean.
+**Current Version:** 0.19.0
+**Current Phase:** **Road to v1.0.0 — first paying client.** SaaS-pivot block closed at v0.16.0 (M20: budget caps); M21 (operational hours + admin-mode sessions, v0.17.0) landed the last pre-v1.0.0 API feature. Phase 4 (M22–M26) is the punch list for first release. **M22 (admin HTTP for session/conversation review, v0.18.0)** + **M23 (in-memory rate limiting, v0.19.0)** both shipped 2026-05-24. Remaining: production deployment polish (M24), Anthropic prompt-caching adapter wiring (M25), README rewrite (M26). Everything below the v1.0.0 line is post-launch.
+**Overall Progress (post-M23, v0.19.0):** M1–M6 complete, M7 + M8 partial, M16–M23 complete (v0.12.0 through v0.19.0). Admin HTTP surface live with M20 budget caps + M21 availability + admin-mode sessions + M22 session/conversation review. Public chat path carries per-IP and per-chatbot rate limits via `@fastify/rate-limit` + in-memory `ChatbotRateLimiter`; `429 rate_limit_exceeded` with `Retry-After` on both layers; M3 `hasCapacity()` stub deleted. Daily + per-session + admin-session caps enforced end-to-end; soft-handoff prompt injection; hard-cap session termination + webhook; per-chatbot operational hours with `503 chatbot_closed`; admin-mode sessions skip Origin/geo/availability/daily-cap gates and aggregate spend separately. 349 tests, format + lint clean.
 
 Vision and phasing live in [`../README.md`](../README.md). **Note:** README still markets the prototype-era "self-hosted multi-tenant API" framing; rewrite ships after M16 lands, not before, to avoid documenting vapourware. Stack and architecture decisions live in [`../CLAUDE.md`](../CLAUDE.md). Auth/session and data-model design live in companion docs in this directory. This file tracks the work.
 
@@ -21,7 +21,7 @@ Companion planning docs:
 Post-M22, 2026-05-24. The API surface is feature-complete for first customer; v1.0.0 is the punch list to make the launch responsible. Phase 4 milestones are M22–M26 below; everything past the divider is post-launch.
 
 1. ✅ **M22 — Admin HTTP for session/conversation review.** Shipped 2026-05-24 at v0.18.0.
-2. **M23 — Rate limiting (in-memory).** `@fastify/rate-limit` plugin with the default in-memory store; per-IP and per-chatbot ceilings on `POST /sessions` + `POST /chat`. **No Redis.** Redis is paired with cluster mode and lands below the line as M11.
+2. ✅ **M23 — Rate limiting (in-memory).** Shipped 2026-05-24 at v0.19.0.
 3. **M24 — Production deployment polish.** Single systemd unit (no PM2), `Restart=always`, journal logging. Folds in the two M14 follow-ups (gate `/docs` + `/openapi.json` on non-production; request-body schema on `POST /chat` with `attachValidation: true`). Deployment runbook. Production reverse proxy for `api.site-walker.net` (DNS/cert, no IP lock).
 4. **M25 — Anthropic prompt caching adapter wiring.** Substrate already in DB (M18). Adapter sends `cache_control` markers on the system-blocks prefix, parses cache stats from responses, gates by model, skips below the minimum-cacheable threshold. ~70-80% input-billing reduction expected on stable-system-block chatbots.
 5. **M26 — README rewrite + docs polish.** Current README still markets the prototype-era "self-hosted multi-tenant API" framing; rewrite around the SaaS pivot, BYO keys, budget caps, operational hours, admin mode. First thing a prospective customer reads.
@@ -539,8 +539,8 @@ Each row carries `id`, `token` (display-only — the WP UI uses it to address th
 
 ### Milestone 23: Rate limiting (in-memory)
 
-**Target Completion:** TBD
-**Status:** 🔴 Not started
+**Target Completion:** 24 May 2026
+**Status:** ✅ Complete (24 May 2026, v0.19.0)
 **Priority:** High — public-internet exposure requires this before launch
 
 `@fastify/rate-limit` plugin, default in-memory store. **Explicitly no Redis** — Redis is paired with cluster mode, both below the line as M11.
@@ -549,12 +549,30 @@ Scope:
 - Per-IP cap on `POST /sessions` and `POST /chat` (different limits — sessions are cheaper to mint than chat turns to serve).
 - Per-chatbot cap as a second layer (one runaway origin shouldn't burn another customer's budget bucket).
 - `.env`-tunable thresholds (`SW_RATELIMIT_*` family).
-- Flips the M3 `hasCapacity()` stub in `src/server.ts` from always-true to "in-flight count vs configured cap" — same store backs both checks.
+- The M3 `hasCapacity()` stub was originally pencilled in for expansion here. During execution we chose to **delete** it instead — rate limiting subsumes the operational concern at v1.0.0 scale; reintroducing a concurrency check with clear semantics is easy if a real need arises later.
 
 The boring-mature-proven choice per CLAUDE.md guidance. Single-process deployment makes in-memory accurate; multi-instance would split the bucket across workers and quietly multiply the effective cap. When we cluster (post-v1.0.0, M11), we swap the store, not the route handler.
 
 **Open questions:**
 - Default cap values — settle after a week of real M18 usage data so we know what real traffic looks like before guessing at sensible numbers.
+
+**Shipped at 0.19.0:**
+- `@fastify/rate-limit` plugin registered with `global: false`; routes opt in via `config.rateLimit`. Per-IP cap on `POST /sessions` (env `SW_RATELIMIT_SESSIONS_PER_IP_PER_MINUTE`, default 10) and `POST /chat` (`SW_RATELIMIT_CHAT_PER_IP_PER_MINUTE`, default 20). `trustProxy: true` (wired since 0.10.0) means `req.ip` honours `X-Forwarded-For` behind the production reverse proxy.
+- `src/services/rate-limit.ts` — `ChatbotRateLimiter` class for the per-chatbot dimension. Fixed 60-second window, in-memory `Map<chatbotId:scope, {count, windowStart}>`, clock injectable for tests. Called from `POST /sessions` and `POST /chat` route handlers after chatbot resolution (per-chatbot dimension can't ride on the plugin's sync `keyGenerator` because chatbot resolution is async). Refused calls do **not** extend the ban window — important for fairness.
+- `429 rate_limit_exceeded` error code with `{ error, detail: { retry_after_seconds } }` body shape, plus standard `Retry-After` header. Shared `rateLimitResponseBody()` helper means the plugin-path 429 and the manual-path 429 are bit-identical. Plugin's `errorResponseBuilder` includes `statusCode: 429` in its return value — the plugin treats the builder's result as a thrown error and Fastify reads `statusCode` off it; without that field the response defaults to 500. (Caught during test loop.)
+- Five new env vars in `src/config/env.ts`: `SW_RATELIMIT_ENABLED` (boolean, default true), `SW_RATELIMIT_SESSIONS_PER_IP_PER_MINUTE` (10), `SW_RATELIMIT_SESSIONS_PER_CHATBOT_PER_MINUTE` (60), `SW_RATELIMIT_CHAT_PER_IP_PER_MINUTE` (20), `SW_RATELIMIT_CHAT_PER_CHATBOT_PER_MINUTE` (120). New `parsePositiveInteger` + `parseBoolean` helpers.
+- `BuildServerOpts.rateLimit` — opts override env so tests can dial caps to single digits without touching `process.env` (the env module is a module-load singleton; mutating process.env post-import doesn't propagate). Tests pass tiny caps and use `X-Forwarded-For` to vary `req.ip` per-request.
+- **Routes NOT rate-limited** (by construction — they don't carry `config.rateLimit`): `GET /sessions/can-start` (idempotent probe; per-IP cap on `POST /sessions` is the real defense), `GET /messages` (cheap rehydrate, only callable with a valid session token), `POST /sessions/visitor-email` (visitor-bearer write-once), all `/admin/*` (bearer-key auth is the throttle).
+- **Admin-mode chat traffic is rate-limited normally** — still comes from a browser with a real IP; per-IP cap of 20/min is generous enough that no human typing trips it; skipping would mean a synchronous session lookup just to handle the rare "admin tests the bot" case.
+- `hasCapacity()` stub + `503 capacity_exceeded` error code deleted from `src/server.ts` (M3 always-true stub). Doc references in `docs/api-usage.md` rewritten to point at `429 rate_limit_exceeded` instead.
+- Docs: `docs/env.md` adds the five `SW_RATELIMIT_*` variables with operator-friendly descriptions + an updated example `.env`. `docs/api-usage.md` adds `429 rate_limit_exceeded` rows to the `POST /sessions` and `POST /chat` failure tables and the summary denial table; updates `GET /sessions/can-start` to call out the exemption.
+- 20 new tests (349 total). 7 pure-unit on `ChatbotRateLimiter` (window roll-over, refused calls don't extend ban, per-chatbot independence, per-scope independence, `retryAfterSeconds` math). 5 env-config tests (defaults, boolean parsing, validation). 8 HTTP integration tests in `chat-rate-limit.test.ts` via `fastify.inject` with `X-Forwarded-For` to vary IP (per-IP cap, per-chatbot cap with multiple IPs, disabled mode, can-start exempt, /messages exempt).
+
+**Resolved during execution:**
+- **`errorResponseBuilder` must include `statusCode: 429`** in the return value. The plugin treats it as a thrown error; Fastify reads `statusCode` off it; without that field the response defaults to 500. Caught during the first test-loop run.
+- **Per-chatbot check runs after geo + before budget/availability gates.** Order: Origin → geo → rate-limit → budget → availability. Rate-limiting after geo means we only count "actually-let-through" requests against quota.
+- **Refused calls do not bump the bucket** — a single refused caller can't keep extending its own ban window.
+- **Capacity stub deleted, not expanded.** The original M11 plan was for `hasCapacity()` to become a real concurrency check sharing the same store. Rate limiting subsumes the operational concern at v1.0.0 scale; if a real concurrency check is wanted later (e.g. an in-memory in-flight chat counter), it lands as a focused addition with clear semantics.
 
 ### Milestone 24: Production deployment polish
 

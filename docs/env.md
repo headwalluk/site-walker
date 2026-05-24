@@ -45,6 +45,11 @@ If the file does not exist, the gate is a no-op.
 | `GEOIP_DB_PATH` | (unset)      | API server            | Filesystem path to a MaxMind GeoIP2 / GeoLite2 country database (`.mmdb`). When set, geo-blocking is available; when unset, only `allowall` mode is supported. **If any chatbot is configured with `blocklist` or `allowlist` and this var is unset (or the file can't be opened), the server refuses to start.** Typical value: `/var/lib/GeoIP/GeoLite2-Country.mmdb`. |
 | `SW_MAX_DAILY_BUDGET_USD` | `10000` | API server, CLI       | Hard upper bound on `chatbots.daily_budget_usd`. The admin PATCH endpoint and `./bin/sw chatbot set-budget` refuse to set a value above this with `validation_failed`. Catches typos (`250` vs `25.0`) and limits the blast radius of a stolen admin key. Raise it only if you actually need higher caps. |
 | `SW_MAX_SESSION_BUDGET_USD` | `100` | API server, CLI       | Same as `SW_MAX_DAILY_BUDGET_USD` but for `chatbots.session_budget_usd` (per-conversation cap). **Also bounds `chatbots.admin_session_budget_usd` (M21 admin-mode session cap)** — the two share this env cap, since they're the same kind of constraint applied to different columns. Default of $100 is well above any sensible single-conversation spend; raise it only if a legitimate use case warrants. |
+| `SW_RATELIMIT_ENABLED` | `true` | API server | Master switch for the M23 rate-limit subsystem. Set to `false` (or `0` / `no`) in dev/test to take both per-IP and per-chatbot limits offline. Accepted truthy values: `true` / `1` / `yes`; falsy: `false` / `0` / `no`. Anything else is a startup error. |
+| `SW_RATELIMIT_SESSIONS_PER_IP_PER_MINUTE` | `10` | API server | Per-IP cap on `POST /sessions` (60-second fixed window). A real visitor mints once per page-load and the default leaves plenty of headroom; tune up only if you're seeing legitimate 429s from real traffic. `GET /sessions/can-start` is **not** rate-limited (idempotent probe). |
+| `SW_RATELIMIT_SESSIONS_PER_CHATBOT_PER_MINUTE` | `60` | API server | Per-chatbot cap on `POST /sessions`. Catches the case where many different IPs are minting against one chatbot — a single per-IP limit can't bound that. A successful pre-sales bot may burst above the default during peak hours; raise it if real traffic warrants. |
+| `SW_RATELIMIT_CHAT_PER_IP_PER_MINUTE` | `20` | API server | Per-IP cap on `POST /chat`. A real visitor types ~5 turns/min; 20 leaves a 4× margin. |
+| `SW_RATELIMIT_CHAT_PER_CHATBOT_PER_MINUTE` | `120` | API server | Per-chatbot cap on `POST /chat`. Two chat turns per second sustained — generous for first-customer scale. Budget caps remain the real backstop on cost; this catches request-rate abuse before it pays out. |
 
 Unrecognised variables are ignored; environment is shared with anything else running on the host, and we don't filter it.
 
@@ -73,6 +78,16 @@ SW_ENCRYPTION_KEY=paste-base64-32-bytes-here
 # Set NODE_ENV=development to allow private/loopback IPs through the
 # geo-blocking check. The default is production, which denies them.
 # NODE_ENV=development
+
+# M23 rate limiting — defaults shown. Per-minute fixed-window caps.
+# Set SW_RATELIMIT_ENABLED=false to take the whole subsystem offline
+# (handy in dev/test). Tune the caps based on real traffic data; the
+# defaults are conservative.
+# SW_RATELIMIT_ENABLED=true
+# SW_RATELIMIT_SESSIONS_PER_IP_PER_MINUTE=10
+# SW_RATELIMIT_SESSIONS_PER_CHATBOT_PER_MINUTE=60
+# SW_RATELIMIT_CHAT_PER_IP_PER_MINUTE=20
+# SW_RATELIMIT_CHAT_PER_CHATBOT_PER_MINUTE=120
 ```
 
 ## Notes

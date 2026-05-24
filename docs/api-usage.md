@@ -57,7 +57,7 @@ Origin: https://www.acme-corp.example
 { "ok": true }
 ```
 
-**Failure shapes:** identical to `POST /sessions` minus the success body — `400 origin_required`, `402 budget_exhausted_daily`, `403 origin_not_allowed`, `403 geo_blocked`, `503 chatbot_closed`, `503 capacity_exceeded`.
+**Failure shapes:** identical to `POST /sessions` minus the success body and minus the 429 — `400 origin_required`, `402 budget_exhausted_daily`, `403 origin_not_allowed`, `403 geo_blocked`, `503 chatbot_closed`. `can-start` is deliberately **not** rate-limited (it's an idempotent probe; the expensive cousin `POST /sessions` carries the per-IP + per-chatbot caps).
 
 If the probe returns 200, a subsequent `POST /sessions` from the same browser will almost certainly succeed too. (Almost — the operator could change the policy between the two calls. Don't treat the probe as a guarantee, just an early signal.)
 
@@ -91,10 +91,10 @@ The token is opaque, 64 hex characters, and has no client-side expiry concept to
 | 402    | `budget_exhausted_daily`  | The chatbot's daily USD spend cap has been reached. Hide the chat affordance for the rest of the day; minting will become available again at the next UTC midnight (or once the operator raises the cap). `detail` carries `cap_usd` and `spend_usd`. |
 | 403    | `origin_not_allowed`      | Your host isn't on the chatbot's allowlist. Operator action required.            |
 | 403    | `geo_blocked`             | The visitor's IP is in (blocklist mode) or out of (allowlist mode) the chatbot's country list. Hide the chat affordance for this visitor. |
+| 429    | `rate_limit_exceeded`     | The caller's IP **or** the chatbot itself has hit the per-minute mint cap. `detail.retry_after_seconds` and a `Retry-After` header carry the wait time. Treat as transient: back off and try again after the window. |
 | 503    | `chatbot_closed`          | The chatbot is configured with operational hours, and the request landed outside an open window. Carries `detail.next_open_at` (ISO timestamp, or `null` if the schedule has no future opening) and a `Retry-After` header (in seconds, capped at 3600). |
-| 503    | `capacity_exceeded`       | Per-IP / per-chatbot rate limit reached. Stub today (no real backend; never returned in practice); will start firing when rate limiting lands. |
 
-`GET /sessions/can-start` returns the same 402 and 503 codes in the same circumstances, so a widget that probes on mount will see the daily-cap and out-of-hours states before it tries to mint.
+`GET /sessions/can-start` returns the same 402 and 503 codes in the same circumstances, so a widget that probes on mount will see the daily-cap and out-of-hours states before it tries to mint. It does **not** return 429 — only the mint path itself counts against the rate limit.
 
 ### Admin-mode sessions (M21)
 
@@ -147,6 +147,7 @@ The message is trimmed server-side and must be between 1 and 8000 characters aft
 | 401    | `invalid_token`           | Token isn't recognised (revoked, never existed, or older than 24h since last activity). Drop the cached token and mint a fresh session. |
 | 403    | `geo_blocked`             | The visitor's IP is no longer accepted by the chatbot's geo policy (operator may have changed it mid-session). Drop the cached token; this visitor can't continue. |
 | 413    | `context_overflow`        | System prompt + history + new message exceeds the chatbot's declared context window. `detail` carries `total_prompt_tokens`, `context_window`, `headroom_tokens`. Recoverable — see "Error handling" below. |
+| 429    | `rate_limit_exceeded`     | The caller's IP **or** the chatbot itself has hit the per-minute chat cap. `detail.retry_after_seconds` and a `Retry-After` header carry the wait time. Don't auto-retry; surface as a transient "too busy, try again in a moment" to the visitor. |
 | 502    | `model_error`             | Upstream LLM call failed (rate limit, network, etc.). Retry after a delay.         |
 | 503    | `model_not_configured`    | Operator hasn't set a model for this chatbot. Operator action required.            |
 
@@ -249,7 +250,7 @@ All error responses share the same envelope:
 | Prompt + history would overflow the context window | `POST /chat`                                                  | `413 context_overflow` (with `detail.total_prompt_tokens`, `detail.context_window`, `detail.headroom_tokens`) | Tell the visitor the conversation has grown too long; optionally mint a fresh session. |
 | Upstream LLM call failed                         | `POST /chat`                                                    | `502 model_error`                                     | Show a retry hint, but **don't** auto-retry — the user's turn is already persisted. |
 | Operator hasn't configured a model               | `POST /chat`                                                    | `503 model_not_configured`                            | Tell the operator. Visitor sees a generic "not available" message. |
-| Capacity / rate-limit stub                       | `POST /sessions`, `GET /sessions/can-start`                     | `503 capacity_exceeded`                               | Stub today (no backend); will start firing when rate limiting lands. Treat like a transient "try again later". |
+| Per-IP or per-chatbot rate limit hit             | `POST /sessions`, `POST /chat`                                  | `429 rate_limit_exceeded` (with `detail.retry_after_seconds`, plus a `Retry-After` header) | Back off for the indicated number of seconds and try again. Operator-tunable via `SW_RATELIMIT_*` env vars; defaults are conservative. `GET /sessions/can-start` and `GET /messages` are not rate-limited. |
 
 A few things worth pulling out of the table:
 
