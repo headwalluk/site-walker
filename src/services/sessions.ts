@@ -182,6 +182,202 @@ export async function listSessions(
 }
 
 /**
+ * M22 admin browse: one row of `listSessionsForChatbot` / `getSessionForChatbot`.
+ *
+ * Deliberately does NOT carry `token` — that's the visitor's `POST /chat`
+ * bearer; leaking it through the admin surface would create a hijack-capable
+ * credential. The admin surface addresses sessions by integer `id` instead.
+ *
+ * Aggregates (`message_count`, `tokens_in`, `tokens_out`, `cost_usd_estimate`)
+ * are computed at the session level. Per-message cost is not exposed; an
+ * aggregated estimate is sufficient given we don't do multi-request agentic
+ * tooling or mid-conversation model switching.
+ */
+export interface ChatbotSessionRow {
+  id: number;
+  chatbot_id: number;
+  created_at: Date;
+  last_active_at: Date;
+  terminated_at: Date | null;
+  visitor_email: string | null;
+  is_admin_mode: boolean;
+  message_count: number;
+  tokens_in: number;
+  tokens_out: number;
+  cost_usd_estimate: number;
+}
+
+export interface ListSessionsForChatbotOpts {
+  /** 1-indexed page number. Default 1. */
+  page?: number;
+  /** Rows per page. Default 20, capped at 100. */
+  pageSize?: number;
+}
+
+export interface ListSessionsForChatbotResult {
+  sessions: ChatbotSessionRow[];
+  total: number;
+  page: number;
+  page_size: number;
+}
+
+const SESSIONS_PAGE_SIZE_DEFAULT = 20;
+const SESSIONS_PAGE_SIZE_MAX = 100;
+
+type RawChatbotSessionRow = {
+  id: number;
+  chatbot_id: number;
+  created_at: Date;
+  last_active_at: Date;
+  terminated_at: Date | null;
+  visitor_email: string | null;
+  is_admin_mode: number | boolean;
+  message_count: string | number;
+  tokens_in_sum: string | number | null;
+  tokens_out_sum: string | number | null;
+  cost_sum: string | number | null;
+};
+
+function normaliseChatbotSessionRow(r: RawChatbotSessionRow): ChatbotSessionRow {
+  return {
+    id: r.id,
+    chatbot_id: r.chatbot_id,
+    created_at: r.created_at,
+    last_active_at: r.last_active_at,
+    terminated_at: r.terminated_at,
+    visitor_email: r.visitor_email,
+    is_admin_mode: Boolean(r.is_admin_mode),
+    message_count: Number(r.message_count ?? 0),
+    tokens_in: Number(r.tokens_in_sum ?? 0),
+    tokens_out: Number(r.tokens_out_sum ?? 0),
+    cost_usd_estimate: Number(r.cost_sum ?? 0),
+  };
+}
+
+/**
+ * M22 admin browse: paginated session list for one chatbot, ordered by
+ * `last_active_at DESC`. Joins `messages` so each row carries aggregated
+ * count + token + cost totals — saves an N+1 trip from the WP plugin.
+ *
+ * No filters in v1 beyond pagination. Date-range / geo / segment filters
+ * are a future addition (settled in the M22 design pass).
+ */
+export async function listSessionsForChatbot(
+  db: Knex,
+  chatbotId: number,
+  opts: ListSessionsForChatbotOpts = {},
+): Promise<ListSessionsForChatbotResult> {
+  const pageSize = Math.min(
+    SESSIONS_PAGE_SIZE_MAX,
+    Math.max(1, Math.floor(opts.pageSize ?? SESSIONS_PAGE_SIZE_DEFAULT)),
+  );
+  const page = Math.max(1, Math.floor(opts.page ?? 1));
+  const offset = (page - 1) * pageSize;
+
+  const [countRow, rows] = await Promise.all([
+    db('sessions')
+      .where({ chatbot_id: chatbotId })
+      .count<{ total: string | number }[]>({ total: 'id' })
+      .first(),
+    db('sessions as s')
+      .leftJoin('messages as m', 'm.session_id', 's.id')
+      .where('s.chatbot_id', chatbotId)
+      .select(
+        's.id',
+        's.chatbot_id',
+        's.created_at',
+        's.last_active_at',
+        's.terminated_at',
+        's.visitor_email',
+        's.is_admin_mode',
+      )
+      .count({ message_count: 'm.id' })
+      .sum({ tokens_in_sum: 'm.tokens_in' })
+      .sum({ tokens_out_sum: 'm.tokens_out' })
+      .sum({ cost_sum: 'm.cost_usd_estimate' })
+      .groupBy(
+        's.id',
+        's.chatbot_id',
+        's.created_at',
+        's.last_active_at',
+        's.terminated_at',
+        's.visitor_email',
+        's.is_admin_mode',
+      )
+      // Tie-break by id DESC so two sessions that share a `last_active_at`
+      // value (DATETIME is 1-second resolution on MariaDB's default config)
+      // sort deterministically — most-recently-inserted first.
+      .orderBy('s.last_active_at', 'desc')
+      .orderBy('s.id', 'desc')
+      .limit(pageSize)
+      .offset(offset),
+  ]);
+
+  const total = Number(countRow?.total ?? 0);
+  const sessions = (rows as RawChatbotSessionRow[]).map(normaliseChatbotSessionRow);
+  return { sessions, total, page, page_size: pageSize };
+}
+
+/**
+ * M22 admin browse: one session by id, only if it belongs to the given
+ * chatbot. Returns null when the session doesn't exist OR exists under a
+ * different chatbot — collapsed deliberately so route handlers can surface
+ * a single `404 not_found` without leaking cross-chatbot existence.
+ */
+export async function getSessionForChatbot(
+  db: Knex,
+  chatbotId: number,
+  sessionId: number,
+): Promise<ChatbotSessionRow | null> {
+  const row = (await db('sessions as s')
+    .leftJoin('messages as m', 'm.session_id', 's.id')
+    .where({ 's.id': sessionId, 's.chatbot_id': chatbotId })
+    .select(
+      's.id',
+      's.chatbot_id',
+      's.created_at',
+      's.last_active_at',
+      's.terminated_at',
+      's.visitor_email',
+      's.is_admin_mode',
+    )
+    .count({ message_count: 'm.id' })
+    .sum({ tokens_in_sum: 'm.tokens_in' })
+    .sum({ tokens_out_sum: 'm.tokens_out' })
+    .sum({ cost_sum: 'm.cost_usd_estimate' })
+    .groupBy(
+      's.id',
+      's.chatbot_id',
+      's.created_at',
+      's.last_active_at',
+      's.terminated_at',
+      's.visitor_email',
+      's.is_admin_mode',
+    )
+    .first()) as RawChatbotSessionRow | undefined;
+  if (!row) return null;
+  return normaliseChatbotSessionRow(row);
+}
+
+/**
+ * M22 admin browse: messages for one session, scoped to a chatbot. Returns
+ * null when the session doesn't exist or belongs to a different chatbot
+ * (collapsed for the same `404 not_found` reason as `getSessionForChatbot`).
+ */
+export async function listMessagesForChatbot(
+  db: Knex,
+  chatbotId: number,
+  sessionId: number,
+): Promise<Message[] | null> {
+  const session = await db<{ id: number; chatbot_id: number }>('sessions')
+    .select('id', 'chatbot_id')
+    .where({ id: sessionId, chatbot_id: chatbotId })
+    .first();
+  if (!session) return null;
+  return listMessages(db, sessionId);
+}
+
+/**
  * Look up a session by either numeric id (digits only) or full token.
  * Returns null when neither match — callers decide the failure mode.
  */

@@ -1,9 +1,9 @@
 # site-walker — Project Tracker
 
-**Last Updated:** 23 May 2026
-**Current Version:** 0.17.1
-**Current Phase:** **SaaS-pivot block complete — first-customer onboarding next.** Prototype era ended at v0.11.0. v0.12.0 landed M16 (multi-tenant rename + accounts). v0.13.0 lands M17 (DB-backed provider registry + chatbot BYO keys; TOML config path deleted). v0.13.1 patched the `sw provider add --local` flag-defaulting bug. v0.14.0 lands M18 (cost-accounting foundation + `sw chatbot usage` + Anthropic prompt-caching substrate). v0.15.0 lands M19 (admin HTTP API: 22 routes, two bearer-auth scopes, full OpenAPI, integration tests). **v0.16.0 lands M20 (budget caps + soft/hard handoff + visitor-email capture)** — the SaaS-pivot block is closed. Next phase: real-customer onboarding on `api.site-walker.net`, then the pre-pivot deferred items (M7 finish, old M9/M11/M12/M13/M14/M15) come back into focus informed by first-customer feedback.
-**Overall Progress (post-M20, v0.16.0):** M1–M6 complete, M7 + M8 partial, M16/M17/M18/M19/M20 complete in v0.12.0/v0.13.0/v0.14.0/v0.15.0/v0.16.0. Admin HTTP surface live with full M20 budget-cap controls. Daily + per-session spend caps enforced end-to-end; soft-handoff prompt injection at configurable threshold; hard-cap session termination with `HANDOFF_HARD.md` template + webhook delivery; visitor-email capture write-only at the session-bearer scope. 281 tests, format + lint clean.
+**Last Updated:** 24 May 2026
+**Current Version:** 0.18.0
+**Current Phase:** **Road to v1.0.0 — first paying client.** SaaS-pivot block closed at v0.16.0 (M20: budget caps); M21 (operational hours + admin-mode sessions, v0.17.0) landed the last pre-v1.0.0 API feature. Phase 4 (M22–M26) is the punch list for first release. **M22 (admin HTTP for session/conversation review, v0.18.0) shipped 2026-05-24** — the WP plugin's chat-review UI is unblocked. Remaining: in-memory rate limiting (M23), production deployment polish (M24), Anthropic prompt-caching adapter wiring (M25), README rewrite (M26). Everything below the v1.0.0 line is post-launch.
+**Overall Progress (post-M22, v0.18.0):** M1–M6 complete, M7 + M8 partial, M16–M22 complete (v0.12.0 through v0.18.0). Admin HTTP surface live with M20 budget caps + M21 availability + admin-mode sessions + M22 session/conversation review. Daily + per-session + admin-session caps enforced end-to-end; soft-handoff prompt injection; hard-cap session termination + webhook; per-chatbot operational hours with `503 chatbot_closed`; admin-mode sessions skip Origin/geo/availability/daily-cap gates and aggregate spend separately; paginated session-list + single-session + message-list admin endpoints with aggregated cost/token totals. 329 tests, format + lint clean.
 
 Vision and phasing live in [`../README.md`](../README.md). **Note:** README still markets the prototype-era "self-hosted multi-tenant API" framing; rewrite ships after M16 lands, not before, to avoid documenting vapourware. Stack and architecture decisions live in [`../CLAUDE.md`](../CLAUDE.md). Auth/session and data-model design live in companion docs in this directory. This file tracks the work.
 
@@ -16,25 +16,18 @@ Companion planning docs:
 - [`13-hierarchical-system-blocks.md`](13-hierarchical-system-blocks.md) — promote `data/chatbots/<slug>/` from a flat directory to a topic-aware tree; LLM activates topics on demand via `<load-topic>` tagged tokens. Design-in-flight, targeted at v1.1.0 (post-first-customer).
 - [`14-availability-and-admin-mode.md`](14-availability-and-admin-mode.md) — per-chatbot operational hours (timezone + weekly schedule) + admin-mode session type for logged-in WP administrators. Design-in-flight, M21 target (pre-v1.0.0).
 
-## Next up
+## Next up — road to v1.0.0
 
-Post-M21, 2026-05-23. M21 lands the last pre-v1.0.0 API feature; the surface is now feature-complete for first-customer onboarding. Work ahead:
+Post-M22, 2026-05-24. The API surface is feature-complete for first customer; v1.0.0 is the punch list to make the launch responsible. Phase 4 milestones are M22–M26 below; everything past the divider is post-launch.
 
-1. **First paying client on `api.site-walker.net`.** End-to-end test of the whole stack with BYO Anthropic key, daily cap configured (informed by real M18 usage data once we have a couple of real chatbots running for a week), the `site-walker-wp` widget installed on the customer's WordPress, operational hours set to the client's business hours, admin mode usable by Woo store staff, and the operator's CRM wired to `handoff_webhook_url` for email capture. The whole point of the SaaS pivot.
-2. **Reverse proxy for `api.site-walker.net`.** Dev proxy at `apix.site-walker.net` → `sentinel:47830` is already up via Apache on `nexus.headwall.co.uk` (IP-locked to the developer's home IP). Production `api.site-walker.net` needs DNS/cert work + no IP lock.
-3. **Anthropic prompt caching (via OpenRouter).** Substrate already in DB (M18). Adapter-side work: send `cache_control` markers on system-blocks prefix, parse cache stats from response, gate by model, skip below the minimum-cacheable threshold. ~70-80% input-billing savings expected for chatbots with stable system blocks and many conversations per cache window. See [`10-saas-shape.md`](10-saas-shape.md).
+1. ✅ **M22 — Admin HTTP for session/conversation review.** Shipped 2026-05-24 at v0.18.0.
+2. **M23 — Rate limiting (in-memory).** `@fastify/rate-limit` plugin with the default in-memory store; per-IP and per-chatbot ceilings on `POST /sessions` + `POST /chat`. **No Redis.** Redis is paired with cluster mode and lands below the line as M11.
+3. **M24 — Production deployment polish.** Single systemd unit (no PM2), `Restart=always`, journal logging. Folds in the two M14 follow-ups (gate `/docs` + `/openapi.json` on non-production; request-body schema on `POST /chat` with `attachValidation: true`). Deployment runbook. Production reverse proxy for `api.site-walker.net` (DNS/cert, no IP lock).
+4. **M25 — Anthropic prompt caching adapter wiring.** Substrate already in DB (M18). Adapter sends `cache_control` markers on the system-blocks prefix, parses cache stats from responses, gates by model, skips below the minimum-cacheable threshold. ~70-80% input-billing reduction expected on stable-system-block chatbots.
+5. **M26 — README rewrite + docs polish.** Current README still markets the prototype-era "self-hosted multi-tenant API" framing; rewrite around the SaaS pivot, BYO keys, budget caps, operational hours, admin mode. First thing a prospective customer reads.
+6. **First paying client on `api.site-walker.net`.** End-to-end test of the whole stack with BYO Anthropic key, daily cap configured (informed by real M18 usage data once we have a couple of real chatbots running for a week), the `site-walker-wp` widget installed on the customer's WordPress, operational hours set to the client's business hours, admin mode usable by Woo store staff, and the operator's CRM wired to `handoff_webhook_url` for email capture. The whole point of the SaaS pivot.
 
-After v1.0.0 / the first paying client lands: hierarchical system blocks ([`13-hierarchical-system-blocks.md`](13-hierarchical-system-blocks.md), v1.1.0 candidate), auto-mode content ingestion, condensation pipeline, and OAuth-style plugin linking.
-
-In parallel with the above (operator-side, outside this repo):
-- **Reverse proxy for `api.site-walker.net`.** Dev proxy at `apix.site-walker.net` → `sentinel:47830` is already up via Apache on `nexus.headwall.co.uk` (IP-locked to the developer's home IP). Production `api.site-walker.net` needs DNS/cert work + no IP lock. Exercises the `trustProxy: true` + `X-Forwarded-For` plumbing that 0.10.0 wired in.
-
-Pre-pivot deferred work still real, now renumber-deferred until after M20:
-- **M7 finish**: `sw db backup/restore/list/prune`, `sw blocks rebuild` (the latter is really an M10 trigger).
-- **M11 (renumber-deferred)**: rate limiting + abuse heuristics (first Redis use). `is_local` on the provider entry is consumed here. Also the natural home for any provider-registry caching M17 might prove necessary.
-- **M9 (renumber-deferred, likely superseded)**: history trimming. The 0.6.0 chat path refuses with `413 context_overflow` when prompt + history busts the window. Preferred shape is to fold this into M20 via budget-driven handoff ([`11-budget-handoff.md`](11-budget-handoff.md)). M9 stays alive as a fallback only if real M18 cost data shows conversations regularly bust context windows before budgets.
-- **M15 (renumber-deferred)**: friendlier CLI + boot error messages for non-developer operators. Self-hosters will see raw knex/mysql2 stack traces today.
-- **M14 follow-ups**: gate `/docs` + `/openapi.json` on `NODE_ENV !== 'production'`; add request-body schemas to `POST /chat` with `attachValidation: true` so OpenAPI carries the body shape without breaking typed-error responses.
+Below the v1.0.0 line: cluster mode + Redis (paired, M11), DB backup/restore CLI (M7 finish), prompt-injection guardrails (M12), conversation retention + PII (M13), friendlier CLI errors (M15), hierarchical system blocks, auto-mode content ingestion + condensation, OAuth-style plugin linking. See "Post-v1.0.0 — future development" section.
 
 ---
 
@@ -223,84 +216,11 @@ Detailed per-adapter parameter translation per [`03-llm-providers.md`](03-llm-pr
 - `src/providers/list-models.ts` + `sw provider models <provider> [-f|--filter <substring>]` — generic discovery surface. ollama-native uses `/api/tags`, openrouter uses `/models`. Output prints copy-pasteable full slugs so they drop straight into `sw website set-model`.
 - 14 new tests (113 total).
 
-### Milestone 9: History-trimming strategy
+### Milestones 9–15: deferred to post-v1.0.0
 
-**Target Completion:** TBD
-**Status:** 🔴 Not started
-**Priority:** High — settles an open question from README, may touch schema
+M9 (history trimming), M10 (system-blocks regeneration cron), M11 (rate limiting + abuse + cluster mode), M12 (prompt-injection / jailbreak), M13 (conversation retention + PII), M15 (friendlier CLI errors): **deferred below the v1.0.0 line.** See "Post-v1.0.0 — future development" for current status, paragraph-level notes, and the trigger conditions that would pull each forward.
 
-Decide between sliding-window (drop oldest turns once a token budget is hit) and summarise-older-turns (compact older history into a single summary message). Implement the chosen strategy. May add a `summary` column on `sessions` or a separate `session_summaries` table — settle the decision *before* this lands so the schema doesn't churn. (A nullable `summary TEXT` column is already noted as a probable addition in [`02-data-model.md`](02-data-model.md).)
-
-**Open question to resolve here:** trimming strategy.
-
-### Milestone 10: System-blocks regeneration cron
-
-**Target Completion:** TBD
-**Status:** 🔴 Not started
-**Priority:** Medium — the "static but refreshed" part of the README
-
-Cron-driven (daily or weekly) job that regenerates each website's on-disk system blocks from source material using a high-end LLM. Cluster-safe (single-instance lock or env-gated like `NODE_APP_INSTANCE === "0"`). Per-website source-material config — at minimum a list of URLs or local files the regenerator should consult. Manual trigger via the M7 CLI (`sw blocks rebuild`).
-
-### Milestone 11: Rate limiting & abuse protection
-
-**Target Completion:** TBD
-**Status:** 🔴 Not started
-**Priority:** High — public endpoint requirement
-
-First Redis use. Per-IP and per-website rate limits on `POST /sessions` and `POST /chat`, with sane defaults and `.env`-tunable thresholds. This is where the M3 capacity-check stub flips to return 503 when over budget. Abuse heuristics — repeated identical messages, prompt-injection-shaped payloads (basic regex, not full classifier), suspiciously high token consumption from one session. Graceful degradation: if Redis is unavailable, decide whether to fail-open or fail-closed.
-
-### Milestone 12: Prompt-injection / jailbreak handling
-
-**Target Completion:** TBD
-**Status:** 🔴 Not started
-**Priority:** High — pre-sales bot can't go off-script
-
-Guardrails appropriate for a pre-sales bot — refuse off-topic requests, refuse to follow instructions embedded in user messages that try to override system blocks, settle on a "contact us instead" fallback for things the bot shouldn't answer. Per-website "contact us" target (email or URL) configured via the M7 CLI.
-
-**Open question to resolve here:** where the bot should bail to "I don't know, contact us" rather than guess.
-
-### Milestone 13: Conversation review & retention
-
-**Target Completion:** TBD
-**Status:** 🔴 Not started
-**Priority:** Medium — Phase 2 requirement
-
-Basic browse already exists via the M7 CLI. This milestone is the **policy + tooling beyond browse**: retention period (how long do we keep sessions before purging?), export for offline review, redaction of obvious PII before display, optional protected admin HTTP endpoint if a CLI is too clunky for real review work. May also be where API-key auth lands, if the admin endpoint route is taken.
-
-### Milestone 14: Production deployment
-
-**Target Completion:** TBD
-**Status:** 🔴 Not started
-**Priority:** High — gate on going live
-
-Process management (PM2 or systemd — decide), reverse-proxy config, health check endpoint (`/health` — DB + model backend ping; lands in 0.7.0 with DB-only ping, provider ping comes here), structured logging, deployment runbook. Cluster mode validated end-to-end (a session created via one node is readable from any node). WordPress-plugin project should be far enough along by this point that we can do a real integration test on a real site.
-
-The reverse-proxy topology will front Fastify at `https://api.site-walker.net`. The project website at `https://site-walker.net` is a separate deploy concern (likely a static site).
-
-**Follow-ups noted here so they don't get lost:**
-- Gate `/docs` (Swagger UI) and `/openapi.json` on `NODE_ENV !== 'production'`. Useful for development and self-hosters; no reason to ship them on a public production endpoint.
-- Request-body schemas on `POST /chat` (with `attachValidation: true` + an error-handler that maps AJV errors to our typed `{ error: ... }` shapes) — currently documented in prose only. Either fold into M14 or its own polish cut.
-
-### Milestone 15: Friendlier CLI + boot error messages
-
-**Target Completion:** TBD
-**Status:** 🔴 Not started
-**Priority:** Medium — operator-experience polish, not on the critical path to going live
-
-The CLI today surfaces raw knex/mysql2 errors when the database refuses an operation — e.g. `sw website origins add <slug> <existing-origin>` dumps a full mysql2 stack trace including the offending SQL plus the `ER_DUP_ENTRY` / `website_origins_origin_unique` constraint name. Fine for the developer running this repo, hostile to a self-hosting operator who doesn't know mysql2's error vocabulary. This milestone is the **error-translation pass** across operator-touched surfaces.
-
-Scope:
-- **`./bin/sw` actions** wrap service calls and map well-known failure shapes to single-line human-readable errors with a suggested next step. Examples to cover:
-  - Unique-constraint violations (duplicate slug, duplicate origin) → "An origin `https://…` is already registered. Use `sw website origins list <slug>` to see existing entries."
-  - Foreign-key failures (slug not found) → "No website with slug `<slug>`. Available: <list>. Create one with `sw website create <slug>`."
-  - Malformed args caught upstream by service-layer validators (bad origin format, invalid model slug) → echo the validator's message plain.
-  - Raw error stays available behind `--verbose` / `--debug` for the developer audience.
-- **`./bin/chat`** connection failures (`ECONNREFUSED` against the configured `HOST:PORT` → "site-walker isn't running on `$HOST:$PORT` — start it with `npm run dev`?").
-- **Boot-time errors** (`src/index.ts` / `buildServer`) — invalid `site-walker.toml`, missing `0600` perms, unreachable DB, missing GeoIP DB when required — already have decent messages, but get a consistency pass against the same vocabulary so the operator sees one voice across CLI + boot.
-
-**Scope guard:** HTTP API error shapes (`{ error: 'origin_not_allowed', ... }`) are aimed at widget developers and documented in `docs/api-usage.md` — out of scope here. This milestone is purely about humans typing at a shell.
-
-**Open question to resolve here:** centralised translation registry (`errorMap.ts` keyed by mysql2 `code` / `errno`, called from a thin CLI-action wrapper) versus hand-written per-action `try/catch`. Centralised scales but adds indirection; hand-written is concrete but verbose. Probably worth deferring the decision until we have three concrete examples in the wild.
+M14 (production deployment) is absorbed into **M24 — Production deployment polish** above the line. The original M14 cluster-mode-validated-end-to-end goal moved to M11 below the line (clustering and Redis-backed rate limiting are paired, both post-v1.0.0).
 
 ---
 
@@ -566,6 +486,164 @@ Full design + 11 open questions in [`14-availability-and-admin-mode.md`](14-avai
 
 ---
 
+## Phase 4 — First release (v1.0.0)
+
+Goal: take the feature-complete API and make it responsible to point at a real paying customer. Five milestones, all targeted for v1.0.0. Everything above this section is what we've built; everything past the divider below is post-launch.
+
+### Milestone 22: Admin HTTP for session/conversation review
+
+**Target Completion:** 24 May 2026
+**Status:** ✅ Complete (24 May 2026, v0.18.0)
+**Priority:** Critical — `site-walker-wp` plugin admin UI is blocked on this
+
+Read-only HTTP surface for browsing past + in-progress conversations from the WordPress admin. Reuses M19 account-admin bearer auth and the existing service layer (`listSessions`, `listMessages` already exist; this milestone adds account-scoped admin counterparts).
+
+Routes:
+
+```
+GET    /admin/chatbots/{slug}/sessions                       (paginated, filterable)
+GET    /admin/chatbots/{slug}/sessions/{sessionId}           (session metadata + totals)
+GET    /admin/chatbots/{slug}/sessions/{sessionId}/messages  (full history)
+```
+
+`GET /admin/chatbots/{slug}/sessions` query params:
+- `limit` (default 20, max 100), `offset`
+- `since` / `until` (ISO date range against `last_active_at`)
+- `is_admin_mode` (true/false — filter customer vs admin sessions)
+- `has_email` (true/false — filter on `visitor_email` presence)
+- `terminated` (true/false — filter on `terminated_at` presence)
+
+Each row carries `id`, `token` (display-only — the WP UI uses it to address the session), `created_at`, `last_active_at`, `terminated_at`, `visitor_email`, `is_admin_mode`, `message_count`, `tokens_in`, `tokens_out`, `cost_usd_estimate` (aggregated from messages, same shape as `sw chatbot usage`).
+
+`GET /admin/chatbots/{slug}/sessions/{sessionId}` — same per-row shape for one session (no `messages` payload — keep the list endpoint lightweight).
+
+`GET /admin/chatbots/{slug}/sessions/{sessionId}/messages` — same message shape as the public `GET /messages`, but addressable by session id and account-scoped (not visitor-bearer-scoped). Cross-account access returns `404 not_found` (consistent with M19 leak-avoidance).
+
+**Open questions:**
+- Aggregate-only at session level vs per-message token/cost columns. Lean: aggregate-only — message-level cost is rarely interesting for review, save the column space.
+- Default list ordering: `last_active_at DESC`. Confirm with first WP-admin design pass.
+
+**Shipped at 0.18.0:**
+- `src/services/sessions.ts` — `listSessionsForChatbot(db, chatbotId, { page, pageSize })` returning `{ sessions, total, page, page_size }`; `getSessionForChatbot(db, chatbotId, sessionId)` returning the same per-row shape or `null` when the session belongs to a different chatbot; `listMessagesForChatbot(db, chatbotId, sessionId)` returning `Message[]` or `null` (null for cross-chatbot, deliberately distinct from `[]` for an empty session). Row aggregates (`message_count`, `tokens_in`, `tokens_out`, `cost_usd_estimate`) computed in a single LEFT JOIN + GROUP BY against `messages` so the WP plugin's list view doesn't fan out into N+1 round-trips.
+- `src/routes/admin-chatbots.ts` — three new routes under the M19 account-admin guard: `GET /:slug/sessions` (paginated, default 20, max 100), `GET /:slug/sessions/:sessionId`, `GET /:slug/sessions/:sessionId/messages`. Full OpenAPI schemas (sessionItemSchema, messageItemSchema). Cross-chatbot sessionId returns `404 not_found` (M19 leak-avoidance pattern). Path-param `sessionId` validated as numeric via `pattern: '^[0-9]+$'`; non-numeric → `400 validation_failed`.
+- **Visitor session token deliberately not exposed** through any M22 response — it's the visitor's `POST /chat` bearer; surfacing it would create a hijack-capable credential. Admin addresses sessions by integer `id`.
+- **Per-message token/cost columns deliberately not exposed** through the messages endpoint — Fastify response-schema serialiser drops them. Site-wide aggregates from the session-list endpoint are sufficient given we don't do multi-request agentic tooling or mid-conversation model switching.
+- `docs/api-admin.md` — new "Sessions + conversation review (M22)" section: route table, response shapes (list + single + messages), example payloads with `terminated_at` + `visitor_email`, note that future filters (date range, segment, geo, has_email) are post-v1.0.0.
+- 329 tests pass (12 new). Format + lint clean.
+
+**Resolved during execution:**
+- **Tie-break by `id DESC`** when two sessions share a `last_active_at` value. MariaDB DATETIME is 1-second resolution by default; without the tiebreaker the order would be non-deterministic. `id DESC` = "most-recently-inserted first" — matches user expectation.
+- **Pagination shape: `page` + `page_size` + `total`**, not cursor-based. Simpler for the WP UI, real `total` is cheap against the indexed `chatbot_id` column.
+- **`additionalProperties: false`** on the querystring schema so unrecognised query params 400 rather than being silently ignored. Cheap forward-compatibility guard — if a caller types `pagesize` instead of `page_size`, they hear about it.
+- **Two parallel queries** (the page payload + a separate `COUNT(*)` for total) rather than a single window-function query. Knex's portable querybuilder doesn't carry window-function helpers cleanly across dialects; two queries are simpler and the count is fast against the indexed `chatbot_id` column. If session counts grow to where the count is expensive, the natural follow-up is a cached count or `has_more` instead of `total` — settle when it becomes a problem.
+
+### Milestone 23: Rate limiting (in-memory)
+
+**Target Completion:** TBD
+**Status:** 🔴 Not started
+**Priority:** High — public-internet exposure requires this before launch
+
+`@fastify/rate-limit` plugin, default in-memory store. **Explicitly no Redis** — Redis is paired with cluster mode, both below the line as M11.
+
+Scope:
+- Per-IP cap on `POST /sessions` and `POST /chat` (different limits — sessions are cheaper to mint than chat turns to serve).
+- Per-chatbot cap as a second layer (one runaway origin shouldn't burn another customer's budget bucket).
+- `.env`-tunable thresholds (`SW_RATELIMIT_*` family).
+- Flips the M3 `hasCapacity()` stub in `src/server.ts` from always-true to "in-flight count vs configured cap" — same store backs both checks.
+
+The boring-mature-proven choice per CLAUDE.md guidance. Single-process deployment makes in-memory accurate; multi-instance would split the bucket across workers and quietly multiply the effective cap. When we cluster (post-v1.0.0, M11), we swap the store, not the route handler.
+
+**Open questions:**
+- Default cap values — settle after a week of real M18 usage data so we know what real traffic looks like before guessing at sensible numbers.
+
+### Milestone 24: Production deployment polish
+
+**Target Completion:** TBD
+**Status:** 🔴 Not started
+**Priority:** Critical — gate on going live
+
+Folds in the original M14 deployment scope + its two outstanding follow-ups + the systemd-vs-PM2 decision (resolved 2026-05-24: single-process systemd, no PM2 in v1.0.0).
+
+Scope:
+- **Single systemd unit** (`site-walker.service`). `Type=simple` (or `notify` if startup-ordering signals are useful), `Restart=always`, `StandardOutput=journal`, `EnvironmentFile=/etc/site-walker/.env`. No PM2 in v1.0.0.
+- **Gate `/docs` + `/openapi.json` on non-production.** Skip `fastifySwaggerUi.register` and the `/openapi.json` route when `runtimeEnv.isProduction === true`. The status pill on `/` keeps working (it just hits `/health`); the two doc links on the landing card render only in non-prod.
+- **Body schema on `POST /chat`**: `attachValidation: true` + AJV-error → `{ error: 'validation_failed', detail: {...} }` mapping. Honours the existing typed-error vocabulary.
+- **Provider ping on `/health`** (optional). Currently `/health` only verifies the DB. Trade-off: adding an upstream call to a hot endpoint costs latency + spend. Probably only run it when `?deep=1` is set.
+- **Structured logging review.** Pino defaults are mostly fine. Confirm we don't log request bodies on `/admin/*` — `/admin/chatbots/{slug}/api-key` PATCH carries plaintext provider keys.
+- **Production reverse proxy** for `api.site-walker.net`. DNS + cert, no IP lock (the dev proxy at `apix.site-walker.net` stays IP-locked). Exercises the `trustProxy: true` plumbing 0.10.0 wired in.
+- **Deployment runbook** (`docs/deployment.md`): DNS, cert, systemd install, env-file generation, knex migrate, smoke test, rollback procedure.
+
+**Resolved decisions:**
+- **Single-process systemd over PM2** (2026-05-24). The workload is IO-bound (chat turns wait on upstream LLMs, not CPU). A single Node event loop carries far more concurrent in-flight requests than first-customer traffic will produce. PM2 adds a supervisor layer that systemd already provides. Cluster + Redis pair lands as M11 below the line when traffic or zero-downtime-deploy needs justify it.
+
+### Milestone 25: Anthropic prompt caching adapter wiring
+
+**Target Completion:** TBD
+**Status:** 🔴 Not started
+**Priority:** High — material cost reduction for the customer
+
+Substrate (DB columns `cache_creation_input_tokens`, `cache_read_input_tokens`; four-bucket cost formula in `src/services/cost.ts`) shipped in M18. This milestone wires the actual adapter side.
+
+Scope:
+- Send `cache_control: { type: "ephemeral" }` markers on the system-blocks prefix in the request payload. OpenRouter passes these through to Anthropic.
+- Parse cache stats from the response (`usage.cache_creation_input_tokens`, `usage.cache_read_input_tokens` in the OpenRouter/Anthropic shape). Persist on the assistant `messages` row — the cost formula already handles non-NULL values.
+- Gate by model — only Anthropic models support `cache_control`. Other providers should not see the markers (would either error or silently ignore depending on protocol).
+- Skip cache markers when the system prompt is below the minimum-cacheable threshold (~1024 tokens for Sonnet, ~2048 for Haiku at the time of writing — confirm against current Anthropic docs at implementation time).
+
+Expected impact: ~70-80% reduction in input billing for chatbots with stable system blocks and many conversations per cache window (cache window is 5 minutes / 1 hour depending on tier).
+
+**Open questions:**
+- Model-allowlist storage. Lean: hardcoded list in the openrouter adapter for v1, with a `cache_supported` boolean on `provider_models` as a future override path if a new Anthropic model lands and we don't want to redeploy.
+
+### Milestone 26: README rewrite + docs polish
+
+**Target Completion:** TBD
+**Status:** 🔴 Not started
+**Priority:** Medium — first thing a prospective customer reads
+
+The README still markets the prototype-era "self-hosted multi-tenant API" framing. It needs to be rewritten around what we actually shipped in the SaaS-pivot block:
+
+- Account → chatbot model (M16).
+- BYO LLM provider keys (encrypted, AES-256-GCM; M17).
+- DB-backed provider registry — *not* the deleted TOML (M17).
+- Budget caps + soft/hard handoff + webhook + visitor-email capture (M20).
+- Operational hours + admin mode (M21).
+- Two-key admin HTTP API: provisioning + account-admin (M19).
+- WordPress integration via the `site-walker-wp` plugin.
+
+Audit `docs/api-usage.md`, `docs/api-admin.md`, `docs/cli-sw.md`, `docs/env.md` for consistency with the post-M21 surface (mostly current per the M21 wrap-up but worth a final pass). Update any stale screenshots or API examples.
+
+---
+
+## ━━━━━━━━━━━━━━━━━━━━━━━━━━━ ▼ V1.0.0 RELEASE LINE ▼ ━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+---
+
+## Post-v1.0.0 — future development
+
+Below the line. Each item is paused until real customer signal or a concrete operational need justifies pulling it forward. Milestone numbers preserved from earlier phases so cross-references in older docs still resolve.
+
+### Operator + ops
+
+- **`sw db backup/restore/list/prune`** (M7 finish). Manual `mysqldump`/`mysql` is acceptable for first customer (confirmed 2026-05-24). Tooling lands when a second customer makes ad-hoc backups painful, or when the first customer asks about automated retention.
+- **Cluster mode + Redis-backed rate limiting** (M11, paired). Single-process is plenty for first-customer traffic — the workload is IO-bound (chat turns wait on upstream LLMs, not CPU). **Trigger:** a single instance can't keep up under real load, or zero-downtime deploys become necessary. Cluster mode and Redis land *together* — clustering breaks in-memory rate limits (each worker has its own bucket; effective cap = N × configured cap), so Redis is the prerequisite. Topology options when triggered: systemd socket activation + `app@.service` template (kernel `SO_REUSEPORT` does the load balancing), or PM2 cluster, or templated systemd services behind an nginx upstream block. Also absorbs: abuse heuristics (repeated-identical-message detection, prompt-injection-shaped payloads, suspiciously high token consumption per session), and any provider-registry caching that M17 proves necessary.
+- **Friendlier CLI + boot error messages** (M15). Operator-experience polish. Wrap mysql2 error codes in human-readable messages with suggested next steps (duplicate origin, missing slug, `ECONNREFUSED` on `./bin/chat`). Boot-time consistency pass for invalid env, unreachable DB, missing GeoIP DB. **Trigger:** first self-hoster who isn't us writes to ask what an `ER_DUP_ENTRY` means.
+
+### Safety + retention
+
+- **Prompt-injection / jailbreak handling** (M12). Pre-sales bot can't go off-script. Open question: where the bot bails to "I don't know, contact us" rather than guess. Needs a scoping pass before implementation — likely a combination of per-chatbot topic boundaries (operator-configured) and a generic refusal layer for instructions embedded in user messages that try to override system blocks. **Trigger:** first observed off-script reply in M22's conversation review, or first customer asks "how do you stop people jailbreaking it?"
+- **Conversation retention + PII** (M13). Retention period (how long do we keep sessions before purging?), export for offline review, redaction of obvious PII before display in the admin UI. M22 ships the browse surface but no policy. **Trigger:** first EU customer (GDPR), or first customer asks about data retention.
+- **History trimming** (M9, likely superseded). Sliding-window vs summarisation. Current `0.6.0` chat path refuses with `413 context_overflow` when prompt + history busts the window; M20's budget-driven handoff bounds conversation length implicitly. **Trigger:** real M18 cost data shows conversations regularly bust context before budgets, or a customer reports the 413 in the wild.
+
+### Content pipeline + features
+
+- **Hierarchical system blocks** (v1.1.0 candidate). Promote `data/chatbots/<slug>/` from a flat directory to a topic-aware tree; LLM activates topics on demand via `<load-topic>` tagged tokens. Design in [`13-hierarchical-system-blocks.md`](13-hierarchical-system-blocks.md). Reduces base-prompt size on chatbots with broad topic coverage. **Trigger:** first customer needs system blocks larger than the cheapest Anthropic context can hold without burning prompt-cache savings.
+- **Auto-mode content ingestion + condensation pipeline** (M10 + post-launch successor). Cron-driven regeneration of per-chatbot system blocks from source URLs/files using a high-end LLM. Cluster-safe (single-instance lock). Manual trigger via `sw blocks rebuild`. Sketch in [`10-saas-shape.md`](10-saas-shape.md). Open questions: push-triggered vs scheduled cron, status surface (polling vs callbacks), per-run cost ceiling. **Trigger:** first customer asks to point the bot at their existing site content rather than hand-writing blocks.
+- **OAuth-style plugin linking.** Replace the current "operator pastes provisioning key into WP" flow with a proper OAuth handshake. **Trigger:** first non-technical operator finds the manual link step confusing.
+- **Additional protocol adapters** (M8 follow-on): direct `anthropic`, generic `openai-compatible`. OpenRouter covers Anthropic transitively, so direct adapters are a "save the OpenRouter cut" optimisation, not a feature unlock. **Trigger:** a customer's billing model requires a direct Anthropic relationship, or a third concrete `openai-compatible` use case lands.
+
+---
+
 ## Open questions
 
 Tracked here alongside the milestone that resolves them, so they're visible in context.
@@ -575,20 +653,26 @@ Resolved (kept for the record):
 - **Per-website system-block format** — resolved in M4. Flat directory of `.md` files; persona in DB; constant handling rule; XML-tagged block wrappers. Full design in [`04-system-blocks.md`](04-system-blocks.md).
 - **Phase 3 architecture** — resolved 2026-05-19 in [`10-saas-shape.md`](10-saas-shape.md). Four-repo topology, WC-driven billing, BYO chatbot-level keys, DB-backed provider registry, M16–M20 phasing.
 - **Provisioning-key bootstrap mechanism** — resolved 2026-05-20. `SW_PROVISIONING_KEY` in `.env`, **not** in the `admin_keys` table. Air-gap chosen over single-code-path symmetry: a bug in `admin_keys`-touching code cannot accidentally create a provisioning credential. Full rationale + rotation procedure in [`10-saas-shape.md`](10-saas-shape.md). M19 implements: boot hash, constant-time-compare middleware, `sw secrets gen-provisioning-key` CLI, boot validation that rejects empty/short values.
+- **v1.0.0 deployment shape: PM2 vs systemd vs cluster** — resolved 2026-05-24. Single-process systemd, no PM2, no Redis. IO-bound workload (chat turns wait on upstream LLMs, not CPU) makes cluster mode unnecessary at first-customer scale; PM2 would add a supervisor layer that systemd already provides. Cluster + Redis pair lands together as M11 below the line, triggered by real load or zero-downtime-deploy needs. See M24 + Post-v1.0.0 "Cluster mode + Redis-backed rate limiting" for full reasoning.
 
-Still open:
-- **History trimming strategy** — old M9 (likely superseded by budget-driven handoff, see [`11-budget-handoff.md`](11-budget-handoff.md)). Original sliding-window-vs-summarisation choice remains a fallback only if M18 cost data shows budgets don't bound conversation length in practice.
-- **"I don't know, contact us" boundaries** — old M12 (renumber-deferred). What topics force the bail-out path?
-- **Auto-mode content ingestion shape** — post-M20. Push-triggered vs scheduled cron; status surface (polling vs callbacks); per-run cost ceiling. Sketch in [`10-saas-shape.md`](10-saas-shape.md); full doc when this milestone is next-up.
+Still open (above the line — for v1.0.0):
+- **M22 — per-message vs aggregate-only cost columns in the session list.** Lean: aggregate-only — message-level cost is rarely interesting for review.
+- **M22 — default list ordering.** Lean: `last_active_at DESC`. Confirm with first WP-admin design pass.
+- **M23 — default rate-limit cap values.** Settle after a week of real M18 usage data so we know what real traffic looks like before guessing.
+- **M25 — model-allowlist storage for `cache_control` support.** Lean: hardcoded list in the openrouter adapter for v1, with a `cache_supported` boolean on `provider_models` as a future override path.
+
+Still open (below the line — for post-v1.0.0):
+- **History trimming strategy** (M9, likely superseded). Sliding-window-vs-summarisation choice remains a fallback only if M18 cost data shows budgets don't bound conversation length in practice.
+- **"I don't know, contact us" boundaries** (M12). What topics force the bail-out path?
+- **Auto-mode content ingestion shape** (post-M10 successor). Push-triggered vs scheduled cron; status surface (polling vs callbacks); per-run cost ceiling. Sketch in [`10-saas-shape.md`](10-saas-shape.md); full doc when this milestone is next-up.
 
 ---
 
 ## Notes for Development
 
 - Stack and tenant-model decisions are in [`../CLAUDE.md`](../CLAUDE.md). If something here contradicts CLAUDE.md, CLAUDE.md wins — fix this file.
-- Phase 1 is the validation phase. If Pi + Ollama can't carry the context window, Phase 2 may pull M8 (additional adapters) forward.
-- Resist adding Redis before M11. MariaDB carries everything until then.
-- This repo is API-only. The WordPress plugin lives elsewhere — anything resembling browser/widget code is out of scope.
-- API-key auth is **not** Phase 1. Browser traffic auths via `Origin` allowlist + session token; admin work goes through the local CLI against the local DB. API keys arrive in Phase 2 only if/when a server-to-server HTTP caller appears.
+- **v1.0.0 deployment shape:** single-process systemd unit, no PM2, no Redis. The workload is IO-bound; cluster mode and Redis-backed rate limiting are paired and land below the line as M11 when traffic or zero-downtime-deploys justify it. M23 ships in-memory rate limiting for v1.0.0; M11 swaps the store when we cluster.
+- This repo is API-only. The WordPress plugin (`site-walker-wp`) lives elsewhere — anything resembling browser/widget code is out of scope.
+- **HTTP auth surfaces:** browser traffic uses `Origin` allowlist + opaque session token; admin HTTP uses two bearer-key surfaces — `SW_PROVISIONING_KEY` in `.env` for `/admin/accounts/*`, account-admin keys in the DB for `/admin/chatbots/*` (M19). Local CLI (`./bin/sw`) still talks directly to the DB and bypasses HTTP auth entirely.
 - LLM provider config lives in MariaDB (since M17 / v0.13.0): `providers` + `provider_models` tables, per-chatbot BYO API keys in `chatbots.provider_api_key_*` (AES-256-GCM, master key in `.env` as `SW_ENCRYPTION_KEY`). Managed via `sw provider ...` and `sw chatbot set-api-key`. The pre-M17 TOML approach is preserved historically in [`03-llm-providers.md`](03-llm-providers.md).
-- `ollama-native` is the lowest-common-denominator target. Design system blocks against the Pi's tight context first; larger models unlock larger per-website blocks but we never assume a fat context globally.
+- `ollama-native` is the lowest-common-denominator target. Design system blocks against the Pi's tight context first; larger models unlock larger per-chatbot blocks but we never assume a fat context globally.

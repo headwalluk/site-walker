@@ -692,6 +692,373 @@ test('admin: DELETE /admin/chatbots/{slug} returns cascade counts', async (t) =>
 });
 
 // ---------------------------------------------------------------------------
+// M22: session/conversation review
+// ---------------------------------------------------------------------------
+
+test('admin: GET /admin/chatbots/{slug}/sessions returns paginated sessions with aggregates + total', async (t) => {
+  const db = makeTestDb();
+  setProvisioningKey(VALID_PROVISIONING);
+  const ctx = await seedAdminContext(db);
+  const slug = uniqueSlug('chatbot');
+  const [chatbotId] = await db('chatbots').insert({
+    account_id: ctx.account.id,
+    slug,
+    name: slug,
+  });
+
+  // Three sessions; one with two messages, one empty, one terminated.
+  const [sA] = await db('sessions').insert({
+    chatbot_id: chatbotId,
+    token: 'a'.repeat(64),
+  });
+  await db('messages').insert({
+    session_id: sA,
+    chatbot_id: chatbotId,
+    role: 'user',
+    content: 'hi',
+  });
+  await db('messages').insert({
+    session_id: sA,
+    chatbot_id: chatbotId,
+    role: 'assistant',
+    content: 'hello',
+    tokens_in: 80,
+    tokens_out: 40,
+    cost_usd_estimate: 0.001234,
+  });
+  await db('sessions').insert({ chatbot_id: chatbotId, token: 'b'.repeat(64) });
+  await db('sessions').insert({
+    chatbot_id: chatbotId,
+    token: 'c'.repeat(64),
+    terminated_at: db.fn.now(),
+    visitor_email: 'visitor@example.com',
+  });
+
+  const fastify = await buildServer({ db, logger: false });
+  t.after(async () => {
+    setProvisioningKey(null);
+    await fastify.close();
+    await db('accounts').where({ id: ctx.account.id }).del();
+    await db.destroy();
+  });
+
+  const res = await fastify.inject({
+    method: 'GET',
+    url: `/admin/chatbots/${slug}/sessions`,
+    headers: { authorization: `Bearer ${ctx.rawKey}` },
+  });
+  assert.equal(res.statusCode, 200, res.payload);
+  const body = res.json() as {
+    sessions: Array<{
+      id: number;
+      message_count: number;
+      tokens_in: number;
+      tokens_out: number;
+      cost_usd_estimate: number;
+      visitor_email: string | null;
+      terminated_at: string | null;
+      is_admin_mode: boolean;
+    }>;
+    page: number;
+    page_size: number;
+    total: number;
+  };
+  assert.equal(body.total, 3);
+  assert.equal(body.page, 1);
+  assert.equal(body.page_size, 20);
+  assert.equal(body.sessions.length, 3);
+
+  // Token field deliberately stripped.
+  for (const s of body.sessions) {
+    assert.equal((s as unknown as { token?: string }).token, undefined);
+  }
+  // The session with messages carries the aggregates.
+  const withMessages = body.sessions.find((s) => s.message_count === 2);
+  assert.ok(withMessages);
+  assert.equal(withMessages.tokens_in, 80);
+  assert.equal(withMessages.tokens_out, 40);
+  assert.ok(Math.abs(withMessages.cost_usd_estimate - 0.001234) < 1e-9);
+  // The terminated session surfaces its terminated_at + visitor_email.
+  const terminated = body.sessions.find((s) => s.visitor_email === 'visitor@example.com');
+  assert.ok(terminated);
+  assert.ok(terminated.terminated_at);
+});
+
+test('admin: GET /admin/chatbots/{slug}/sessions honours page + page_size', async (t) => {
+  const db = makeTestDb();
+  setProvisioningKey(VALID_PROVISIONING);
+  const ctx = await seedAdminContext(db);
+  const slug = uniqueSlug('chatbot');
+  const [chatbotId] = await db('chatbots').insert({
+    account_id: ctx.account.id,
+    slug,
+    name: slug,
+  });
+  for (let i = 0; i < 5; i++) {
+    await db('sessions').insert({
+      chatbot_id: chatbotId,
+      token: String(i).repeat(64).slice(0, 64),
+    });
+  }
+
+  const fastify = await buildServer({ db, logger: false });
+  t.after(async () => {
+    setProvisioningKey(null);
+    await fastify.close();
+    await db('accounts').where({ id: ctx.account.id }).del();
+    await db.destroy();
+  });
+
+  const page1 = await fastify.inject({
+    method: 'GET',
+    url: `/admin/chatbots/${slug}/sessions?page=1&page_size=2`,
+    headers: { authorization: `Bearer ${ctx.rawKey}` },
+  });
+  assert.equal(page1.statusCode, 200, page1.payload);
+  const body1 = page1.json();
+  assert.equal(body1.total, 5);
+  assert.equal(body1.page, 1);
+  assert.equal(body1.page_size, 2);
+  assert.equal(body1.sessions.length, 2);
+
+  const page3 = await fastify.inject({
+    method: 'GET',
+    url: `/admin/chatbots/${slug}/sessions?page=3&page_size=2`,
+    headers: { authorization: `Bearer ${ctx.rawKey}` },
+  });
+  assert.equal(page3.statusCode, 200);
+  assert.equal(page3.json().sessions.length, 1);
+});
+
+test('admin: GET /admin/chatbots/{slug}/sessions cross-account returns 404', async (t) => {
+  const db = makeTestDb();
+  setProvisioningKey(VALID_PROVISIONING);
+  const ctx = await seedAdminContext(db);
+  const otherSlug = uniqueSlug('chatbot');
+  const { account: otherAccount } = await seedAccountAndChatbot(db, otherSlug);
+
+  const fastify = await buildServer({ db, logger: false });
+  t.after(async () => {
+    setProvisioningKey(null);
+    await fastify.close();
+    await db('accounts').whereIn('id', [ctx.account.id, otherAccount.id]).del();
+    await db.destroy();
+  });
+
+  const res = await fastify.inject({
+    method: 'GET',
+    url: `/admin/chatbots/${otherSlug}/sessions`,
+    headers: { authorization: `Bearer ${ctx.rawKey}` },
+  });
+  assert.equal(res.statusCode, 404);
+  assert.equal(res.json().error, 'not_found');
+});
+
+test('admin: GET /admin/chatbots/{slug}/sessions/{sessionId} returns the session row', async (t) => {
+  const db = makeTestDb();
+  setProvisioningKey(VALID_PROVISIONING);
+  const ctx = await seedAdminContext(db);
+  const slug = uniqueSlug('chatbot');
+  const [chatbotId] = await db('chatbots').insert({
+    account_id: ctx.account.id,
+    slug,
+    name: slug,
+  });
+  const [sessionId] = await db('sessions').insert({
+    chatbot_id: chatbotId,
+    token: 'a'.repeat(64),
+  });
+  await db('messages').insert({
+    session_id: sessionId,
+    chatbot_id: chatbotId,
+    role: 'user',
+    content: 'hi',
+  });
+
+  const fastify = await buildServer({ db, logger: false });
+  t.after(async () => {
+    setProvisioningKey(null);
+    await fastify.close();
+    await db('accounts').where({ id: ctx.account.id }).del();
+    await db.destroy();
+  });
+
+  const res = await fastify.inject({
+    method: 'GET',
+    url: `/admin/chatbots/${slug}/sessions/${sessionId}`,
+    headers: { authorization: `Bearer ${ctx.rawKey}` },
+  });
+  assert.equal(res.statusCode, 200, res.payload);
+  const body = res.json();
+  assert.equal(body.id, sessionId);
+  assert.equal(body.message_count, 1);
+  // Token never leaks.
+  assert.equal(body.token, undefined);
+});
+
+test('admin: GET /admin/chatbots/{slug}/sessions/{sessionId} returns 404 when session is on another chatbot', async (t) => {
+  const db = makeTestDb();
+  setProvisioningKey(VALID_PROVISIONING);
+  const ctx = await seedAdminContext(db);
+  const slugA = uniqueSlug('chatbot');
+  const slugB = uniqueSlug('chatbot');
+  const [chatbotA] = await db('chatbots').insert({
+    account_id: ctx.account.id,
+    slug: slugA,
+    name: slugA,
+  });
+  const [chatbotB] = await db('chatbots').insert({
+    account_id: ctx.account.id,
+    slug: slugB,
+    name: slugB,
+  });
+  void chatbotA;
+  const [sessionInB] = await db('sessions').insert({
+    chatbot_id: chatbotB,
+    token: 'b'.repeat(64),
+  });
+
+  const fastify = await buildServer({ db, logger: false });
+  t.after(async () => {
+    setProvisioningKey(null);
+    await fastify.close();
+    await db('accounts').where({ id: ctx.account.id }).del();
+    await db.destroy();
+  });
+
+  // Asking about chatbot A for a session that belongs to chatbot B → 404.
+  const res = await fastify.inject({
+    method: 'GET',
+    url: `/admin/chatbots/${slugA}/sessions/${sessionInB}`,
+    headers: { authorization: `Bearer ${ctx.rawKey}` },
+  });
+  assert.equal(res.statusCode, 404);
+  assert.equal(res.json().error, 'not_found');
+});
+
+test('admin: GET /admin/chatbots/{slug}/sessions/{sessionId} 400s on non-numeric sessionId', async (t) => {
+  const db = makeTestDb();
+  setProvisioningKey(VALID_PROVISIONING);
+  const ctx = await seedAdminContext(db);
+  const slug = uniqueSlug('chatbot');
+  await db('chatbots').insert({ account_id: ctx.account.id, slug, name: slug });
+
+  const fastify = await buildServer({ db, logger: false });
+  t.after(async () => {
+    setProvisioningKey(null);
+    await fastify.close();
+    await db('accounts').where({ id: ctx.account.id }).del();
+    await db.destroy();
+  });
+
+  const res = await fastify.inject({
+    method: 'GET',
+    url: `/admin/chatbots/${slug}/sessions/not-a-number`,
+    headers: { authorization: `Bearer ${ctx.rawKey}` },
+  });
+  assert.equal(res.statusCode, 400);
+});
+
+test('admin: GET /admin/chatbots/{slug}/sessions/{sessionId}/messages returns the message list', async (t) => {
+  const db = makeTestDb();
+  setProvisioningKey(VALID_PROVISIONING);
+  const ctx = await seedAdminContext(db);
+  const slug = uniqueSlug('chatbot');
+  const [chatbotId] = await db('chatbots').insert({
+    account_id: ctx.account.id,
+    slug,
+    name: slug,
+  });
+  const [sessionId] = await db('sessions').insert({
+    chatbot_id: chatbotId,
+    token: 'a'.repeat(64),
+  });
+  await db('messages').insert({
+    session_id: sessionId,
+    chatbot_id: chatbotId,
+    role: 'user',
+    content: 'one',
+  });
+  await db('messages').insert({
+    session_id: sessionId,
+    chatbot_id: chatbotId,
+    role: 'assistant',
+    content: 'two',
+  });
+
+  const fastify = await buildServer({ db, logger: false });
+  t.after(async () => {
+    setProvisioningKey(null);
+    await fastify.close();
+    await db('accounts').where({ id: ctx.account.id }).del();
+    await db.destroy();
+  });
+
+  const res = await fastify.inject({
+    method: 'GET',
+    url: `/admin/chatbots/${slug}/sessions/${sessionId}/messages`,
+    headers: { authorization: `Bearer ${ctx.rawKey}` },
+  });
+  assert.equal(res.statusCode, 200, res.payload);
+  const body = res.json() as {
+    messages: Array<{
+      role: string;
+      content: string;
+      tokens_in?: number;
+      cost_usd_estimate?: number;
+    }>;
+  };
+  assert.equal(body.messages.length, 2);
+  assert.deepEqual(
+    body.messages.map((m) => ({ role: m.role, content: m.content })),
+    [
+      { role: 'user', content: 'one' },
+      { role: 'assistant', content: 'two' },
+    ],
+  );
+  // Response schema strips the per-message token / cost columns — admin
+  // review takes aggregates from the session-list endpoint.
+  for (const m of body.messages) {
+    assert.equal(m.tokens_in, undefined);
+    assert.equal(m.cost_usd_estimate, undefined);
+  }
+});
+
+test('admin: GET /admin/chatbots/{slug}/sessions/{sessionId}/messages cross-chatbot returns 404', async (t) => {
+  const db = makeTestDb();
+  setProvisioningKey(VALID_PROVISIONING);
+  const ctx = await seedAdminContext(db);
+  const slugA = uniqueSlug('chatbot');
+  const slugB = uniqueSlug('chatbot');
+  await db('chatbots').insert({ account_id: ctx.account.id, slug: slugA, name: slugA });
+  const [chatbotB] = await db('chatbots').insert({
+    account_id: ctx.account.id,
+    slug: slugB,
+    name: slugB,
+  });
+  const [sessionInB] = await db('sessions').insert({
+    chatbot_id: chatbotB,
+    token: 'b'.repeat(64),
+  });
+
+  const fastify = await buildServer({ db, logger: false });
+  t.after(async () => {
+    setProvisioningKey(null);
+    await fastify.close();
+    await db('accounts').where({ id: ctx.account.id }).del();
+    await db.destroy();
+  });
+
+  const res = await fastify.inject({
+    method: 'GET',
+    url: `/admin/chatbots/${slugA}/sessions/${sessionInB}/messages`,
+    headers: { authorization: `Bearer ${ctx.rawKey}` },
+  });
+  assert.equal(res.statusCode, 404);
+  assert.equal(res.json().error, 'not_found');
+});
+
+// ---------------------------------------------------------------------------
 // /admin/chatbots/{slug}/origins/*
 // ---------------------------------------------------------------------------
 

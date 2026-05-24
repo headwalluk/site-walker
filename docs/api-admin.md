@@ -164,6 +164,87 @@ The top-level totals (`message_count` etc.) carry the combined customer + admin 
 
 `warnings` carries operator-actionable signals — currently only the under-counting warning when a chatbot's current model row has NULL pricing on a metered provider.
 
+#### Sessions + conversation review (M22)
+
+Read-only browse over a chatbot's conversations. Designed for the WP plugin's chat-review UI, but usable from any HTTP client. All three routes are account-admin-authenticated and respect the cross-account guard (other accounts' sessions return `404 not_found`).
+
+| Method | Path                                                              | Purpose                                                            |
+|--------|-------------------------------------------------------------------|--------------------------------------------------------------------|
+| GET    | `/admin/chatbots/{slug}/sessions[?page=1&page_size=20]`           | Paginated session list with per-session aggregated totals.         |
+| GET    | `/admin/chatbots/{slug}/sessions/{sessionId}`                     | One session's metadata + aggregated totals (same shape as list).   |
+| GET    | `/admin/chatbots/{slug}/sessions/{sessionId}/messages`            | The full ordered message history for that session.                 |
+
+The session list is ordered `last_active_at DESC` with `id DESC` as the tie-breaker (DATETIME has 1-second resolution; the id tie-break keeps the order deterministic). `page` defaults to `1`, `page_size` defaults to `20`, capped at `100`. Out-of-range pages return an empty `sessions` array with the correct `total`.
+
+**The visitor session token is deliberately not included** in any of these responses. It's the visitor's `POST /chat` bearer; surfacing it through the admin surface would create a hijack-capable credential. The admin addresses sessions by integer `sessionId` in the URL instead.
+
+Session-list response shape:
+```json
+{
+  "sessions": [
+    {
+      "id": 412,
+      "chatbot_id": 7,
+      "created_at": "2026-05-23T14:21:09.000Z",
+      "last_active_at": "2026-05-23T14:28:51.000Z",
+      "terminated_at": null,
+      "visitor_email": null,
+      "is_admin_mode": false,
+      "message_count": 8,
+      "tokens_in": 4120,
+      "tokens_out": 1830,
+      "cost_usd_estimate": 0.013412
+    },
+    {
+      "id": 410,
+      "chatbot_id": 7,
+      "created_at": "2026-05-22T09:02:11.000Z",
+      "last_active_at": "2026-05-22T09:14:02.000Z",
+      "terminated_at": "2026-05-22T09:14:02.000Z",
+      "visitor_email": "jane@example.com",
+      "is_admin_mode": false,
+      "message_count": 14,
+      "tokens_in": 9210,
+      "tokens_out": 4502,
+      "cost_usd_estimate": 0.041208
+    }
+  ],
+  "page": 1,
+  "page_size": 20,
+  "total": 47
+}
+```
+
+`terminated_at` is set when the M20 hard-cap triggered (or another mechanism in the future closes a session). `visitor_email` is what the visitor volunteered via `POST /sessions/visitor-email` after the soft- or hard-handoff prompt — site admins may follow up with that contact off-chat. `is_admin_mode` flags sessions minted via `POST /admin/chatbots/{slug}/sessions` (M21).
+
+Single-session GET returns the same row shape on its own (no envelope).
+
+Messages response shape:
+```json
+{
+  "messages": [
+    {
+      "id": 1024,
+      "session_id": 412,
+      "role": "user",
+      "content": "Do you ship to Canada?",
+      "created_at": "2026-05-23T14:21:12.000Z"
+    },
+    {
+      "id": 1025,
+      "session_id": 412,
+      "role": "assistant",
+      "content": "Yes, we ship throughout North America. Standard shipping is …",
+      "created_at": "2026-05-23T14:21:14.000Z"
+    }
+  ]
+}
+```
+
+Per-message token or cost columns are deliberately not exposed — the site-wide aggregated totals from the session list are sufficient for review (we don't do multi-request agentic tooling or mid-conversation model switching that would make per-message cost interesting).
+
+Future additions (post-v1.0.0) likely include filters like geo-IP country, customer/admin segment, date range, and `has_email` / `terminated` — the v1 surface keeps it to pagination only.
+
 #### Admin-mode sessions (M21)
 
 | Method | Path                                       | Purpose                                                                       |

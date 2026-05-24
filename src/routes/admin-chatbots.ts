@@ -20,7 +20,12 @@ import {
   type Chatbot,
 } from '../services/chatbots.js';
 import { assertValidSchedule, assertValidTimezone } from '../services/availability.js';
-import { createSession } from '../services/sessions.js';
+import {
+  createSession,
+  getSessionForChatbot,
+  listMessagesForChatbot,
+  listSessionsForChatbot,
+} from '../services/sessions.js';
 import {
   setChatbotGeoCountries,
   setChatbotGeoMode,
@@ -87,6 +92,56 @@ const originRowSchema = {
     created_at: { type: 'string', format: 'date-time' },
   },
   required: ['id', 'chatbot_id', 'origin', 'created_at'],
+};
+
+// M22: session-list item. No `token` — that's the visitor's `POST /chat`
+// bearer, and exposing it through the admin surface would leak a
+// hijack-capable credential. Admin addresses sessions by integer `id`.
+const sessionItemSchema = {
+  type: 'object',
+  properties: {
+    id: { type: 'integer' },
+    chatbot_id: { type: 'integer' },
+    created_at: { type: 'string', format: 'date-time' },
+    last_active_at: { type: 'string', format: 'date-time' },
+    terminated_at: { type: ['string', 'null'], format: 'date-time' },
+    visitor_email: { type: ['string', 'null'] },
+    is_admin_mode: { type: 'boolean' },
+    message_count: { type: 'integer' },
+    tokens_in: { type: 'integer' },
+    tokens_out: { type: 'integer' },
+    cost_usd_estimate: { type: 'number' },
+  },
+  required: [
+    'id',
+    'chatbot_id',
+    'created_at',
+    'last_active_at',
+    'terminated_at',
+    'visitor_email',
+    'is_admin_mode',
+    'message_count',
+    'tokens_in',
+    'tokens_out',
+    'cost_usd_estimate',
+  ],
+};
+
+// M22: message-list item. Mirrors the visitor-facing `GET /messages` shape
+// so the WP UI can render the conversation identically regardless of which
+// endpoint it pulled from. Fastify's response-schema serialiser drops the
+// extra columns (chatbot_id, tokens_in/out, cost_usd_estimate, cache_*)
+// that `listMessages` carries but admin review doesn't need.
+const messageItemSchema = {
+  type: 'object',
+  properties: {
+    id: { type: 'integer' },
+    session_id: { type: 'integer' },
+    role: { type: 'string', enum: ['user', 'assistant'] },
+    content: { type: 'string' },
+    created_at: { type: 'string', format: 'date-time' },
+  },
+  required: ['id', 'session_id', 'role', 'content', 'created_at'],
 };
 
 /** PERSONA is reserved — it has its own DB column, not a disk block. */
@@ -1324,6 +1379,157 @@ const adminChatbotsPlugin: FastifyPluginAsync<AdminChatbotsPluginOpts> = async (
       }
       const summary = await getChatbotGeoSummary(db, chatbot.slug);
       return reply.send({ mode: summary.modeCode, countries: summary.countries });
+    },
+  );
+
+  // -------------------------------------------------------------------------
+  // M22: session/conversation review (read-only)
+  // -------------------------------------------------------------------------
+
+  fastify.get<{
+    Params: { slug: string };
+    Querystring: { page?: string; page_size?: string };
+  }>(
+    '/:slug/sessions',
+    {
+      schema: {
+        tags: ['admin'],
+        summary: "List a chatbot's sessions (paginated, most-recently-active first)",
+        description:
+          'Returns a page of session rows for the chatbot identified by `slug`. ' +
+          'Each row carries aggregated `message_count`, `tokens_in`, `tokens_out`, ' +
+          "and `cost_usd_estimate` so the WP plugin's review UI can render the " +
+          'list without an N+1 trip. The visitor-bearer `token` is deliberately ' +
+          'not included; admin addresses sessions by integer `id` in the URL. ' +
+          'Default page size is 20; max is 100. Sort is `last_active_at DESC` with ' +
+          '`id DESC` as the tie-breaker.',
+        security: [{ adminBearerAuth: [] }],
+        params: {
+          type: 'object',
+          properties: { slug: { type: 'string' } },
+          required: ['slug'],
+        },
+        querystring: {
+          type: 'object',
+          properties: {
+            page: { type: 'integer', minimum: 1, default: 1 },
+            page_size: { type: 'integer', minimum: 1, maximum: 100, default: 20 },
+          },
+          additionalProperties: false,
+        },
+        response: {
+          200: {
+            type: 'object',
+            properties: {
+              sessions: { type: 'array', items: sessionItemSchema },
+              page: { type: 'integer' },
+              page_size: { type: 'integer' },
+              total: { type: 'integer' },
+            },
+            required: ['sessions', 'page', 'page_size', 'total'],
+          },
+          400: errorResponseSchema,
+          401: errorResponseSchema,
+          404: errorResponseSchema,
+        },
+      },
+    },
+    async (req, reply) => {
+      const chatbot = await resolveChatbotForAccount(req, reply, req.params.slug);
+      if (!chatbot) return;
+      // The querystring schema declares page/page_size as integers, so AJV
+      // coerces from the inbound string for us. Defensive Number() here so
+      // the math is right even if a caller bypasses validation somehow.
+      const page = req.query.page === undefined ? 1 : Number(req.query.page);
+      const pageSize = req.query.page_size === undefined ? 20 : Number(req.query.page_size);
+      const result = await listSessionsForChatbot(db, chatbot.id, { page, pageSize });
+      return reply.send(result);
+    },
+  );
+
+  fastify.get<{ Params: { slug: string; sessionId: string } }>(
+    '/:slug/sessions/:sessionId',
+    {
+      schema: {
+        tags: ['admin'],
+        summary: 'Get one session by id (with aggregated totals)',
+        description:
+          'Returns the same per-row shape as `GET /admin/chatbots/{slug}/sessions`. ' +
+          'Cross-chatbot lookup (a sessionId that exists under a different chatbot) ' +
+          'returns `404 not_found` — the same response shape as a missing id, so ' +
+          'cross-chatbot existence is never leaked.',
+        security: [{ adminBearerAuth: [] }],
+        params: {
+          type: 'object',
+          properties: {
+            slug: { type: 'string' },
+            sessionId: { type: 'string', pattern: '^[0-9]+$' },
+          },
+          required: ['slug', 'sessionId'],
+        },
+        response: {
+          200: sessionItemSchema,
+          400: errorResponseSchema,
+          401: errorResponseSchema,
+          404: errorResponseSchema,
+        },
+      },
+    },
+    async (req, reply) => {
+      const chatbot = await resolveChatbotForAccount(req, reply, req.params.slug);
+      if (!chatbot) return;
+      const sessionId = Number(req.params.sessionId);
+      const session = await getSessionForChatbot(db, chatbot.id, sessionId);
+      if (!session) {
+        return reply.status(404).send({ error: 'not_found' });
+      }
+      return reply.send(session);
+    },
+  );
+
+  fastify.get<{ Params: { slug: string; sessionId: string } }>(
+    '/:slug/sessions/:sessionId/messages',
+    {
+      schema: {
+        tags: ['admin'],
+        summary: "Get one session's full message history",
+        description:
+          'Returns the ordered list of messages for the given session id, but only ' +
+          "if the session belongs to a chatbot the auth'd account owns. Same row " +
+          'shape as the visitor-facing `GET /messages`. Cross-chatbot or missing ' +
+          'sessionId returns `404 not_found`.',
+        security: [{ adminBearerAuth: [] }],
+        params: {
+          type: 'object',
+          properties: {
+            slug: { type: 'string' },
+            sessionId: { type: 'string', pattern: '^[0-9]+$' },
+          },
+          required: ['slug', 'sessionId'],
+        },
+        response: {
+          200: {
+            type: 'object',
+            properties: {
+              messages: { type: 'array', items: messageItemSchema },
+            },
+            required: ['messages'],
+          },
+          400: errorResponseSchema,
+          401: errorResponseSchema,
+          404: errorResponseSchema,
+        },
+      },
+    },
+    async (req, reply) => {
+      const chatbot = await resolveChatbotForAccount(req, reply, req.params.slug);
+      if (!chatbot) return;
+      const sessionId = Number(req.params.sessionId);
+      const messages = await listMessagesForChatbot(db, chatbot.id, sessionId);
+      if (messages === null) {
+        return reply.status(404).send({ error: 'not_found' });
+      }
+      return reply.send({ messages });
     },
   );
 

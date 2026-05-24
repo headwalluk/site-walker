@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.18.0] - 2026-05-24
+
+M22 lands the first of the v1.0.0 milestones: read-only admin HTTP for session and conversation review. The WP plugin's chat-review UI is the immediate consumer; the surface is general enough that any HTTP client can use it. Pagination only in v1 — no date / segment / geo filters yet (deliberately deferred per the M22 design pass; concrete filters land when a real WP-admin layout asks for them).
+
+### Added
+- **`GET /admin/chatbots/{slug}/sessions[?page=1&page_size=20]`** — paginated session list, ordered `last_active_at DESC` with `id DESC` as the tie-breaker. Default page size 20, capped at 100. Returns `{ sessions, page, page_size, total }`.
+- **`GET /admin/chatbots/{slug}/sessions/{sessionId}`** — single session by id, same row shape as the list endpoint.
+- **`GET /admin/chatbots/{slug}/sessions/{sessionId}/messages`** — the full ordered message history for one session. Same per-row shape as the visitor-facing `GET /messages`.
+- **`src/services/sessions.ts`** gains `listSessionsForChatbot`, `getSessionForChatbot`, `listMessagesForChatbot`. The list + single-session helpers return rows enriched with aggregated `message_count`, `tokens_in`, `tokens_out`, `cost_usd_estimate` (one round-trip per page; no N+1).
+- **Tests:** 12 new (329 total). 4 service-layer integration tests cover pagination, aggregate accuracy, page-size clamping, cross-chatbot rejection. 8 HTTP-layer tests cover happy paths × 3, pagination, cross-account 404, cross-chatbot sessionId 404, malformed sessionId 400, and the message-shape filtering.
+- **`docs/api-admin.md`** gains a "Sessions + conversation review (M22)" section: route table, response shapes (list + single + messages), explanation of the visitor-email + terminated_at fields, note that future filters are post-v1.0.0.
+
+### Security
+- **The visitor session token is deliberately not exposed** through any M22 admin response. The token is the visitor's `POST /chat` bearer; surfacing it through the admin surface would create a hijack-capable credential. The admin addresses sessions by integer `id` in the URL.
+- **Cross-chatbot session lookup returns `404 not_found`** (the same shape as a missing id), preserving the M19 leak-avoidance pattern across chatbots within the same account.
+
+### Notes
+- Per-message token + cost columns are deliberately not exposed in the messages endpoint. The aggregated totals on the session-list row are sufficient given we don't do multi-request agentic tooling or mid-conversation model switching. Easy additive change if a future use case wants it.
+- `listSessionsForChatbot` runs two parallel queries (the page payload + a `COUNT(*)` for total). At first-customer scale that's fine; if a chatbot's session table grows enough to make the count expensive, the natural follow-up is either a cached count or returning only `has_more` instead of total — settle when it becomes a problem.
+
 ## [0.17.1] - 2026-05-23
 
 Docs-only follow-up to v0.17.0 to close gaps that surfaced during a WP-plugin handoff audit. No code changes; no test changes.
