@@ -106,7 +106,11 @@ Origins are normalised: lowercase host, no trailing slash, `http://` and `https:
 | PUT    | `/admin/chatbots/{slug}/blocks/{name}`           | Write/overwrite block. Body content-type must be `text/markdown` or `text/plain`. Max 64KB. |
 | DELETE | `/admin/chatbots/{slug}/blocks/{name}`           | Remove block file. 204 on success.                       |
 
-Block name pattern: `^[A-Za-z0-9_-]+$`. `PERSONA` is **reserved** — it lives in `chatbots.persona` (DB column), not as a disk block; set it via `PATCH /admin/chatbots/{slug}`.
+Block name pattern: `^[A-Za-z0-9_-]+$`. **Reserved names** that the PUT endpoint refuses (with `400 validation_failed`):
+- `PERSONA` — lives in `chatbots.persona` (DB column), not as a disk block; set it via `PATCH /admin/chatbots/{slug}`.
+- `HANDOFF_FINAL` — the M23.6 wind-down hint is a hardcoded built-in (no operator file). The name is reserved so a future "let operators override the wording" feature lands as a non-breaking change.
+
+`HANDOFF_SOFT` and `HANDOFF_HARD` are deliberately writable — operators customise those handoff messages via PUT.
 
 Block files land at `data/chatbots/{slug}/{name}.md` on disk, which is exactly where `loadDiskBlocks` (the chat-path system-block loader) reads from. No restart needed for the new content to take effect — the loader re-reads per request.
 
@@ -255,7 +259,7 @@ Account-admin authenticated. Returns a normal session token plus the chatbot's w
 
 - **Skipped:** Origin allowlist, geo blocklist/allowlist, operational availability, daily-cap, capacity stub.
 - **Different cap:** session spend is checked against `chatbots.admin_session_budget_usd` instead of `session_budget_usd`. NULL = unbounded.
-- **Suppressed:** soft-handoff (`HANDOFF_SOFT.md`) block injection is never applied; handoff webhook does not fire on hard-cap termination.
+- **Suppressed:** soft-handoff (`HANDOFF_SOFT.md`) block injection is never applied; M23.6 final-turn wind-down hint (`HANDOFF_FINAL`) is never applied; handoff webhook does not fire on hard-cap termination.
 - **Aggregated separately:** admin-mode spend is excluded from `getChatbotDailySpend` (so it doesn't displace customer budget) and surfaces as the `admin` sub-object in `/usage` responses.
 
 The typical integration is a WordPress plugin: an admin-authenticated page does a server-to-server call against this endpoint using the account admin key, receives a session token, and relays the token back to the browser via an Ajax response. The account admin key never reaches the browser. See [`../dev-notes/14-availability-and-admin-mode.md`](../dev-notes/14-availability-and-admin-mode.md) for the full flow + rationale.

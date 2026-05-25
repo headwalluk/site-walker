@@ -66,6 +66,7 @@ The client stays in the loop on non-2xx HTTP responses and prints the API's erro
 | 400    | `message_too_long`    | Input exceeds 8000 characters.                                                                                 |
 | 401    | `invalid_token`       | Session token was rejected. The session may have been deleted; restart `./bin/chat` to mint a fresh one.        |
 | 413    | `context_overflow`    | System blocks + history + new message exceeds the chatbot's `model_context_window` with headroom. Trim blocks, raise the window, or end the conversation and start a fresh session. |
+| 429    | `rate_limit_exceeded` | Per-IP or per-chatbot rate limit hit (M23). `detail.retry_after_seconds` and a `Retry-After` header carry the wait time. Interactive use rarely trips this; sustained-fire scripts will. Set `SW_RATELIMIT_ENABLED=false` in `.env` to disable rate limiting in dev. |
 | 502    | `model_error`         | The upstream LLM call failed (network error, model not loaded, etc.). The user message stays in the audit log; no assistant row was written. |
 | 503    | `model_not_configured`| The chatbot has no `model_slug`. Run `sw chatbot set-model`.                                                   |
 

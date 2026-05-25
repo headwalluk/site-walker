@@ -48,8 +48,13 @@ For every `POST /chat`, the loader builds the system prompt fresh — no caching
 
 ...remaining disk blocks in filename order...
 
-[optionally, when session spend ≥ soft-handoff threshold]
+[optionally, when soft-handoff trigger fires — see Reserved names]
 <block name="HANDOFF_SOFT">
+...
+</block>
+
+[optionally, when final-turn predictor fires — see Reserved names]
+<block name="HANDOFF_FINAL">
 ...
 </block>
 ```
@@ -61,17 +66,18 @@ For every `POST /chat`, the loader builds the system prompt fresh — no caching
 3. Disk blocks follow in **lexicographic ASCII filename order**. The conventional `10-`, `20-`, `30-` prefixes are an operator convention — the loader doesn't parse them, it just sorts strings.
 4. Empty files are skipped silently.
 5. Non-`.md` files are ignored.
-6. **`HANDOFF_SOFT`** is appended last when the chat path injects it (M20). It's not loaded by the regular disk-blocks loader; the chat path reads it conditionally per request.
+6. **Conditional handoff blocks** (`HANDOFF_SOFT`, `HANDOFF_FINAL`) are appended last when the chat path injects them. They're not loaded by the regular disk-blocks loader; the chat path reads them conditionally per request based on session state (M20 spend thresholds + M23.5 sim triggers + M23.6 final-turn predictor).
 
 ### Reserved names
 
-Three filenames are reserved and skipped by the regular disk-blocks loader. They're each loaded through a different code path:
+Four filenames are reserved and skipped by the regular disk-blocks loader. They're each loaded through a different code path (or, for `HANDOFF_FINAL`, generated at runtime with no disk file at all):
 
 | Name              | Source                                  | When it appears                                                                 |
 | ----------------- | --------------------------------------- | ------------------------------------------------------------------------------- |
 | `PERSONA`         | `chatbots.persona` (DB column)          | Every request, when the column is non-empty. Edited via `sw chatbot set-persona`. |
-| `HANDOFF_SOFT`    | `data/chatbots/<slug>/HANDOFF_SOFT.md`  | Per `POST /chat`, only when the session has crossed the soft-handoff threshold (default 80% of `chatbots.session_budget_usd`). |
+| `HANDOFF_SOFT`    | `data/chatbots/<slug>/HANDOFF_SOFT.md`  | Per `POST /chat`, only when the session has crossed the soft-handoff threshold (default 80% of `chatbots.session_budget_usd`) OR when the M23.5 `SW_SIM_SOFT_HANDOFF_AFTER_USER_TURNS` sim trigger is set and reached. |
 | `HANDOFF_HARD`    | `data/chatbots/<slug>/HANDOFF_HARD.md`  | Never appears in the system prompt. Used as the **response body** when a session is terminated (hard cap reached) and the visitor sends another `POST /chat`. A built-in `DEFAULT_HARD_HANDOFF` constant is used when the file is missing. |
+| `HANDOFF_FINAL`   | **Built-in** (`HANDOFF_FINAL_HINT_CONTENT` constant). No disk file — admin PUT refuses with `validation_failed`. | Per `POST /chat`, when the M23.6 final-turn predictor fires: real spend has crossed 95% of `chatbots.session_budget_usd`, OR the `SW_SIM_HARD_HANDOFF_AFTER_USER_TURNS` sim threshold is reached. Tells the LLM not to end with a follow-up question (the widget will disable its input immediately after). Suppressed for admin-mode sessions. |
 
 If you drop `PERSONA.md` into the disk directory by mistake, the loader **skips it and logs a warning** to stderr:
 
@@ -79,7 +85,7 @@ If you drop `PERSONA.md` into the disk directory by mistake, the loader **skips 
 PERSONA block already added, skipping PERSONA.md
 ```
 
-This is deliberate — having two PERSONA blocks would confuse the model. Put persona content in the DB via `sw chatbot set-persona`, not on disk. The `HANDOFF_*` files do **not** generate a warning when dropped on disk — that's where they belong; they just don't load via the normal path.
+This is deliberate — having two PERSONA blocks would confuse the model. Put persona content in the DB via `sw chatbot set-persona`, not on disk. The `HANDOFF_*` files do **not** generate a warning when dropped on disk — that's where they belong; they just don't load via the normal path. `HANDOFF_FINAL` is the exception: there is no operator file for it today (the addendum is hardcoded). If you drop a `HANDOFF_FINAL.md` on disk, the loader silently ignores it; the admin HTTP PUT refuses with a validation error. Adding operator-overridable content for this block is a focused additive change reserved for a real customer ask.
 
 ### The handling rule
 
@@ -106,7 +112,7 @@ Total estimated tokens (including handling rule): ~2961
 
 Token counts are estimated as `ceil(chars / 3)`. Fast, deterministic, intentionally crude. Use the total to gut-check the system prompt against the chatbot's `model_context_window`; the actual `POST /chat` budget check additionally accounts for conversation history and a headroom for the reply.
 
-`sw blocks list` does not include `HANDOFF_SOFT` in its count — that block only joins the system prompt when the session has crossed the soft-handoff threshold, which is a per-session, per-request decision the loader can't predict statically. If you've authored a `HANDOFF_SOFT.md`, factor its size into the context-window margin yourself.
+`sw blocks list` does not include `HANDOFF_SOFT` or `HANDOFF_FINAL` in its count — those blocks only join the system prompt when their per-request triggers fire (a per-session decision the loader can't predict statically). If you've authored a `HANDOFF_SOFT.md`, factor its size into the context-window margin yourself. `HANDOFF_FINAL` is a small built-in addendum (a few hundred characters); its impact on the budget is negligible.
 
 ## Authoring tips
 
