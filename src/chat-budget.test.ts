@@ -743,8 +743,15 @@ test('M23.6 final-turn hint: HANDOFF_FINAL injected when spend ≥ 95% of sessio
 
   const systemMessage = capture[0].messages.find((m) => m.role === 'system');
   assert.ok(systemMessage);
-  assert.match(systemMessage.content, /<block name="HANDOFF_FINAL">/);
-  assert.match(systemMessage.content, /do NOT end with a question/);
+  // 0.21.1: HANDOFF_FINAL is now rendered as a free-text directive outside
+  // any <block> envelope, so the model treats it as a real instruction
+  // (the HANDLING_RULE only applies to block contents).
+  assert.match(systemMessage.content, /DIRECTIVE FOR THIS TURN/);
+  assert.match(systemMessage.content, /MUST be a declarative statement, not a question/);
+  assert.ok(
+    !/<block name="HANDOFF_FINAL">/.test(systemMessage.content),
+    'HANDOFF_FINAL must NOT appear as a <block> — directive bypasses the block envelope',
+  );
 });
 
 test('M23.6 final-turn hint: NOT injected when spend is below the 95% danger threshold', async (t) => {
@@ -787,7 +794,7 @@ test('M23.6 final-turn hint: NOT injected when spend is below the 95% danger thr
   const systemMessage = capture[0].messages.find((m) => m.role === 'system');
   assert.ok(systemMessage);
   assert.ok(
-    !/HANDOFF_FINAL/.test(systemMessage.content),
-    `final-turn hint should not fire at 50% of cap; got: ${systemMessage.content}`,
+    !/DIRECTIVE FOR THIS TURN/.test(systemMessage.content),
+    `final-turn directive should not fire at 50% of cap; got: ${systemMessage.content}`,
   );
 });

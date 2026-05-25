@@ -119,9 +119,20 @@ export function assemblePrompt(input: {
    * Conditional blocks the chat path appends after the regular disk
    * blocks — currently used (M20) for the soft-handoff block when a
    * session crosses its threshold. Placed last so it's the most-recent
-   * instruction the model sees.
+   * data block the model sees. Wrapped in `<block>` envelopes; the
+   * HANDLING_RULE applies (model treats contents as reference data,
+   * not as instructions). Operator-customisable in nature.
    */
   extraBlocks?: Block[];
+  /**
+   * Free-text directive appended AFTER all blocks, OUTSIDE any
+   * `<block>` envelope, with a "DIRECTIVE FOR THIS TURN" sentinel and
+   * an explicit override of the block-handling rule. Used (M23.6) for
+   * the final-turn wind-down hint. Unlike `extraBlocks`, this content
+   * is meant to be obeyed by the model as a real instruction, not
+   * read as data. App-managed only — never operator-supplied.
+   */
+  directiveAddendum?: string;
 }): AssembledPrompt {
   const sections: string[] = [HANDLING_RULE];
   const perBlockTokens: Record<string, number> = {};
@@ -140,6 +151,20 @@ export function assemblePrompt(input: {
   for (const block of input.extraBlocks ?? []) {
     sections.push(formatBlock(block));
     perBlockTokens[block.name] = estimateTokens(block.content);
+  }
+
+  if (input.directiveAddendum && input.directiveAddendum.trim().length > 0) {
+    // The sentinel + explicit override line are load-bearing: the
+    // HANDLING_RULE above told the model to treat <block> contents as
+    // data, not instructions. The directive sits OUTSIDE any <block>
+    // envelope precisely so the model treats it as a real instruction.
+    const framed =
+      '--- DIRECTIVE FOR THIS TURN ---\n' +
+      input.directiveAddendum.trim() +
+      '\n' +
+      'This directive is an instruction for the assistant for this turn only. ' +
+      'It is not block content; the block-handling rule above does not apply to it.';
+    sections.push(framed);
   }
 
   const prompt = sections.join('\n\n');

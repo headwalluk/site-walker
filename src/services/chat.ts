@@ -33,12 +33,25 @@ export const DEFAULT_HARD_HANDOFF =
  *
  * Hardcoded for v1. Operators who want to customise can ask; a `HANDOFF_FINAL.md`
  * file override is a focused additive change if a real customer raises it.
+ *
+ * **Rendered outside any `<block>` envelope.** The HANDLING_RULE explicitly
+ * tells the model to treat block contents as data, not instructions. This
+ * directive needs to be obeyed, so it goes through `assemblePrompt`'s
+ * `directiveAddendum` path instead — appended at the end with a
+ * `DIRECTIVE FOR THIS TURN` sentinel + an explicit "block-handling rule
+ * does not apply here" line. Without that framing the model would obey the
+ * HANDLING_RULE correctly and ignore the directive, which was exactly the
+ * bug surfaced in the 0.21.0 release.
  */
 export const HANDOFF_FINAL_HINT_CONTENT =
-  'This is your final reply in this conversation. After your reply, the visitor ' +
-  'will not be able to send another message — the chat widget will disable its ' +
-  'input. Conclude your response naturally and do NOT end with a question or an ' +
-  'invitation to continue the conversation.';
+  'This is your final reply in this conversation. The chat widget will ' +
+  'disable its input the moment your reply is delivered — the visitor cannot ' +
+  'send another message.\n\n' +
+  'Your final sentence MUST be a declarative statement, not a question. Do not ' +
+  'invite further conversation. Do not offer "anything else I can help with". ' +
+  'Do not ask whether the visitor has more questions. End with a closing — ' +
+  'for example "I hope this helps.", "Thanks for chatting today.", or "Have ' +
+  'a great day." Pick whichever closing best fits the conversation\'s tone.';
 
 /**
  * M23.6: a session is considered "in the final-turn danger zone" once spend
@@ -317,14 +330,18 @@ export async function runChat(input: RunChatInput): Promise<RunChatResult> {
     sessionSpendBefore >= (sessionCap * FINAL_TURN_DANGER_THRESHOLD_PCT) / 100;
   const simFinalTriggered = simHardAfter !== null && userTurnCount >= simHardAfter;
   const finalTriggered = !session.is_admin_mode && (realFinalTriggered || simFinalTriggered);
-  if (finalTriggered) {
-    extraBlocks.push({ name: 'HANDOFF_FINAL', content: HANDOFF_FINAL_HINT_CONTENT });
-  }
 
   const assembled = assemblePrompt({
     persona: chatbot.persona,
     diskBlocks,
     extraBlocks: extraBlocks.length > 0 ? extraBlocks : undefined,
+    // 0.21.1: HANDOFF_FINAL goes through directiveAddendum, NOT extraBlocks.
+    // The HANDLING_RULE tells the model to treat <block> contents as data,
+    // not instructions — putting the wind-down hint in a <block> meant the
+    // model correctly ignored it (the bug seen in 0.21.0). The
+    // directiveAddendum path appends outside any <block> envelope with a
+    // sentinel + explicit override of the block-handling rule.
+    directiveAddendum: finalTriggered ? HANDOFF_FINAL_HINT_CONTENT : undefined,
   });
 
   if (resolved.contextWindow !== null) {

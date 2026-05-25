@@ -108,7 +108,7 @@ Origins are normalised: lowercase host, no trailing slash, `http://` and `https:
 
 Block name pattern: `^[A-Za-z0-9_-]+$`. **Reserved names** that the PUT endpoint refuses (with `400 validation_failed`):
 - `PERSONA` — lives in `chatbots.persona` (DB column), not as a disk block; set it via `PATCH /admin/chatbots/{slug}`.
-- `HANDOFF_FINAL` — the M23.6 wind-down hint is a hardcoded built-in (no operator file). The name is reserved so a future "let operators override the wording" feature lands as a non-breaking change.
+- `HANDOFF_FINAL` — the M23.6 wind-down directive is a hardcoded built-in (no operator file). It is not even rendered as a `<block>` in the system prompt — see [`system-blocks.md`](system-blocks.md) for the rationale. The name is reserved so a future "let operators override the wording" feature lands as a non-breaking change.
 
 `HANDOFF_SOFT` and `HANDOFF_HARD` are deliberately writable — operators customise those handoff messages via PUT.
 

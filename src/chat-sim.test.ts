@@ -355,21 +355,35 @@ test('M23.6 final-turn hint: HANDOFF_FINAL injected when sim hard threshold reac
   await sendTurn(fastify, token, 'hi 1');
   let systemMessage = capture.at(-1)?.messages.find((m) => m.role === 'system');
   assert.ok(systemMessage);
-  assert.ok(!/HANDOFF_FINAL/.test(systemMessage.content), 'turn 1 should not inject final hint');
+  assert.ok(
+    !/DIRECTIVE FOR THIS TURN/.test(systemMessage.content),
+    'turn 1 should not inject final-turn directive',
+  );
 
   await sendTurn(fastify, token, 'hi 2');
   systemMessage = capture.at(-1)?.messages.find((m) => m.role === 'system');
   assert.ok(systemMessage);
-  assert.ok(!/HANDOFF_FINAL/.test(systemMessage.content), 'turn 2 should not inject final hint');
+  assert.ok(
+    !/DIRECTIVE FOR THIS TURN/.test(systemMessage.content),
+    'turn 2 should not inject final-turn directive',
+  );
 
-  // Turn 3: predictor fires; HANDOFF_FINAL appears in the system prompt
-  // and the response is marked session_terminated.
+  // Turn 3: predictor fires; the DIRECTIVE FOR THIS TURN sentinel appears
+  // in the system prompt OUTSIDE any <block> envelope, and the response
+  // is marked session_terminated.
   const res = await sendTurn(fastify, token, 'hi 3');
   assert.equal(res.json().session_terminated, true);
   systemMessage = capture.at(-1)?.messages.find((m) => m.role === 'system');
   assert.ok(systemMessage);
-  assert.match(systemMessage.content, /<block name="HANDOFF_FINAL">/);
-  assert.match(systemMessage.content, /do NOT end with a question/);
+  assert.match(systemMessage.content, /DIRECTIVE FOR THIS TURN/);
+  assert.match(systemMessage.content, /MUST be a declarative statement, not a question/);
+  // The directive must NOT be wrapped in a <block> envelope — that would
+  // put it under the HANDLING_RULE which tells the model to treat block
+  // contents as data, defeating the whole point.
+  assert.ok(
+    !/<block name="HANDOFF_FINAL">/.test(systemMessage.content),
+    'HANDOFF_FINAL must NOT appear as a <block> — directive bypasses the block envelope',
+  );
 });
 
 test('M23.6 final-turn hint: suppressed for admin-mode sessions even when sim hard would fire', async (t) => {
@@ -394,8 +408,8 @@ test('M23.6 final-turn hint: suppressed for admin-mode sessions even when sim ha
     const systemMessage = req.messages.find((m) => m.role === 'system');
     assert.ok(systemMessage);
     assert.ok(
-      !/HANDOFF_FINAL/.test(systemMessage.content),
-      `admin-mode should suppress final-turn hint (saw HANDOFF_FINAL in turn ${capture.indexOf(req) + 1})`,
+      !/DIRECTIVE FOR THIS TURN/.test(systemMessage.content),
+      `admin-mode should suppress final-turn directive (saw it in turn ${capture.indexOf(req) + 1})`,
     );
   }
 });
@@ -423,8 +437,8 @@ test('M23.6 final-turn hint: not injected when neither real spend nor sim trigge
     const systemMessage = req.messages.find((m) => m.role === 'system');
     assert.ok(systemMessage);
     assert.ok(
-      !/HANDOFF_FINAL/.test(systemMessage.content),
-      `no triggers means no final-turn hint (saw it in turn ${capture.indexOf(req) + 1})`,
+      !/DIRECTIVE FOR THIS TURN/.test(systemMessage.content),
+      `no triggers means no final-turn directive (saw it in turn ${capture.indexOf(req) + 1})`,
     );
   }
 });

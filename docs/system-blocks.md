@@ -53,10 +53,12 @@ For every `POST /chat`, the loader builds the system prompt fresh — no caching
 ...
 </block>
 
-[optionally, when final-turn predictor fires — see Reserved names]
-<block name="HANDOFF_FINAL">
-...
-</block>
+[optionally, when final-turn predictor fires — appended OUTSIDE any block
+envelope as a system directive, NOT a <block>; see Reserved names]
+--- DIRECTIVE FOR THIS TURN ---
+...the final-turn wind-down hint...
+This directive is an instruction for the assistant for this turn only.
+It is not block content; the block-handling rule above does not apply to it.
 ```
 
 ### Ordering rules
@@ -66,7 +68,9 @@ For every `POST /chat`, the loader builds the system prompt fresh — no caching
 3. Disk blocks follow in **lexicographic ASCII filename order**. The conventional `10-`, `20-`, `30-` prefixes are an operator convention — the loader doesn't parse them, it just sorts strings.
 4. Empty files are skipped silently.
 5. Non-`.md` files are ignored.
-6. **Conditional handoff blocks** (`HANDOFF_SOFT`, `HANDOFF_FINAL`) are appended last when the chat path injects them. They're not loaded by the regular disk-blocks loader; the chat path reads them conditionally per request based on session state (M20 spend thresholds + M23.5 sim triggers + M23.6 final-turn predictor).
+6. **Conditional handoffs** are appended last when the chat path injects them, based on session state (M20 spend thresholds + M23.5 sim triggers + M23.6 final-turn predictor). They take two forms:
+   - **`HANDOFF_SOFT`** is a real `<block>` element — its content is reference material for the model, governed by the `HANDLING_RULE` like any other block. Operator-customisable via `data/chatbots/<slug>/HANDOFF_SOFT.md`.
+   - **`HANDOFF_FINAL`** is a **system directive**, not a block. It's appended outside any `<block>` envelope, prefixed by a `--- DIRECTIVE FOR THIS TURN ---` sentinel, and explicitly tells the model that the block-handling rule does NOT apply to its contents. This is load-bearing: the M23.6 directive needs to be obeyed as an instruction, not treated as data — which is precisely what the `HANDLING_RULE` tells the model to do with block contents.
 
 ### Reserved names
 
@@ -77,7 +81,7 @@ Four filenames are reserved and skipped by the regular disk-blocks loader. They'
 | `PERSONA`         | `chatbots.persona` (DB column)          | Every request, when the column is non-empty. Edited via `sw chatbot set-persona`. |
 | `HANDOFF_SOFT`    | `data/chatbots/<slug>/HANDOFF_SOFT.md`  | Per `POST /chat`, only when the session has crossed the soft-handoff threshold (default 80% of `chatbots.session_budget_usd`) OR when the M23.5 `SW_SIM_SOFT_HANDOFF_AFTER_USER_TURNS` sim trigger is set and reached. |
 | `HANDOFF_HARD`    | `data/chatbots/<slug>/HANDOFF_HARD.md`  | Never appears in the system prompt. Used as the **response body** when a session is terminated (hard cap reached) and the visitor sends another `POST /chat`. A built-in `DEFAULT_HARD_HANDOFF` constant is used when the file is missing. |
-| `HANDOFF_FINAL`   | **Built-in** (`HANDOFF_FINAL_HINT_CONTENT` constant). No disk file — admin PUT refuses with `validation_failed`. | Per `POST /chat`, when the M23.6 final-turn predictor fires: real spend has crossed 95% of `chatbots.session_budget_usd`, OR the `SW_SIM_HARD_HANDOFF_AFTER_USER_TURNS` sim threshold is reached. Tells the LLM not to end with a follow-up question (the widget will disable its input immediately after). Suppressed for admin-mode sessions. |
+| `HANDOFF_FINAL`   | **Built-in** (`HANDOFF_FINAL_HINT_CONTENT` constant). No disk file — admin PUT refuses with `validation_failed`. **Not rendered as a `<block>`** — appended as a system directive outside the block envelope (see Ordering rules item 6). | Per `POST /chat`, when the M23.6 final-turn predictor fires: real spend has crossed 95% of `chatbots.session_budget_usd`, OR the `SW_SIM_HARD_HANDOFF_AFTER_USER_TURNS` sim threshold is reached. Tells the LLM that this is the last turn and its reply must end declaratively, not with a follow-up question (the widget will disable its input immediately after). Suppressed for admin-mode sessions. |
 
 If you drop `PERSONA.md` into the disk directory by mistake, the loader **skips it and logs a warning** to stderr:
 
