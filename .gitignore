@@ -12,11 +12,13 @@ build/
 .env.local
 .env.*.local
 
-# Operator-edited provider registry (mode 0600). Lives at the project root
-# in development; templates/site-walker.toml.example is the checked-in seed.
-/site-walker.toml
+# PM2 ecosystem config — operator-edited, host-specific (cwd, log paths).
+# Checked-in sample at ecosystem.config.sample.cjs. .js form covered too in
+# case an operator carves out CommonJS for it via a local package.json.
+ecosystem.config.cjs
+ecosystem.config.js
 
-# Runtime data — per-website regenerated system blocks, anything that's
+# Runtime data — per-chatbot regenerated system blocks, anything that's
 # host/instance-specific. Operator-edited templates live under templates/
 # and ARE version controlled.
 data/
