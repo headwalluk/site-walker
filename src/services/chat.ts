@@ -25,6 +25,35 @@ export const DEFAULT_HARD_HANDOFF =
   'I think it would be better to talk to a human representative. ' +
   'Please leave your email address and someone will be in touch soon.';
 
+/**
+ * M23.6 final-turn wind-down hint, injected into the system prompt for the
+ * turn that's about to trip the hard cap. Tells the LLM not to end with a
+ * follow-up question — the widget will disable the input after this reply,
+ * so any "what else can I help with?" prompt would dead-end the visitor.
+ *
+ * Hardcoded for v1. Operators who want to customise can ask; a `HANDOFF_FINAL.md`
+ * file override is a focused additive change if a real customer raises it.
+ */
+export const HANDOFF_FINAL_HINT_CONTENT =
+  'This is your final reply in this conversation. After your reply, the visitor ' +
+  'will not be able to send another message — the chat widget will disable its ' +
+  'input. Conclude your response naturally and do NOT end with a question or an ' +
+  'invitation to continue the conversation.';
+
+/**
+ * M23.6: a session is considered "in the final-turn danger zone" once spend
+ * is past this percentage of the configured session cap. Any reply we
+ * generate at or beyond this point gets the HANDOFF_FINAL hint so the LLM
+ * winds the conversation down gracefully rather than asking a follow-up
+ * question on what turns out to be the last turn.
+ *
+ * Set at 95% (vs the default soft-handoff trigger at 80%) so there's a
+ * clear hand-off-to-human zone between soft and final. False positives are
+ * the safer side: an over-cautious wind-down is a much smaller UX problem
+ * than a trailing question the visitor can't answer.
+ */
+export const FINAL_TURN_DANGER_THRESHOLD_PCT = 95;
+
 export type ChatErrorCode =
   | 'invalid_token'
   | 'message_required'
@@ -60,16 +89,30 @@ export interface RunChatInput {
   /** Replace the adapter factory (tests inject a fake here). */
   adapterFactory?: AdapterFactory;
   /**
-   * M23.5 simulation hooks for acceptance testing. Overrides `runtimeEnv.sim`
-   * defaults. Production paths leave this unset and inherit env config; tests
-   * pass explicit numbers to exercise the sim triggers deterministically.
-   * Passing `null` is not supported as an explicit "force off" — tests that
-   * want sim off simply don't pass this field (env defaults to null in CI).
+   * M23.5 simulation hooks for acceptance testing. Per-field override of
+   * `runtimeEnv.sim`. Each field:
+   *   - `undefined` (omitted) → fall back to runtimeEnv.sim
+   *   - `null`                → explicit force-off, overrides any env value
+   *   - number                → explicit threshold, overrides any env value
+   *
+   * Tests use `null` to immunise themselves from a dev shell that has
+   * `SW_SIM_*` env vars set for live acceptance testing.
    */
   sim?: {
-    softHandoffAfterUserTurns?: number;
-    hardHandoffAfterUserTurns?: number;
+    softHandoffAfterUserTurns?: number | null;
+    hardHandoffAfterUserTurns?: number | null;
   };
+}
+
+/**
+ * Resolve a sim threshold from per-call opts vs env. See `RunChatInput.sim`
+ * for the contract: undefined → env, null/number → that value.
+ */
+export function resolveSimValue(
+  optsValue: number | null | undefined,
+  envValue: number | null,
+): number | null {
+  return optsValue === undefined ? envValue : optsValue;
 }
 
 export interface RunChatResult {
@@ -204,11 +247,17 @@ export async function runChat(input: RunChatInput): Promise<RunChatResult> {
 
   // M23.5: resolve sim thresholds for this turn. Per-request `input.sim`
   // wins over env so tests can dial values per-test without mutating
-  // process.env (the env module is a module-load singleton).
-  const simSoftAfter =
-    input.sim?.softHandoffAfterUserTurns ?? runtimeEnv.sim.softHandoffAfterUserTurns;
-  const simHardAfter =
-    input.sim?.hardHandoffAfterUserTurns ?? runtimeEnv.sim.hardHandoffAfterUserTurns;
+  // process.env (the env module is a module-load singleton). An explicit
+  // `null` in opts forces sim off regardless of env — tests use that to
+  // immunise themselves from a dev shell that has SW_SIM_* set.
+  const simSoftAfter = resolveSimValue(
+    input.sim?.softHandoffAfterUserTurns,
+    runtimeEnv.sim.softHandoffAfterUserTurns,
+  );
+  const simHardAfter = resolveSimValue(
+    input.sim?.hardHandoffAfterUserTurns,
+    runtimeEnv.sim.hardHandoffAfterUserTurns,
+  );
 
   // Load history early — used for both the M23.5 user-turn sim count AND
   // the context-overflow check + adapter call further down.
@@ -245,6 +294,31 @@ export async function runChat(input: RunChatInput): Promise<RunChatResult> {
     if (softContent !== null) {
       extraBlocks.push({ name: 'HANDOFF_SOFT', content: softContent });
     }
+  }
+
+  // M23.6 final-turn predictor: if this turn is likely to trip the hard
+  // cap (either the real spend-based cap or the M23.5 sim threshold),
+  // inject a built-in wind-down hint so the LLM doesn't sign off with
+  // "anything else?" right before the widget disables the visitor's input.
+  //
+  // Two paths feed it:
+  //   - real spend: we're already past FINAL_TURN_DANGER_THRESHOLD_PCT of
+  //     the session cap. A heuristic — any non-trivial reply at this
+  //     spend level is plausibly the one that crosses the cap.
+  //   - sim hard:   the user-turn count has reached the configured sim
+  //     threshold. Exact prediction (the sim trigger is itself turn-count
+  //     based), so the hint fires on the same turn that will terminate.
+  //
+  // Admin-mode suppresses (consistent with M21 + the soft handoff): an
+  // admin testing the bot doesn't need a wind-down. Their hard sim still
+  // terminates the session, but the LLM doesn't need to wind down for it.
+  const realFinalTriggered =
+    sessionCap !== null &&
+    sessionSpendBefore >= (sessionCap * FINAL_TURN_DANGER_THRESHOLD_PCT) / 100;
+  const simFinalTriggered = simHardAfter !== null && userTurnCount >= simHardAfter;
+  const finalTriggered = !session.is_admin_mode && (realFinalTriggered || simFinalTriggered);
+  if (finalTriggered) {
+    extraBlocks.push({ name: 'HANDOFF_FINAL', content: HANDOFF_FINAL_HINT_CONTENT });
   }
 
   const assembled = assemblePrompt({

@@ -146,7 +146,11 @@ const messageItemSchema = {
 
 /** PERSONA is reserved — it has its own DB column, not a disk block. */
 const BLOCK_NAME_PATTERN = /^[A-Za-z0-9_-]+$/;
-const RESERVED_BLOCK_NAMES = new Set(['PERSONA']);
+// PERSONA lives in the DB; HANDOFF_FINAL is reserved for the M23.6 built-in
+// wind-down addendum (no operator override yet — admin PUT refuses with
+// validation_failed). HANDOFF_SOFT + HANDOFF_HARD are deliberately NOT in
+// this set: operators DO customise those files.
+const RESERVED_BLOCK_NAMES = new Set(['PERSONA', 'HANDOFF_FINAL']);
 const MAX_BLOCK_BYTES = 64 * 1024;
 
 function isValidBlockName(name: string): boolean {

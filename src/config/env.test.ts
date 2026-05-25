@@ -211,12 +211,21 @@ test('loadEnv: production refusal does NOT trigger when no SW_SIM_* is set', () 
 });
 
 test('loadEnv: production refusal ignores empty-string SW_SIM_* vars (treated as unset)', () => {
-  withEnvOverrides({ SW_SIM_SOFT_HANDOFF_AFTER_USER_TURNS: '', NODE_ENV: 'production' }, () => {
-    // Empty string is not "set" for our purposes — matches the
-    // nonEmptyOrDefault / parsePositiveIntegerOptional convention.
-    const e = loadEnv();
-    assert.equal(e.sim.softHandoffAfterUserTurns, null);
-  });
+  withEnvOverrides(
+    {
+      SW_SIM_SOFT_HANDOFF_AFTER_USER_TURNS: '',
+      // Also clear HARD in case the dev shell has it set in .env — empty
+      // is not "set" for the refusal check.
+      SW_SIM_HARD_HANDOFF_AFTER_USER_TURNS: '',
+      NODE_ENV: 'production',
+    },
+    () => {
+      // Empty string is not "set" for our purposes — matches the
+      // nonEmptyOrDefault / parsePositiveIntegerOptional convention.
+      const e = loadEnv();
+      assert.equal(e.sim.softHandoffAfterUserTurns, null);
+    },
+  );
 });
 
 test('loadEnv: refuses when SW_SIM_SOFT >= SW_SIM_HARD (nonsense ordering)', () => {

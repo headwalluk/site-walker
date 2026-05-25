@@ -696,3 +696,98 @@ test('M21 admin mode: admin_session_budget_usd NULL means unbounded (no terminat
   assert.equal(res.json().reply, 'still going');
   assert.equal(res.json().session_terminated, undefined);
 });
+
+// ---------------------------------------------------------------------------
+// M23.6 final-turn predictor (real spend path)
+// ---------------------------------------------------------------------------
+
+test('M23.6 final-turn hint: HANDOFF_FINAL injected when spend ≥ 95% of session cap', async (t) => {
+  const fx = await seedMeteredChatbot({ inputPrice: 1.0, outputPrice: 5.0 });
+  // Session cap $0.010. 95% threshold → $0.0095. Seed prior spend at
+  // $0.0096 so the predictor fires on the next chat turn.
+  await fx.db('chatbots').where({ id: fx.chatbot.id }).update({
+    session_budget_usd: 0.01,
+  });
+  const session = await createSession(fx.db, fx.chatbot.id);
+  await appendMessage(fx.db, session.id, 'assistant', 'prior turns', {
+    chatbotId: fx.chatbot.id,
+    costUsd: 0.0096,
+  });
+
+  const capture: ChatRequest[] = [];
+  const fastify = await buildServer({
+    db: fx.db,
+    logger: false,
+    adapterFactory: () => ({
+      protocol: 'openrouter',
+      chat: async (req: ChatRequest): Promise<ChatResponse> => {
+        capture.push(req);
+        return { reply: 'final reply', tokensUsed: { prompt: 10, completion: 10 } };
+      },
+    }),
+    // Force sim off so this test isolates the real-spend predictor path.
+    sim: { softHandoffAfterUserTurns: null, hardHandoffAfterUserTurns: null },
+  });
+  t.after(async () => {
+    await fastify.close();
+    await fx.cleanup();
+  });
+
+  const sessionRow = await fx.db('sessions').where({ id: session.id }).first();
+  await fastify.inject({
+    method: 'POST',
+    url: '/chat',
+    headers: { authorization: `Bearer ${sessionRow.token}` },
+    payload: { message: 'one more' },
+  });
+
+  const systemMessage = capture[0].messages.find((m) => m.role === 'system');
+  assert.ok(systemMessage);
+  assert.match(systemMessage.content, /<block name="HANDOFF_FINAL">/);
+  assert.match(systemMessage.content, /do NOT end with a question/);
+});
+
+test('M23.6 final-turn hint: NOT injected when spend is below the 95% danger threshold', async (t) => {
+  const fx = await seedMeteredChatbot({ inputPrice: 1.0, outputPrice: 5.0 });
+  await fx.db('chatbots').where({ id: fx.chatbot.id }).update({
+    session_budget_usd: 0.01,
+  });
+  // Prior spend at $0.005 = 50% of cap. Well under the 95% danger zone.
+  const session = await createSession(fx.db, fx.chatbot.id);
+  await appendMessage(fx.db, session.id, 'assistant', 'prior', {
+    chatbotId: fx.chatbot.id,
+    costUsd: 0.005,
+  });
+
+  const capture: ChatRequest[] = [];
+  const fastify = await buildServer({
+    db: fx.db,
+    logger: false,
+    adapterFactory: () => ({
+      protocol: 'openrouter',
+      chat: async (req: ChatRequest): Promise<ChatResponse> => {
+        capture.push(req);
+        return { reply: 'still chatting', tokensUsed: { prompt: 10, completion: 10 } };
+      },
+    }),
+    sim: { softHandoffAfterUserTurns: null, hardHandoffAfterUserTurns: null },
+  });
+  t.after(async () => {
+    await fastify.close();
+    await fx.cleanup();
+  });
+
+  const sessionRow = await fx.db('sessions').where({ id: session.id }).first();
+  await fastify.inject({
+    method: 'POST',
+    url: '/chat',
+    headers: { authorization: `Bearer ${sessionRow.token}` },
+    payload: { message: 'mid-conversation' },
+  });
+  const systemMessage = capture[0].messages.find((m) => m.role === 'system');
+  assert.ok(systemMessage);
+  assert.ok(
+    !/HANDOFF_FINAL/.test(systemMessage.content),
+    `final-turn hint should not fire at 50% of cap; got: ${systemMessage.content}`,
+  );
+});

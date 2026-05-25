@@ -6,7 +6,7 @@ import fastifyRateLimit from '@fastify/rate-limit';
 import type { Knex } from 'knex';
 import { findChatbotByOrigin } from './services/chatbots.js';
 import { createSession, findSessionByToken, listMessages } from './services/sessions.js';
-import { ChatError, runChat, type AdapterFactory } from './services/chat.js';
+import { ChatError, resolveSimValue, runChat, type AdapterFactory } from './services/chat.js';
 import {
   getChatbotDailySpend,
   isDailyBudgetExhausted,
@@ -60,11 +60,12 @@ export interface BuildServerOpts {
   /**
    * M23.5 simulation hooks. Tests pass per-server overrides here; production
    * code leaves this unset and runChat falls back to `runtimeEnv.sim` for
-   * each request. See `src/services/chat.ts` `RunChatInput.sim`.
+   * each request. Per-field semantics match `RunChatInput.sim`:
+   * undefined → env, null → explicit force-off, number → that threshold.
    */
   sim?: {
-    softHandoffAfterUserTurns?: number;
-    hardHandoffAfterUserTurns?: number;
+    softHandoffAfterUserTurns?: number | null;
+    hardHandoffAfterUserTurns?: number | null;
   };
 }
 
@@ -460,15 +461,19 @@ export async function buildServer(opts: BuildServerOpts): Promise<FastifyInstanc
       // M23.5: include `sim_active` ONLY in non-production. Production
       // refuses to start when any SW_SIM_* var is set (loadEnv guard), so
       // surfacing the field there would always be a misleading `false`.
-      // Per-server overrides via opts.sim count as active too — tests
-      // exercise this path.
+      // Uses the same resolveSimValue contract chat.ts uses, so an explicit
+      // `null` in opts.sim (test "force off" sentinel) resolves to "not
+      // active" even when env has a value set.
       if (!runtimeEnv.isProduction) {
-        const simActive =
-          opts.sim?.softHandoffAfterUserTurns !== undefined ||
-          opts.sim?.hardHandoffAfterUserTurns !== undefined ||
-          runtimeEnv.sim.softHandoffAfterUserTurns !== null ||
-          runtimeEnv.sim.hardHandoffAfterUserTurns !== null;
-        body.sim_active = simActive;
+        const effSoft = resolveSimValue(
+          opts.sim?.softHandoffAfterUserTurns,
+          runtimeEnv.sim.softHandoffAfterUserTurns,
+        );
+        const effHard = resolveSimValue(
+          opts.sim?.hardHandoffAfterUserTurns,
+          runtimeEnv.sim.hardHandoffAfterUserTurns,
+        );
+        body.sim_active = effSoft !== null || effHard !== null;
       }
       return reply.status(dbOk ? 200 : 503).send(body);
     },

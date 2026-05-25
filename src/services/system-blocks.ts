@@ -25,9 +25,13 @@ export const HANDLING_RULE =
  * lives in `chatbots.persona` (DB column) — the loader emits it from the
  * DB, not from disk. HANDOFF_SOFT and HANDOFF_HARD are reserved because
  * the chat path injects them conditionally based on per-session spend
- * state (M20), not on every request.
+ * state (M20), not on every request. HANDOFF_FINAL is reserved because
+ * the chat path injects a built-in wind-down hint under that name when
+ * the final-turn predictor fires (M23.6); operator-customisation via an
+ * on-disk file isn't supported yet, but reserving the name now means
+ * adding that later is a focused, non-breaking change.
  */
-const RESERVED_BLOCK_NAMES = new Set(['PERSONA', 'HANDOFF_SOFT', 'HANDOFF_HARD']);
+const RESERVED_BLOCK_NAMES = new Set(['PERSONA', 'HANDOFF_SOFT', 'HANDOFF_HARD', 'HANDOFF_FINAL']);
 
 export type HandoffBlockKind = 'soft' | 'hard';
 

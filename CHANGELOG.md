@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.21.0] - 2026-05-25
+
+Small interstitial (M23.6) surfaced from dogfooding the M23.5 hard-handoff sim: the assistant's final natural reply often ended with a follow-up question ("anything else you'd like to know?"), which then dead-ended the visitor because the widget disables its input immediately after. Fix: predict-and-inject a built-in wind-down hint before the LLM call when this turn is about to trip the hard cap.
+
+### Added
+- **`HANDOFF_FINAL` built-in system block** (`src/services/chat.ts`). Hardcoded `HANDOFF_FINAL_HINT_CONTENT` tells the LLM not to end with a question or invitation to continue. Injected via the existing `extraBlocks` mechanism, so it shows up as `<block name="HANDOFF_FINAL">` in the system prompt alongside any `HANDOFF_SOFT` content.
+- **Final-turn predictor** with two paths:
+  - **Real spend**: triggers when `sessionSpendBefore >= sessionCap × FINAL_TURN_DANGER_THRESHOLD_PCT/100`. Hardcoded at 95% — gives a clear hand-off-to-human zone between the 80% soft trigger and the 100% hard cap. False positives (over-aggressive wind-down on borderline turns) are the safer side; trailing-question dead-ends are the bug being fixed.
+  - **Sim hard**: triggers when `userTurnCount >= simHardAfter`. Exact prediction since the sim trigger is itself turn-count based — the hint fires on the same turn that terminates the session.
+- **Admin-mode suppression**: consistent with M21 soft-handoff suppression. Admin sessions still terminate on hard sim (safety belt) but get no wind-down hint — admins testing the bot don't need it.
+- **Explicit `null` support in `opts.sim`** (`RunChatInput.sim` + `BuildServerOpts.sim`): a new contract where `undefined` falls back to env, `null` explicitly forces sim off, and a number explicitly sets the threshold. `resolveSimValue(optsValue, envValue)` exported from `chat.ts` for shared use. Surfaced when M23.5 tests started failing in the developer's shell after they set `SW_SIM_*` in `.env` for live acceptance testing — the tests assumed env defaults to null. Tests now pass explicit `null` to immunise themselves from the dev shell's sim config.
+- **`HANDOFF_FINAL` added to reserved-block lists** in both `src/services/system-blocks.ts` (loader skips on-disk files) and `src/routes/admin-chatbots.ts` (admin PUT refuses with `validation_failed`). Operator override is a focused additive change for the future; today the addendum is hardcoded.
+- **5 new tests** (372 total). 3 sim-path: sim hard threshold injects `HANDOFF_FINAL`, admin-mode suppresses, neither-trigger case leaves it absent. 2 real-spend path: at 95%+ injects, at 50% it doesn't.
+
+### Changed
+- **Three M23.5 tests** rewritten to pass explicit `sim: { ... : null }` so they're robust to a dev shell that has `SW_SIM_*` env vars set for live acceptance testing.
+- **`/health` `sim_active` computation** uses the new `resolveSimValue` helper, so `opts.sim: { softHandoffAfterUserTurns: null }` correctly reports `sim_active: false` even when env has a value.
+
+### Docs
+- **`docs/api-usage.md`**: clarified that `HANDOFF_SOFT.md` is operator-customisable and injected into the live system prompt, while `HANDOFF_HARD.md` is only the post-termination canned response — they are not interchangeable. New paragraph documenting the M23.6 final-turn wind-down behaviour.
+- **`docs/env.md`**: added a sentence to the `SW_SIM_HARD_HANDOFF_AFTER_USER_TURNS` entry noting that the M23.6 `HANDOFF_FINAL` hint fires automatically on the same turn.
+
+### Notes
+- The 95% threshold is hardcoded for v1. If a real customer wants to tune it, the natural shape is a per-chatbot column (mirroring `handoff_threshold_pct`); add it then.
+- Operator override of `HANDOFF_FINAL` via on-disk `HANDOFF_FINAL.md` is reserved (loader skips it, admin PUT refuses) but not yet supported. Adding it is non-breaking when needed.
+
 ## [0.20.0] - 2026-05-25
 
 Small interstitial (M23.5) to make acceptance-testing the soft/hard handoff flow tractable. Reserves the `SW_SIM_*` env-var namespace for "force this scenario" hooks, gated behind a production-refusal rail so the same surface can hold future hooks (forced country, simulated rate-limit hit, etc.) without each one needing its own safety story.

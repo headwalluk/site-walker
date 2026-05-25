@@ -157,7 +157,7 @@ test('M23.5 soft sim: injects HANDOFF_SOFT on the Nth user turn (even with no se
   assert.match(systemMessage.content, /sim soft nudge content/);
 });
 
-test('M23.5 soft sim: does NOT fire when input.sim unset (regression: env-default null path)', async (t) => {
+test('M23.5 soft sim: does NOT fire when sim is force-off (regression)', async (t) => {
   const fx = await seedSimChatbot();
   const blocksDir = path.join('data', 'chatbots', fx.slug);
   await mkdir(blocksDir, { recursive: true });
@@ -168,7 +168,9 @@ test('M23.5 soft sim: does NOT fire when input.sim unset (regression: env-defaul
     db: fx.db,
     logger: false,
     adapterFactory: () => fakeAdapter(capture),
-    // No `sim` opt; env defaults to null in CI; nothing should trigger.
+    // Force sim off so this test is robust to a dev shell that has
+    // SW_SIM_* env vars set for live acceptance testing.
+    sim: { softHandoffAfterUserTurns: null, hardHandoffAfterUserTurns: null },
   });
   t.after(async () => {
     await fastify.close();
@@ -328,6 +330,106 @@ test('M23.5 hard sim: admin-mode terminates session but suppresses the webhook (
 });
 
 // ---------------------------------------------------------------------------
+// M23.6 final-turn predictor
+// ---------------------------------------------------------------------------
+
+test('M23.6 final-turn hint: HANDOFF_FINAL injected when sim hard threshold reached', async (t) => {
+  const fx = await seedSimChatbot();
+  const capture: ChatRequest[] = [];
+  const fastify = await buildServer({
+    db: fx.db,
+    logger: false,
+    adapterFactory: () => fakeAdapter(capture),
+    // Hard sim at turn 3 → the request that hits turn 3 should carry the
+    // HANDOFF_FINAL block in its system prompt.
+    sim: { softHandoffAfterUserTurns: null, hardHandoffAfterUserTurns: 3 },
+  });
+  t.after(async () => {
+    await fastify.close();
+    await fx.cleanup();
+  });
+
+  const token = await mintSession(fastify, fx.origin);
+
+  // Turn 1 + 2: predictor doesn't fire (userTurnCount < 3).
+  await sendTurn(fastify, token, 'hi 1');
+  let systemMessage = capture.at(-1)?.messages.find((m) => m.role === 'system');
+  assert.ok(systemMessage);
+  assert.ok(!/HANDOFF_FINAL/.test(systemMessage.content), 'turn 1 should not inject final hint');
+
+  await sendTurn(fastify, token, 'hi 2');
+  systemMessage = capture.at(-1)?.messages.find((m) => m.role === 'system');
+  assert.ok(systemMessage);
+  assert.ok(!/HANDOFF_FINAL/.test(systemMessage.content), 'turn 2 should not inject final hint');
+
+  // Turn 3: predictor fires; HANDOFF_FINAL appears in the system prompt
+  // and the response is marked session_terminated.
+  const res = await sendTurn(fastify, token, 'hi 3');
+  assert.equal(res.json().session_terminated, true);
+  systemMessage = capture.at(-1)?.messages.find((m) => m.role === 'system');
+  assert.ok(systemMessage);
+  assert.match(systemMessage.content, /<block name="HANDOFF_FINAL">/);
+  assert.match(systemMessage.content, /do NOT end with a question/);
+});
+
+test('M23.6 final-turn hint: suppressed for admin-mode sessions even when sim hard would fire', async (t) => {
+  const fx = await seedSimChatbot();
+  const capture: ChatRequest[] = [];
+  const fastify = await buildServer({
+    db: fx.db,
+    logger: false,
+    adapterFactory: () => fakeAdapter(capture),
+    sim: { softHandoffAfterUserTurns: null, hardHandoffAfterUserTurns: 2 },
+  });
+  t.after(async () => {
+    await fastify.close();
+    await fx.cleanup();
+  });
+
+  const session = await createSession(fx.db, fx.chatbot.id, { isAdminMode: true });
+  for (let i = 0; i < 3; i++) {
+    await sendTurn(fastify, session.token, `admin turn ${i}`);
+  }
+  for (const req of capture) {
+    const systemMessage = req.messages.find((m) => m.role === 'system');
+    assert.ok(systemMessage);
+    assert.ok(
+      !/HANDOFF_FINAL/.test(systemMessage.content),
+      `admin-mode should suppress final-turn hint (saw HANDOFF_FINAL in turn ${capture.indexOf(req) + 1})`,
+    );
+  }
+});
+
+test('M23.6 final-turn hint: not injected when neither real spend nor sim trigger applies', async (t) => {
+  const fx = await seedSimChatbot();
+  const capture: ChatRequest[] = [];
+  const fastify = await buildServer({
+    db: fx.db,
+    logger: false,
+    adapterFactory: () => fakeAdapter(capture),
+    // Force sim off entirely; no session cap configured → no real trigger.
+    sim: { softHandoffAfterUserTurns: null, hardHandoffAfterUserTurns: null },
+  });
+  t.after(async () => {
+    await fastify.close();
+    await fx.cleanup();
+  });
+
+  const token = await mintSession(fastify, fx.origin);
+  for (let i = 0; i < 5; i++) {
+    await sendTurn(fastify, token, `turn ${i}`);
+  }
+  for (const req of capture) {
+    const systemMessage = req.messages.find((m) => m.role === 'system');
+    assert.ok(systemMessage);
+    assert.ok(
+      !/HANDOFF_FINAL/.test(systemMessage.content),
+      `no triggers means no final-turn hint (saw it in turn ${capture.indexOf(req) + 1})`,
+    );
+  }
+});
+
+// ---------------------------------------------------------------------------
 // /health sim_active surface
 // ---------------------------------------------------------------------------
 
@@ -357,10 +459,15 @@ test('M23.5 /health: sim_active honours non-production / production branching', 
   }
 });
 
-test('M23.5 /health: sim_active is false (non-prod) or absent (prod) when no sim is set', async (t) => {
+test('M23.5 /health: sim_active is false (non-prod) or absent (prod) when sim is force-off', async (t) => {
   const { env: runtimeEnv } = await import('./config/env.js');
   const db = makeTestDb();
-  const fastify = await buildServer({ db, logger: false });
+  const fastify = await buildServer({
+    db,
+    logger: false,
+    // Explicit null overrides any SW_SIM_* env vars set in the dev shell.
+    sim: { softHandoffAfterUserTurns: null, hardHandoffAfterUserTurns: null },
+  });
   t.after(async () => {
     await fastify.close();
     await db.destroy();
@@ -376,13 +483,15 @@ test('M23.5 /health: sim_active is false (non-prod) or absent (prod) when no sim
   }
 });
 
-test('M23.5 hard sim: does NOT fire when input.sim unset (regression)', async (t) => {
+test('M23.5 hard sim: does NOT fire when sim is force-off (regression)', async (t) => {
   const fx = await seedSimChatbot();
   const fastify = await buildServer({
     db: fx.db,
     logger: false,
     adapterFactory: () => fakeAdapter(),
-    // No `sim` opt; should never terminate.
+    // Force sim off so this test is robust to a dev shell that has
+    // SW_SIM_* env vars set for live acceptance testing.
+    sim: { softHandoffAfterUserTurns: null, hardHandoffAfterUserTurns: null },
   });
   t.after(async () => {
     await fastify.close();
