@@ -15,6 +15,7 @@ Companion planning docs:
 - [`11-budget-handoff.md`](11-budget-handoff.md) — budget-driven conversation handoff (soft-handoff at 80% spend, hard-cap → email capture). Recasts old M9 history-trimming as part of M20's budget-cap UX. Settled during M20 design pass.
 - [`13-hierarchical-system-blocks.md`](13-hierarchical-system-blocks.md) — promote `data/chatbots/<slug>/` from a flat directory to a topic-aware tree; LLM activates topics on demand via `<load-topic>` tagged tokens. Design-in-flight, targeted at v1.1.0 (post-first-customer).
 - [`14-availability-and-admin-mode.md`](14-availability-and-admin-mode.md) — per-chatbot operational hours (timezone + weekly schedule) + admin-mode session type for logged-in WP administrators. Design-in-flight, M21 target (pre-v1.0.0).
+- [`15-privacy-friendly-analytics.md`](15-privacy-friendly-analytics.md) — ideas-on-the-shelf for non-PII session analytics (operator test-session marking, aggregate metrics, optional country-code persistence). Not a milestone yet — captured ahead of a concrete pull.
 
 ## Next up — road to v1.0.0
 
