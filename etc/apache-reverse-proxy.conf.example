@@ -1,0 +1,126 @@
+##
+# Apache 2.4 reverse-proxy vhost — sample for site-walker.
+#
+# Fronts the site-walker Fastify API (default port 47830, loopback) at a
+# public HTTPS endpoint. Tested against Apache 2.4 on Debian/Ubuntu.
+#
+# ----------------------------------------------------------------------------
+# Before deploying — change these:
+#
+#   1. ServerName ............ public FQDN that resolves to this host.
+#   2. <VirtualHost IP:port> . the host's real public IP for both vhosts.
+#   3. SSLCertificateFile ... cert paths (LetsEncrypt assumed; adjust if not).
+#      SSLCertificateKeyFile
+#   4. ProxyPass URL ......... change `127.0.0.1:47830` if site-walker runs on
+#                              a different host/port. Loopback is the default
+#                              for single-host deployments; for split-host
+#                              setups, bind site-walker to an internal IP
+#                              and use that here (NOT a public IP).
+#   5. ServerAdmin ........... operator contact email.
+#
+# Required Apache modules (Debian/Ubuntu `a2enmod` names):
+#   - proxy, proxy_http   — backend HTTP proxying
+#   - ssl                 — HTTPS
+#   - headers             — RequestHeader / Header directives
+#   - rewrite             — only if you adapt the HTTP→HTTPS redirect below
+#   - http2  (optional)   — for the `Protocols h2 http/1.1` line below
+#   - remoteip (optional) — to log the real visitor IP (see comment further
+#                           down). The site-walker app already reads
+#                           X-Forwarded-For via `trustProxy: true`, so this
+#                           module is only for Apache's own access log.
+#
+# Not in scope here:
+#   - CORS headers. site-walker's Fastify app handles CORS via the per-chatbot
+#     origin allowlist (see docs/api-usage.md). Adding CORS headers in Apache
+#     would duplicate and conflict.
+#   - WebSockets. site-walker is straight HTTP request/response.
+##
+
+# ----------------------------------------------------------------------------
+# HTTP → HTTPS redirect
+# ----------------------------------------------------------------------------
+<VirtualHost 123.123.123.123:80>
+    ServerName api.example.com
+    ServerAdmin webmaster@example.com
+
+    Redirect 301 / https://api.example.com/
+
+    ErrorLog ${APACHE_LOG_DIR}/api.example.com-error.log
+    CustomLog ${APACHE_LOG_DIR}/api.example.com-access.log combined
+</VirtualHost>
+
+# ----------------------------------------------------------------------------
+# HTTPS — the real vhost
+# ----------------------------------------------------------------------------
+<VirtualHost 123.123.123.123:443>
+    ServerName api.example.com
+    ServerAdmin webmaster@example.com
+
+    # HTTP/2 for the public side; the backend connection stays HTTP/1.1.
+    # Requires mod_http2. Comment out the line if you don't want the dep.
+    Protocols h2 http/1.1
+
+    KeepAlive On
+
+    # Defence-in-depth: site-walker is a reverse proxy, never a forward proxy.
+    ProxyRequests Off
+    # Discourage TRACE entirely (HTTP/1 vestige; no legitimate use here).
+    TraceEnable off
+
+    <Location />
+        # Forward visitor metadata to the backend. site-walker's Fastify app
+        # honours these via `trustProxy: true` (req.ip resolves to the real
+        # visitor, not 127.0.0.1).
+        RequestHeader set X-Forwarded-Proto "https"
+        RequestHeader set X-Forwarded-Port  "443"
+        ProxyAddHeaders On
+        ProxyPreserveHost On
+
+        ProxyPass        http://127.0.0.1:47830/ retry=1 timeout=120
+        ProxyPassReverse http://127.0.0.1:47830/
+    </Location>
+
+    # ------------------------------------------------------------------------
+    # Optional: restrict access by IP during early testing.
+    # Uncomment + adjust to lock the public endpoint to known IPs while a
+    # customer is rolling out. Remove entirely once the bot is live.
+    # ------------------------------------------------------------------------
+    # <Location />
+    #     Require ip 203.0.113.0/24
+    # </Location>
+
+    # ------------------------------------------------------------------------
+    # Optional: log the real visitor IP (not 127.0.0.1 — which is what Apache
+    # sees from its own perspective). Requires mod_remoteip. The directive
+    # tells Apache to trust X-Forwarded-For from itself (loopback) only.
+    # ------------------------------------------------------------------------
+    # RemoteIPHeader X-Forwarded-For
+    # RemoteIPInternalProxy 127.0.0.1
+
+    # Security headers (cheap; nothing here needs operator tuning).
+    Header always set Strict-Transport-Security "max-age=31536000; includeSubDomains"
+    Header always set X-Content-Type-Options "nosniff"
+    Header always set Referrer-Policy "no-referrer"
+
+    ErrorLog ${APACHE_LOG_DIR}/api.example.com-error.log
+    CustomLog ${APACHE_LOG_DIR}/api.example.com-access.log combined
+
+    <IfModule mod_ssl.c>
+        SSLEngine on
+
+        # TLS 1.2+ only. TLS 1.3 is preferred and used automatically by any
+        # client that supports it; this line excludes the older protocols.
+        SSLProtocol             all -SSLv2 -SSLv3 -TLSv1 -TLSv1.1
+        SSLHonorCipherOrder     on
+        # Modern cipher suite. Cribbed from Mozilla's "intermediate" profile;
+        # update against https://ssl-config.mozilla.org if rotating ciphers.
+        SSLCipherSuite          ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:DHE-RSA-AES128-GCM-SHA256:DHE-RSA-AES256-GCM-SHA384
+        # Disable session tickets — forward secrecy is per-session.
+        SSLSessionTickets       off
+        # Disable TLS compression (CRIME mitigation).
+        SSLCompression          off
+
+        SSLCertificateFile    /etc/letsencrypt/live/api.example.com/fullchain.pem
+        SSLCertificateKeyFile /etc/letsencrypt/live/api.example.com/privkey.pem
+    </IfModule>
+</VirtualHost>

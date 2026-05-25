@@ -28,4 +28,6 @@ Operator and developer reference docs live in [`docs/`](docs/):
 - [**`.env`**](docs/env.md) — environment file: database connection, host/port, permission gate.
 - [**System blocks**](docs/system-blocks.md) — persona, disk blocks, ordering rules, token-budget interplay.
 
+Operator config samples live in [`etc/`](etc/) — currently a single Apache 2.4 reverse-proxy vhost ([`etc/apache-reverse-proxy.conf.example`](etc/apache-reverse-proxy.conf.example)) for fronting the API at a public HTTPS endpoint.
+
 Internal planning, design docs, and the project tracker live in [`dev-notes/`](dev-notes/).
