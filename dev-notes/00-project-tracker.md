@@ -1,9 +1,9 @@
 # site-walker — Project Tracker
 
-**Last Updated:** 24 May 2026
-**Current Version:** 0.19.0
-**Current Phase:** **Road to v1.0.0 — first paying client.** SaaS-pivot block closed at v0.16.0 (M20: budget caps); M21 (operational hours + admin-mode sessions, v0.17.0) landed the last pre-v1.0.0 API feature. Phase 4 (M22–M26) is the punch list for first release. **M22 (admin HTTP for session/conversation review, v0.18.0)** + **M23 (in-memory rate limiting, v0.19.0)** both shipped 2026-05-24. Remaining: production deployment polish (M24), Anthropic prompt-caching adapter wiring (M25), README rewrite (M26). Everything below the v1.0.0 line is post-launch.
-**Overall Progress (post-M23, v0.19.0):** M1–M6 complete, M7 + M8 partial, M16–M23 complete (v0.12.0 through v0.19.0). Admin HTTP surface live with M20 budget caps + M21 availability + admin-mode sessions + M22 session/conversation review. Public chat path carries per-IP and per-chatbot rate limits via `@fastify/rate-limit` + in-memory `ChatbotRateLimiter`; `429 rate_limit_exceeded` with `Retry-After` on both layers; M3 `hasCapacity()` stub deleted. Daily + per-session + admin-session caps enforced end-to-end; soft-handoff prompt injection; hard-cap session termination + webhook; per-chatbot operational hours with `503 chatbot_closed`; admin-mode sessions skip Origin/geo/availability/daily-cap gates and aggregate spend separately. 349 tests, format + lint clean.
+**Last Updated:** 25 May 2026
+**Current Version:** 0.20.0
+**Current Phase:** **Road to v1.0.0 — first paying client.** SaaS-pivot block closed at v0.16.0 (M20: budget caps); M21 (operational hours + admin-mode sessions, v0.17.0) landed the last pre-v1.0.0 API feature. Phase 4 (M22–M26) is the punch list for first release. **M22 (admin HTTP for session/conversation review, v0.18.0)** + **M23 (in-memory rate limiting, v0.19.0)** shipped 2026-05-24; **M23.5 interstitial (acceptance-testing sim hooks, v0.20.0)** shipped 2026-05-25. Remaining: production deployment polish (M24), Anthropic prompt-caching adapter wiring (M25), README rewrite (M26). Everything below the v1.0.0 line is post-launch.
+**Overall Progress (post-M23.5, v0.20.0):** M1–M6 complete, M7 + M8 partial, M16–M23 complete (v0.12.0 through v0.19.0); M23.5 interstitial at v0.20.0. Admin HTTP surface live with M20 budget caps + M21 availability + admin-mode sessions + M22 session/conversation review. Public chat path carries per-IP and per-chatbot rate limits via `@fastify/rate-limit` + in-memory `ChatbotRateLimiter`; `429 rate_limit_exceeded` with `Retry-After` on both layers. Acceptance-testing `SW_SIM_*` namespace reserved + gated behind production-refusal rail; M23.5 handoff sim hooks (`SW_SIM_SOFT_HANDOFF_AFTER_USER_TURNS`, `SW_SIM_HARD_HANDOFF_AFTER_USER_TURNS`) lower the trigger thresholds from USD spend to user-message count for acceptance testing. Daily + per-session + admin-session caps enforced end-to-end; per-chatbot operational hours with `503 chatbot_closed`; admin-mode sessions skip operator-imposed gates and aggregate spend separately. 367 tests, format + lint clean.
 
 Vision and phasing live in [`../README.md`](../README.md). **Note:** README still markets the prototype-era "self-hosted multi-tenant API" framing; rewrite ships after M16 lands, not before, to avoid documenting vapourware. Stack and architecture decisions live in [`../CLAUDE.md`](../CLAUDE.md). Auth/session and data-model design live in companion docs in this directory. This file tracks the work.
 
@@ -22,6 +22,7 @@ Post-M22, 2026-05-24. The API surface is feature-complete for first customer; v1
 
 1. ✅ **M22 — Admin HTTP for session/conversation review.** Shipped 2026-05-24 at v0.18.0.
 2. ✅ **M23 — Rate limiting (in-memory).** Shipped 2026-05-24 at v0.19.0.
+   - ✅ **M23.5 interstitial — acceptance-testing sim hooks.** Shipped 2026-05-25 at v0.20.0. Reserves the `SW_SIM_*` env namespace (production refuses to start if any are set). First two hooks lower the soft/hard handoff trigger from USD spend to user-message count so the WP-plugin developer can exercise both paths from a normal chat session. Future scenario-forcing hooks (force country, force rate-limit hit, etc.) inherit the same safety rail by living under the same prefix.
 3. **M24 — Production deployment polish.** Single systemd unit (no PM2), `Restart=always`, journal logging. Folds in the two M14 follow-ups (gate `/docs` + `/openapi.json` on non-production; request-body schema on `POST /chat` with `attachValidation: true`). Deployment runbook. Production reverse proxy for `api.site-walker.net` (DNS/cert, no IP lock).
 4. **M25 — Anthropic prompt caching adapter wiring.** Substrate already in DB (M18). Adapter sends `cache_control` markers on the system-blocks prefix, parses cache stats from responses, gates by model, skips below the minimum-cacheable threshold. ~70-80% input-billing reduction expected on stable-system-block chatbots.
 5. **M26 — README rewrite + docs polish.** Current README still markets the prototype-era "self-hosted multi-tenant API" framing; rewrite around the SaaS pivot, BYO keys, budget caps, operational hours, admin mode. First thing a prospective customer reads.
@@ -573,6 +574,33 @@ The boring-mature-proven choice per CLAUDE.md guidance. Single-process deploymen
 - **Per-chatbot check runs after geo + before budget/availability gates.** Order: Origin → geo → rate-limit → budget → availability. Rate-limiting after geo means we only count "actually-let-through" requests against quota.
 - **Refused calls do not bump the bucket** — a single refused caller can't keep extending its own ban window.
 - **Capacity stub deleted, not expanded.** The original M11 plan was for `hasCapacity()` to become a real concurrency check sharing the same store. Rate limiting subsumes the operational concern at v1.0.0 scale; if a real concurrency check is wanted later (e.g. an in-memory in-flight chat counter), it lands as a focused addition with clear semantics.
+
+### Milestone 23.5 (interstitial): acceptance-testing sim hooks
+
+**Target Completion:** 25 May 2026
+**Status:** ✅ Complete (25 May 2026, v0.20.0)
+**Priority:** Quality-of-life — unblocks WP-plugin acceptance testing of the M20 soft/hard handoff flow.
+
+Reserves the `SW_SIM_*` env-var namespace for "force this scenario" hooks used during acceptance testing. Each sim hook lowers the trigger threshold of an existing behaviour from "real-world condition" (USD spend, geo IP, etc.) to something a developer can reach from a normal interaction. The real triggers still apply alongside the sim — whichever fires first wins.
+
+Critical design: the namespace is **forbidden in production**. At boot, if `NODE_ENV=production` and any `SW_SIM_*` var is set, the server refuses to start and names the offending key(s). One boot-time check catches the whole class — future sim hooks inherit the safety rail by living under the same prefix.
+
+**Shipped at 0.20.0:**
+- `src/config/env.ts` — new `env.sim` subobject + `parsePositiveIntegerOptional` helper. Production refusal scan + soft-vs-hard sanity guard live inside `loadEnv()`. 9 new unit tests covering defaults, parse paths, production refusal (for known + unknown keys, ignoring empty-string), sanity check.
+- Two handoff sim vars:
+  - `SW_SIM_SOFT_HANDOFF_AFTER_USER_TURNS` — positive integer. Injects `HANDOFF_SOFT.md` when the session reaches N user-role messages.
+  - `SW_SIM_HARD_HANDOFF_AFTER_USER_TURNS` — positive integer. Terminates the session (+ fires webhook) when the session reaches N user-role messages.
+- `src/services/chat.ts` — history load moved earlier (before the soft-handoff check) so user-turn count is available for sim evaluation. Soft trigger becomes `realSoftTriggered || simSoftTriggered`. Hard trigger restructured: outer `if (sessionCap !== null)` guard removed; the sim path can terminate even with no session cap configured. Admin-mode semantics preserved (M21): soft sim suppressed for admin sessions; hard sim terminates but suppresses webhook.
+- `RunChatInput.sim` + `BuildServerOpts.sim` — per-call / per-server overrides so tests can dial sim deterministically without mutating `process.env` across the env module-singleton boundary. Production paths leave these unset and inherit `runtimeEnv.sim`.
+- `/health` response — gains optional `sim_active: boolean` field, included only in non-production (the env loader refuses sim in production, so the field would always be misleadingly `false` there).
+- `docs/env.md` — new "Acceptance testing only — the `SW_SIM_*` namespace" section. Reserves the prefix, documents the production refusal, the visibility contract, and the M23.5 variable table.
+- 16 new tests (367 total). 9 env-config + 7 chat-integration covering soft sim fires at N turns, hard sim terminates at N turns, admin-mode suppression, webhook suppression on admin-mode hard sim, regression checks for unset sim, and the `/health sim_active` branching.
+
+**Resolved during execution:**
+- **Sim triggers reuse the real code paths**, not parallel ones. The same `loadHandoffBlock('soft')` / `notifyHandoff()` / `terminated_at` writes fire regardless of which trigger condition activated. Means testing the sim path actually tests the real code.
+- **Sim fires alongside real triggers**, not instead. Whichever condition is true first wins. The sim doesn't suppress real behaviour; it just lowers the threshold.
+- **Production refusal scans the whole `SW_SIM_*` prefix**, not just known keys. Future hooks (e.g. `SW_SIM_FORCE_COUNTRY`) inherit the safety check by construction — no new boot validation needed.
+- **`sim_active` absent in production**, not `false`. A misleading `false` in prod would be more confusing than absence; absence matches the "this concept doesn't apply here" semantics.
 
 ### Milestone 24: Production deployment polish
 

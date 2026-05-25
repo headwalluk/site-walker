@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.20.0] - 2026-05-25
+
+Small interstitial (M23.5) to make acceptance-testing the soft/hard handoff flow tractable. Reserves the `SW_SIM_*` env-var namespace for "force this scenario" hooks, gated behind a production-refusal rail so the same surface can hold future hooks (forced country, simulated rate-limit hit, etc.) without each one needing its own safety story.
+
+### Added
+- **Two env vars for handoff sim**:
+  - `SW_SIM_SOFT_HANDOFF_AFTER_USER_TURNS` — positive integer. When set, the soft-handoff `HANDOFF_SOFT.md` system block injects whenever the session has reached this many user-role messages (counting the incoming one), regardless of session spend.
+  - `SW_SIM_HARD_HANDOFF_AFTER_USER_TURNS` — positive integer. When set, the session hard-terminates (canned response on subsequent turns + webhook fires) after this many user-role messages.
+  - Both default to null (no sim). Real spend-based triggers still apply in parallel — whichever fires first wins.
+- **Production refusal rail**: at boot, if `NODE_ENV=production` and **any** `SW_SIM_*` var is set, the server refuses to start and names the offending key(s). The scan matches the whole `SW_SIM_*` prefix so future sim hooks inherit the same safety for free.
+- **Sanity guard**: if both handoff sim vars are set and `SOFT >= HARD`, the server refuses to boot (soft is supposed to nudge before hard cuts off).
+- **`/health` `sim_active` field**: included in non-production responses only. `true` when any sim hook is active (env or via `opts.sim`), `false` otherwise. Absent entirely in production — both because production refuses sim and because the field would always be a misleading `false` there.
+- **`RunChatInput.sim` + `BuildServerOpts.sim`**: per-request / per-server overrides so tests can dial sim deterministically without mutating `process.env` across the env module-singleton boundary. Production paths leave these unset and inherit `runtimeEnv.sim`.
+- **Admin-mode semantics preserved (M21)**: sim soft inject is suppressed for admin-mode sessions; sim hard termination still fires (safety belt) but suppresses the handoff webhook.
+- **16 new tests** (367 total). 9 env-config (defaults, valid/invalid parsing, production refusal triggered by ANY `SW_SIM_*` not just known ones, empty-string ignored, soft-vs-hard ordering sanity). 7 chat-integration (soft sim fires at N turns, hard sim terminates at N turns, both regress when unset, admin-mode suppression for soft, admin-mode webhook suppression for hard, `/health sim_active` true / false / production-absent branches).
+
+### Changed
+- **`src/services/chat.ts`** `runChat()` loads history earlier (before the soft-handoff check) so the user-turn count is available for the sim trigger evaluation. The hard-cap block is restructured to OR the real and sim trigger conditions; the outer `if (sessionCap !== null)` guard is gone — the sim path can terminate even when no session cap is configured.
+
+### Docs
+- New "Acceptance testing only — the `SW_SIM_*` namespace" section in `docs/env.md` with the production refusal rail, visibility (sim_active), and the M23.5 handoff sim variable table. Example `.env` commented out the two new vars.
+
+### Notes
+- M23.5 is an interstitial, not a Phase 4 numbered milestone. Phase 4 (M22–M26) remains the v1.0.0 punch list.
+- The `SW_SIM_*` namespace is reserved for future scenario-forcing hooks (force country, force rate-limit hit, force budget exhaustion). Each new hook lives under the same prefix and inherits the production-refusal rail.
+
 ## [0.19.0] - 2026-05-24
 
 M23 lands in-memory rate limiting on the public chat path — second of the v1.0.0 milestones. Single-process deployment, no Redis (Redis is paired with cluster mode, both below the v1.0.0 line as M11).

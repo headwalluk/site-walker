@@ -60,6 +60,22 @@ export interface RuntimeEnv {
     readonly chatPerIp: number;
     readonly chatPerChatbot: number;
   };
+  /**
+   * M23.5 acceptance-testing simulation hooks. Forbidden in production
+   * (loadEnv refuses to start). Each var, when set, lowers the trigger
+   * threshold of the corresponding spend-based behaviour from "USD spend
+   * over cap" to "user-message count over N". The real spend-based
+   * behaviour still applies — whichever trigger fires first wins.
+   *
+   * Both default to null (no sim). The whole `SW_SIM_*` namespace is
+   * reserved for this kind of test hook; any future "force-X-scenario"
+   * variable lives under the same prefix and is caught by the same
+   * production refusal.
+   */
+  readonly sim: {
+    readonly softHandoffAfterUserTurns: number | null;
+    readonly hardHandoffAfterUserTurns: number | null;
+  };
 }
 
 function parsePort(raw: string | undefined, name: string, fallback: number): number {
@@ -95,6 +111,19 @@ function parsePositiveInteger(raw: string | undefined, name: string, fallback: n
 }
 
 /**
+ * Like `parsePositiveInteger` but with no default: unset / empty → null.
+ * Used for the M23.5 sim hooks where "no sim" is the natural absence shape.
+ */
+function parsePositiveIntegerOptional(raw: string | undefined, name: string): number | null {
+  if (raw === undefined || raw === '') return null;
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n < 1) {
+    throw new Error(`Env var ${name} must be a positive integer, got "${raw}".`);
+  }
+  return n;
+}
+
+/**
  * Parse a boolean-shaped env var. Accepts `true` / `false` / `1` / `0` /
  * `yes` / `no` (case-insensitive). Empty or unset → `fallback`. Anything
  * else throws — refuse to silently treat typos as one side or the other.
@@ -115,6 +144,44 @@ function parseBoolean(raw: string | undefined, name: string, fallback: boolean):
  */
 export function loadEnv(): RuntimeEnv {
   const nodeEnv = nonEmptyOrDefault(process.env.NODE_ENV, 'production');
+  const isProduction = nodeEnv === 'production';
+
+  // M23.5: refuse to start in production if any `SW_SIM_*` env var is set.
+  // These are acceptance-testing hooks that bypass real spend/IP/geo gates;
+  // a misconfigured production deployment that picked them up would be
+  // serving customers under altered semantics. Fail loud, name the keys.
+  if (isProduction) {
+    const simKeys = Object.keys(process.env).filter(
+      (k) => k.startsWith('SW_SIM_') && process.env[k] !== undefined && process.env[k] !== '',
+    );
+    if (simKeys.length > 0) {
+      throw new Error(
+        `NODE_ENV=production but acceptance-testing sim vars are set: ${simKeys.join(', ')}. ` +
+          `These are forbidden in production. Unset them, or set NODE_ENV to a non-production ` +
+          `value (development / staging / test) if you really mean to run under sim semantics.`,
+      );
+    }
+  }
+
+  const simSoftHandoffAfterUserTurns = parsePositiveIntegerOptional(
+    process.env.SW_SIM_SOFT_HANDOFF_AFTER_USER_TURNS,
+    'SW_SIM_SOFT_HANDOFF_AFTER_USER_TURNS',
+  );
+  const simHardHandoffAfterUserTurns = parsePositiveIntegerOptional(
+    process.env.SW_SIM_HARD_HANDOFF_AFTER_USER_TURNS,
+    'SW_SIM_HARD_HANDOFF_AFTER_USER_TURNS',
+  );
+  if (
+    simSoftHandoffAfterUserTurns !== null &&
+    simHardHandoffAfterUserTurns !== null &&
+    simSoftHandoffAfterUserTurns >= simHardHandoffAfterUserTurns
+  ) {
+    throw new Error(
+      `SW_SIM_SOFT_HANDOFF_AFTER_USER_TURNS (${simSoftHandoffAfterUserTurns}) must be less than ` +
+        `SW_SIM_HARD_HANDOFF_AFTER_USER_TURNS (${simHardHandoffAfterUserTurns}). ` +
+        `Soft handoff is supposed to nudge before the hard cut-off.`,
+    );
+  }
   const env: RuntimeEnv = Object.freeze({
     db: Object.freeze({
       host: nonEmptyOrDefault(process.env.DB_HOST, '127.0.0.1'),
@@ -128,7 +195,7 @@ export function loadEnv(): RuntimeEnv {
       port: parsePort(process.env.PORT, 'PORT', 47830),
     }),
     nodeEnv,
-    isProduction: nodeEnv === 'production',
+    isProduction,
     geoipDbPath:
       process.env.GEOIP_DB_PATH && process.env.GEOIP_DB_PATH !== ''
         ? process.env.GEOIP_DB_PATH
@@ -165,6 +232,10 @@ export function loadEnv(): RuntimeEnv {
         'SW_RATELIMIT_CHAT_PER_CHATBOT_PER_MINUTE',
         120,
       ),
+    }),
+    sim: Object.freeze({
+      softHandoffAfterUserTurns: simSoftHandoffAfterUserTurns,
+      hardHandoffAfterUserTurns: simHardHandoffAfterUserTurns,
     }),
   });
   return env;

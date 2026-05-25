@@ -88,7 +88,32 @@ SW_ENCRYPTION_KEY=paste-base64-32-bytes-here
 # SW_RATELIMIT_SESSIONS_PER_CHATBOT_PER_MINUTE=60
 # SW_RATELIMIT_CHAT_PER_IP_PER_MINUTE=20
 # SW_RATELIMIT_CHAT_PER_CHATBOT_PER_MINUTE=120
+
+# M23.5 acceptance-testing sim hooks — see the SW_SIM_* section below
+# and the docs/env.md "Acceptance testing only" entry. Forbidden in
+# production. Examples:
+# SW_SIM_SOFT_HANDOFF_AFTER_USER_TURNS=5
+# SW_SIM_HARD_HANDOFF_AFTER_USER_TURNS=7
 ```
+
+## Acceptance testing only — the `SW_SIM_*` namespace
+
+The `SW_SIM_*` prefix is reserved for **acceptance-testing simulation hooks**. These let a developer force scenarios that would otherwise need expensive setup (real budget thresholds, real GeoIP databases, real rate-limit pressure). Today only the handoff hooks exist; future additions land under the same prefix.
+
+**Production refusal.** If `NODE_ENV=production` and **any** `SW_SIM_*` var is set, the server refuses to boot and names the offending key(s). The whole namespace is caught by one boot-time check, so future additions inherit the same safety rail. To run under sim semantics, set `NODE_ENV=development` (or `staging` / `test` — anything other than `production`).
+
+**Visibility.** When at least one `SW_SIM_*` var is set (or `opts.sim` is passed via `buildServer` in a test), `GET /health` includes `sim_active: true` in its response — only in non-production. In production the field is omitted entirely.
+
+### Handoff sim (M23.5)
+
+| Variable                                  | Used by | Meaning |
+|-------------------------------------------|---------|---------|
+| `SW_SIM_SOFT_HANDOFF_AFTER_USER_TURNS`    | API server | Positive integer. When set, the soft-handoff `HANDOFF_SOFT.md` system block is injected into the next `POST /chat` whenever the session has reached this many user-role messages (counting the incoming one), regardless of session spend. The real spend-based trigger still applies in parallel — whichever fires first wins. Admin-mode sessions still suppress (M21 semantics preserved). Unset → no sim (the real spend trigger is the only one). |
+| `SW_SIM_HARD_HANDOFF_AFTER_USER_TURNS`    | API server | Positive integer. When set, the session is hard-terminated (`session_terminated: true`, canned response on subsequent turns, handoff webhook fired) after this many user-role messages. Real spend-based hard cap still applies in parallel. Admin-mode terminates but suppresses the webhook, same as the real path. |
+
+**Sanity guard:** if both are set and `SOFT >= HARD`, the server refuses to boot. Soft is supposed to nudge before hard cuts off; nonsense ordering would mask the soft path entirely.
+
+Typical use: `SW_SIM_SOFT_HANDOFF_AFTER_USER_TURNS=5 SW_SIM_HARD_HANDOFF_AFTER_USER_TURNS=7 NODE_ENV=development npm run dev`, then chat through the widget for 5+ turns to see the soft inject; 7+ turns to see the hard termination.
 
 ## Notes
 

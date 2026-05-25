@@ -57,6 +57,15 @@ export interface BuildServerOpts {
     /** Clock for the per-chatbot limiter's window math (tests-only). */
     now?: () => number;
   };
+  /**
+   * M23.5 simulation hooks. Tests pass per-server overrides here; production
+   * code leaves this unset and runChat falls back to `runtimeEnv.sim` for
+   * each request. See `src/services/chat.ts` `RunChatInput.sim`.
+   */
+  sim?: {
+    softHandoffAfterUserTurns?: number;
+    hardHandoffAfterUserTurns?: number;
+  };
 }
 
 const CHAT_ERROR_STATUS = {
@@ -407,6 +416,11 @@ export async function buildServer(opts: BuildServerOpts): Promise<FastifyInstanc
       db: { type: 'boolean' },
       version: { type: 'string' },
       timestamp: { type: 'string', format: 'date-time' },
+      // M23.5: only ever present in non-production, and only when at least
+      // one SW_SIM_* var is set. Absent entirely in production (which is
+      // additionally enforced by the env loader: production refuses to start
+      // when any SW_SIM_* var is set).
+      sim_active: { type: 'boolean' },
     },
     required: ['ok', 'db', 'version', 'timestamp'],
   };
@@ -431,12 +445,32 @@ export async function buildServer(opts: BuildServerOpts): Promise<FastifyInstanc
       } catch (err) {
         req.log.error({ err }, 'health: DB ping failed');
       }
-      return reply.status(dbOk ? 200 : 503).send({
+      const body: {
+        ok: boolean;
+        db: boolean;
+        version: string;
+        timestamp: string;
+        sim_active?: boolean;
+      } = {
         ok: dbOk,
         db: dbOk,
         version: VERSION,
         timestamp: new Date().toISOString(),
-      });
+      };
+      // M23.5: include `sim_active` ONLY in non-production. Production
+      // refuses to start when any SW_SIM_* var is set (loadEnv guard), so
+      // surfacing the field there would always be a misleading `false`.
+      // Per-server overrides via opts.sim count as active too — tests
+      // exercise this path.
+      if (!runtimeEnv.isProduction) {
+        const simActive =
+          opts.sim?.softHandoffAfterUserTurns !== undefined ||
+          opts.sim?.hardHandoffAfterUserTurns !== undefined ||
+          runtimeEnv.sim.softHandoffAfterUserTurns !== null ||
+          runtimeEnv.sim.hardHandoffAfterUserTurns !== null;
+        body.sim_active = simActive;
+      }
+      return reply.status(dbOk ? 200 : 503).send(body);
     },
   );
 
@@ -910,6 +944,7 @@ export async function buildServer(opts: BuildServerOpts): Promise<FastifyInstanc
           sessionToken: token,
           message: body.message,
           adapterFactory,
+          sim: opts.sim,
         });
         return reply.send(result);
       } catch (err) {

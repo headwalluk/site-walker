@@ -12,6 +12,7 @@ import { assemblePrompt, loadDiskBlocks, loadHandoffBlock } from './system-block
 import { getChatbotById, type Chatbot } from './chatbots.js';
 import { getSessionSpend, isSessionBudgetExhausted, parseCapDecimal } from './budget.js';
 import { notifyHandoff } from './handoff-webhook.js';
+import { env as runtimeEnv } from '../config/env.js';
 
 export const MAX_MESSAGE_CHARS = 8000;
 
@@ -58,6 +59,17 @@ export interface RunChatInput {
   blocksBaseDir?: string;
   /** Replace the adapter factory (tests inject a fake here). */
   adapterFactory?: AdapterFactory;
+  /**
+   * M23.5 simulation hooks for acceptance testing. Overrides `runtimeEnv.sim`
+   * defaults. Production paths leave this unset and inherit env config; tests
+   * pass explicit numbers to exercise the sim triggers deterministically.
+   * Passing `null` is not supported as an explicit "force off" — tests that
+   * want sim off simply don't pass this field (env defaults to null in CI).
+   */
+  sim?: {
+    softHandoffAfterUserTurns?: number;
+    hardHandoffAfterUserTurns?: number;
+  };
 }
 
 export interface RunChatResult {
@@ -190,6 +202,21 @@ export async function runChat(input: RunChatInput): Promise<RunChatResult> {
     ? await loadDiskBlocks(chatbot.slug, blocksBaseDir)
     : await loadDiskBlocks(chatbot.slug);
 
+  // M23.5: resolve sim thresholds for this turn. Per-request `input.sim`
+  // wins over env so tests can dial values per-test without mutating
+  // process.env (the env module is a module-load singleton).
+  const simSoftAfter =
+    input.sim?.softHandoffAfterUserTurns ?? runtimeEnv.sim.softHandoffAfterUserTurns;
+  const simHardAfter =
+    input.sim?.hardHandoffAfterUserTurns ?? runtimeEnv.sim.hardHandoffAfterUserTurns;
+
+  // Load history early — used for both the M23.5 user-turn sim count AND
+  // the context-overflow check + adapter call further down.
+  const history = await listMessages(db, session.id);
+  // +1 because the incoming user message hasn't been written yet but is
+  // part of this turn from the sim trigger's point of view.
+  const userTurnCount = history.filter((m) => m.role === 'user').length + 1;
+
   // M20 + M21: session cap source depends on whether this is an admin-mode
   // session (admin_session_budget_usd) or a customer session (session_budget_usd).
   // The soft-handoff inject + webhook firing are also suppressed for admin
@@ -203,7 +230,13 @@ export async function runChat(input: RunChatInput): Promise<RunChatResult> {
     !session.is_admin_mode && sessionCap !== null
       ? (sessionCap * chatbot.handoff_threshold_pct) / 100
       : null;
-  const softTriggered = softThresholdUsd !== null && sessionSpendBefore >= softThresholdUsd;
+  const realSoftTriggered = softThresholdUsd !== null && sessionSpendBefore >= softThresholdUsd;
+  // M23.5 sim trigger: fires when user-turn count crosses the configured
+  // threshold. Admin-mode still suppresses — sim doesn't override semantic
+  // decisions, just lowers the trigger threshold for testing.
+  const simSoftTriggered =
+    !session.is_admin_mode && simSoftAfter !== null && userTurnCount >= simSoftAfter;
+  const softTriggered = realSoftTriggered || simSoftTriggered;
   const extraBlocks: { name: string; content: string }[] = [];
   if (softTriggered) {
     const softContent = blocksBaseDir
@@ -219,8 +252,6 @@ export async function runChat(input: RunChatInput): Promise<RunChatResult> {
     diskBlocks,
     extraBlocks: extraBlocks.length > 0 ? extraBlocks : undefined,
   });
-
-  const history = await listMessages(db, session.id);
 
   if (resolved.contextWindow !== null) {
     const historyTokens = history.reduce((sum, m) => sum + estimateTokens(m.content), 0);
@@ -297,27 +328,30 @@ export async function runChat(input: RunChatInput): Promise<RunChatResult> {
   // rather than being cut off mid-thought. If we just crossed the cap,
   // terminate the session: the next POST /chat returns the canned hard-
   // handoff message without invoking the LLM.
-  if (sessionCap !== null) {
-    const sessionSpendAfter = sessionSpendBefore + costUsd;
-    if (isSessionBudgetExhausted(sessionSpendAfter, sessionCap)) {
-      await db('sessions').where({ id: session.id }).update({ terminated_at: db.fn.now() });
-      result.session_terminated = true;
-      // M21: admin-mode sessions terminate normally (safety belt) but DO NOT
-      // fire the handoff webhook — the operator would just be receiving a
-      // notification about themselves.
-      if (!session.is_admin_mode) {
-        // Fire-and-forget webhook (does nothing if handoff_webhook_url unset).
-        // We refetch the session to pick up the freshly-set terminated_at; if
-        // the visitor has captured an email earlier the webhook carries it.
-        const refreshed = await findSessionByToken(db, sessionToken);
-        if (refreshed) {
-          void notifyHandoff({
-            db,
-            chatbot,
-            session: refreshed,
-            spendUsd: sessionSpendAfter,
-          });
-        }
+  // M23.5: the sim trigger fires alongside the real one; whichever
+  // condition is true terminates the session.
+  const sessionSpendAfter = sessionSpendBefore + costUsd;
+  const realHardTriggered =
+    sessionCap !== null && isSessionBudgetExhausted(sessionSpendAfter, sessionCap);
+  const simHardTriggered = simHardAfter !== null && userTurnCount >= simHardAfter;
+  if (realHardTriggered || simHardTriggered) {
+    await db('sessions').where({ id: session.id }).update({ terminated_at: db.fn.now() });
+    result.session_terminated = true;
+    // M21: admin-mode sessions terminate normally (safety belt) but DO NOT
+    // fire the handoff webhook — the operator would just be receiving a
+    // notification about themselves.
+    if (!session.is_admin_mode) {
+      // Fire-and-forget webhook (does nothing if handoff_webhook_url unset).
+      // We refetch the session to pick up the freshly-set terminated_at; if
+      // the visitor has captured an email earlier the webhook carries it.
+      const refreshed = await findSessionByToken(db, sessionToken);
+      if (refreshed) {
+        void notifyHandoff({
+          db,
+          chatbot,
+          session: refreshed,
+          spendUsd: sessionSpendAfter,
+        });
       }
     }
   }

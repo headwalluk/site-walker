@@ -133,3 +133,140 @@ test('loadEnv: SW_RATELIMIT_*_PER_MINUTE parses valid override', () => {
     },
   );
 });
+
+// ---------------------------------------------------------------------------
+// M23.5 sim env
+// ---------------------------------------------------------------------------
+
+test('loadEnv: SW_SIM_*_AFTER_USER_TURNS default to null when unset', () => {
+  withEnvOverrides(
+    {
+      SW_SIM_SOFT_HANDOFF_AFTER_USER_TURNS: undefined,
+      SW_SIM_HARD_HANDOFF_AFTER_USER_TURNS: undefined,
+      NODE_ENV: 'development',
+    },
+    () => {
+      const e = loadEnv();
+      assert.equal(e.sim.softHandoffAfterUserTurns, null);
+      assert.equal(e.sim.hardHandoffAfterUserTurns, null);
+    },
+  );
+});
+
+test('loadEnv: SW_SIM_*_AFTER_USER_TURNS parses valid positive ints', () => {
+  withEnvOverrides(
+    {
+      SW_SIM_SOFT_HANDOFF_AFTER_USER_TURNS: '5',
+      SW_SIM_HARD_HANDOFF_AFTER_USER_TURNS: '7',
+      NODE_ENV: 'development',
+    },
+    () => {
+      const e = loadEnv();
+      assert.equal(e.sim.softHandoffAfterUserTurns, 5);
+      assert.equal(e.sim.hardHandoffAfterUserTurns, 7);
+    },
+  );
+});
+
+test('loadEnv: SW_SIM_*_AFTER_USER_TURNS rejects zero / negative / non-integer', () => {
+  for (const bad of ['0', '-3', '1.5', 'forever']) {
+    withEnvOverrides({ SW_SIM_SOFT_HANDOFF_AFTER_USER_TURNS: bad, NODE_ENV: 'development' }, () => {
+      assert.throws(() => loadEnv(), /must be a positive integer/);
+    });
+  }
+});
+
+test('loadEnv: refuses to start in production when ANY SW_SIM_* var is set', () => {
+  withEnvOverrides({ SW_SIM_SOFT_HANDOFF_AFTER_USER_TURNS: '5', NODE_ENV: 'production' }, () => {
+    assert.throws(() => loadEnv(), /forbidden in production/);
+    // Error message names the offending key so the operator can find it.
+    try {
+      loadEnv();
+    } catch (err) {
+      assert.match((err as Error).message, /SW_SIM_SOFT_HANDOFF_AFTER_USER_TURNS/);
+    }
+  });
+});
+
+test('loadEnv: production refusal triggers for any SW_SIM_* var, not just known ones', () => {
+  // A future or unknown SW_SIM_* var should also block production startup.
+  withEnvOverrides({ SW_SIM_FORCE_COUNTRY: 'GB', NODE_ENV: 'production' }, () => {
+    assert.throws(() => loadEnv(), /SW_SIM_FORCE_COUNTRY/);
+  });
+});
+
+test('loadEnv: production refusal does NOT trigger when no SW_SIM_* is set', () => {
+  withEnvOverrides(
+    {
+      SW_SIM_SOFT_HANDOFF_AFTER_USER_TURNS: undefined,
+      SW_SIM_HARD_HANDOFF_AFTER_USER_TURNS: undefined,
+      NODE_ENV: 'production',
+    },
+    () => {
+      const e = loadEnv();
+      assert.equal(e.isProduction, true);
+      assert.equal(e.sim.softHandoffAfterUserTurns, null);
+    },
+  );
+});
+
+test('loadEnv: production refusal ignores empty-string SW_SIM_* vars (treated as unset)', () => {
+  withEnvOverrides({ SW_SIM_SOFT_HANDOFF_AFTER_USER_TURNS: '', NODE_ENV: 'production' }, () => {
+    // Empty string is not "set" for our purposes — matches the
+    // nonEmptyOrDefault / parsePositiveIntegerOptional convention.
+    const e = loadEnv();
+    assert.equal(e.sim.softHandoffAfterUserTurns, null);
+  });
+});
+
+test('loadEnv: refuses when SW_SIM_SOFT >= SW_SIM_HARD (nonsense ordering)', () => {
+  withEnvOverrides(
+    {
+      SW_SIM_SOFT_HANDOFF_AFTER_USER_TURNS: '5',
+      SW_SIM_HARD_HANDOFF_AFTER_USER_TURNS: '5',
+      NODE_ENV: 'development',
+    },
+    () => {
+      assert.throws(() => loadEnv(), /must be less than/);
+    },
+  );
+  withEnvOverrides(
+    {
+      SW_SIM_SOFT_HANDOFF_AFTER_USER_TURNS: '7',
+      SW_SIM_HARD_HANDOFF_AFTER_USER_TURNS: '5',
+      NODE_ENV: 'development',
+    },
+    () => {
+      assert.throws(() => loadEnv(), /must be less than/);
+    },
+  );
+});
+
+test('loadEnv: sanity check is only enforced when BOTH SW_SIM_* are set', () => {
+  // Soft only — allowed.
+  withEnvOverrides(
+    {
+      SW_SIM_SOFT_HANDOFF_AFTER_USER_TURNS: '5',
+      SW_SIM_HARD_HANDOFF_AFTER_USER_TURNS: undefined,
+      NODE_ENV: 'development',
+    },
+    () => {
+      const e = loadEnv();
+      assert.equal(e.sim.softHandoffAfterUserTurns, 5);
+      assert.equal(e.sim.hardHandoffAfterUserTurns, null);
+    },
+  );
+  // Hard only — allowed.
+  withEnvOverrides(
+    {
+      SW_SIM_SOFT_HANDOFF_AFTER_USER_TURNS: undefined,
+      SW_SIM_HARD_HANDOFF_AFTER_USER_TURNS: '5',
+      NODE_ENV: 'development',
+    },
+    () => {
+      const e = loadEnv();
+      assert.equal(e.sim.softHandoffAfterUserTurns, null);
+      assert.equal(e.sim.hardHandoffAfterUserTurns, 5);
+    },
+  );
+});
