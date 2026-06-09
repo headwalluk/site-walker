@@ -2,7 +2,7 @@
 
 **Last Updated:** 9 June 2026
 **Current Version:** 0.22.1
-**Current Phase:** **Road to v1.0.0 — first paying client.** SaaS-pivot block closed at v0.16.0 (M20: budget caps); M21 (operational hours + admin-mode sessions, v0.17.0) landed the last pre-v1.0.0 API feature. Phase 4 (M22–M26) is the punch list for first release. **M22 (admin HTTP for session/conversation review, v0.18.0)** + **M23 (in-memory rate limiting, v0.19.0)** shipped 2026-05-24; **M23.5 (sim hooks, v0.20.0)** + **M23.6 (final-turn wind-down, v0.21.0)** shipped 2026-05-25; **M23.7 (WP admin-area data — block `modified_at` + visitor `country_code`, v0.22.0; + v0.22.1 patch: `country` column in `sw sessions list`)** shipped 2026-06-09. Remaining: production deployment polish (M24), Anthropic prompt-caching adapter wiring (M25), README rewrite (M26), block-editing security hardening (M27). Everything below the v1.0.0 line is post-launch.
+**Current Phase:** **Road to v1.0.0 — first paying client.** SaaS-pivot block closed at v0.16.0 (M20: budget caps); M21 (operational hours + admin-mode sessions, v0.17.0) landed the last pre-v1.0.0 API feature. Phase 4 (M22–M26) is the punch list for first release. **M22 (admin HTTP for session/conversation review, v0.18.0)** + **M23 (in-memory rate limiting, v0.19.0)** shipped 2026-05-24; **M23.5 (sim hooks, v0.20.0)** + **M23.6 (final-turn wind-down, v0.21.0)** shipped 2026-05-25; **M23.7 (WP admin-area data — block `modified_at` + visitor `country_code`, v0.22.0; + v0.22.1 patch: `country` column in `sw sessions list`)** shipped 2026-06-09. Remaining (reshaped by the 2026-06-09 pre-1.0 gap review): **M28 GDPR/retention is the next build**, then M29 security audit, M30 perf/scaling audit, M31 backups/DR, M32 observability — plus the earlier punch-list items M24 (deployment polish), M25 (prompt caching), M26 (README). Everything below the v1.0.0 line is post-launch. A prod soak-test for trusted clients is live and `site-walker-wp` is updated.
 **Overall Progress (post-M23.7, v0.22.0):** M1–M6 complete, M7 + M8 partial, M16–M23 complete (v0.12.0 through v0.19.0); M23.5 + M23.6 + M23.7 interstitials at v0.20.0 / v0.21.0 / v0.22.0. Admin HTTP surface live with M20 budget caps + M21 availability + admin-mode sessions + M22 session/conversation review. Public chat path carries per-IP and per-chatbot rate limits via `@fastify/rate-limit` + in-memory `ChatbotRateLimiter`; `429 rate_limit_exceeded` with `Retry-After` on both layers. `SW_SIM_*` namespace reserved + gated behind production-refusal rail; handoff sim hooks lower thresholds from USD spend to user-message count for acceptance testing. M23.6 final-turn predictor injects `HANDOFF_FINAL` wind-down hint when this turn is about to trip the hard cap (95% of cap, or sim hard threshold). M23.7 adds block `modified_at` to the admin blocks list + privacy-friendly visitor `country_code` capture (no IP stored) surfaced through the M22 session-review routes. Daily + per-session + admin-session caps enforced end-to-end; per-chatbot operational hours with `503 chatbot_closed`; admin-mode sessions skip operator-imposed gates and aggregate spend separately. 377 tests, format + lint clean.
 
 Vision and phasing live in [`../README.md`](../README.md). **Note:** README still markets the prototype-era "self-hosted multi-tenant API" framing; rewrite ships after M16 lands, not before, to avoid documenting vapourware. Stack and architecture decisions live in [`../CLAUDE.md`](../CLAUDE.md). Auth/session and data-model design live in companion docs in this directory. This file tracks the work.
@@ -20,7 +20,7 @@ Companion planning docs:
 
 ## Next up — road to v1.0.0
 
-Post-M22, 2026-05-24. The API surface is feature-complete for first customer; v1.0.0 is the punch list to make the launch responsible. Phase 4 milestones are M22–M26 below; everything past the divider is post-launch.
+Post-M22, 2026-05-24 (updated 2026-06-09 after the pre-1.0 gap review). The API surface is feature-complete and a trusted-client prod soak is live; v1.0.0 is the punch list to make the launch *responsible*. Phase 4 is M22–M32. **The next build is M28 (GDPR/retention)** — the gap review concluded data-protection, DR, and operability gate a real 1.0 more than features do. Everything past the divider is post-launch.
 
 1. ✅ **M22 — Admin HTTP for session/conversation review.** Shipped 2026-05-24 at v0.18.0.
 2. ✅ **M23 — Rate limiting (in-memory).** Shipped 2026-05-24 at v0.19.0.
@@ -32,7 +32,13 @@ Post-M22, 2026-05-24. The API surface is feature-complete for first customer; v1
 4. **M25 — Anthropic prompt caching adapter wiring.** Substrate already in DB (M18). Adapter sends `cache_control` markers on the system-blocks prefix, parses cache stats from responses, gates by model, skips below the minimum-cacheable threshold. ~70-80% input-billing reduction expected on stable-system-block chatbots.
 5. **M26 — README rewrite + docs polish.** Current README still markets the prototype-era "self-hosted multi-tenant API" framing; rewrite around the SaaS pivot, BYO keys, budget caps, operational hours, admin mode. First thing a prospective customer reads.
 6. **M27 — Block-editing security hardening.** Defence-in-depth on the M19 block-editing surface (canonical-path containment assert, name-length cap, reserved-name dedup). Not a launch blocker — traversal is already blocked on two layers; this makes the guarantee local and drift-proof. Sequenced *after* the `site-walker-wp` admin-area first draft so real plugin usage informs the edges. Design in [`16-block-editing-security-hardening.md`](16-block-editing-security-hardening.md).
-7. **First paying client on `api.site-walker.net`.** End-to-end test of the whole stack with BYO Anthropic key, daily cap configured (informed by real M18 usage data once we have a couple of real chatbots running for a week), the `site-walker-wp` widget installed on the customer's WordPress, operational hours set to the client's business hours, admin mode usable by Woo store staff, and the operator's CRM wired to `handoff_webhook_url` for email capture. The whole point of the SaaS pivot.
+7. 🔵 **M28 — Data retention + GDPR.** **Next build.** Configurable retention window + purge, data export, PII redaction posture, controller/processor stance. Gates the EU-shop market (legal, not polish). Supersedes old M13. Full entry below; start with a design pass + `dev-notes/17-retention-and-gdpr.md`.
+8. 🔵 **M29 — Full security audit + remediation.** Folds in M27. Pre-seeded findings: blanket `trustProxy: true` (IP/geo/rate-limit spoofing), unsigned handoff webhooks, no admin-mutation audit log, an explicit call on prompt-injection (old M12).
+9. 🔵 **M30 — Performance + horizontal-scaling audit.** Design the scaling seams + measure: shared/DB-backed block storage (blocks are local-disk today — breaks multi-node), Redis-backed rate limiting (old M11), a load/soak harness for an empirical baseline.
+10. 🔵 **M31 — Tested backup + restore (DR).** Pulls old M7 above the line: scripted backup + a *rehearsed* restore in the runbook.
+11. 🔵 **M32 — Operability + observability.** Metrics + alerting (error/LLM-failure/budget/rate-limit, p95 latency) + a graceful per-chatbot fallback message when the LLM upstream is down.
+    - Plus an open question on **API versioning** (`/v1/…` prefix or a compatibility policy) now that a deployed WP plugin consumes unversioned routes. See below.
+12. **First paying client on `api.site-walker.net`.** End-to-end test of the whole stack with BYO Anthropic key, daily cap configured (informed by real M18 usage data once we have a couple of real chatbots running for a week), the `site-walker-wp` widget installed on the customer's WordPress, operational hours set to the client's business hours, admin mode usable by Woo store staff, and the operator's CRM wired to `handoff_webhook_url` for email capture. The whole point of the SaaS pivot.
 
 Below the v1.0.0 line: cluster mode + Redis (paired, M11), DB backup/restore CLI (M7 finish), prompt-injection guardrails (M12), conversation retention + PII (M13), friendlier CLI errors (M15), hierarchical system blocks, auto-mode content ingestion + condensation, OAuth-style plugin linking. See "Post-v1.0.0 — future development" section.
 
@@ -749,6 +755,80 @@ Scope (H1–H3 are the security-substantive set; do them as one focused pass):
 
 ---
 
+## Pre-1.0.0 gap review (2026-06-09)
+
+The API is feature-complete for the trusted-client soak that's now live (prod soak-test running, `site-walker-wp` updated). A gap review concluded that a *robust* 1.0 for the target market — small EU WooCommerce + service-based FAQ shops, paying — is gated less by features and more by **data-protection, disaster recovery, and operability**, with security + scaling audits alongside. Agreed ordering: **M28 (GDPR/retention) → M29 (security audit) → M30 (perf/scaling audit) + M31 (backups/DR) + M32 (observability) → the rest.** M28 is the next thing we build.
+
+These supersede / pull above the line several previously-deferred items (old M13 retention, M7 backups, M12 prompt-injection, M11 cluster) — see cross-references. The deliberate non-goals (no tools/agents, no cross-session memory) stand: that scope is a strength, not a gap.
+
+### Milestone 28: Data retention + GDPR
+
+**Target Completion:** TBD — **next build**
+**Status:** 🔵 Next up (design pass first)
+**Priority:** Critical — gates the actual market (EU shops). Legal requirement, not polish.
+
+Supersedes old M13 (conversation retention + PII). The bot logs every conversation indefinitely and captures visitor emails (`POST /sessions/visitor-email`), with no retention window, purge, export, or redaction. We already made the privacy-respecting choice to capture country-not-IP ([`15-privacy-friendly-analytics.md`](15-privacy-friendly-analytics.md), [[project-no-ip-capture-gdpr]] in memory) — this finishes the thought.
+
+Scope (settle in a design pass before building):
+- **Configurable retention window** per chatbot (or system default) + a purge job that deletes sessions + messages past it. Cron/CLI-triggered; cluster-safe later.
+- **Data export** for a chatbot's conversations (operator-facing — supports subject-access / portability requests).
+- **PII redaction** stance for the admin review UI (M22) — at minimum visitor_email handling; consider message-body redaction policy.
+- **Processor/controller posture** documented for self-hosters and the SaaS path (who is controller vs processor; what the operator must tell their users).
+- **GDPR sanity-check on `country_code`** before widening its surface (the open `15` question) — country alone is generally not PII per ICO, but country + timestamp + chatbot edges closer; settle the position.
+
+Start next session with a design doc (`dev-notes/17-retention-and-gdpr.md`) + the usual open-questions pass before any code.
+
+### Milestone 29: Full security audit + remediation
+
+**Target Completion:** TBD
+**Status:** 🔵 Planned
+**Priority:** High — public-facing, multi-tenant, holds customer LLM keys + conversation logs.
+
+A deliberate audit pass, not just the block-hardening of M27 (which folds in here). Pre-seeded findings from the 2026-06-09 review:
+- **`trustProxy: true` is blanket** (`src/server.ts`). Correct *only* while the app is unreachable except via the trusted reverse proxy; otherwise a forged `X-Forwarded-For` spoofs `req.ip`, defeating per-IP rate limiting **and** forging geo/country. Pin to the proxy IP/subnet; verify direct access is firewalled.
+- **Handoff webhooks are unsigned** (the M20 "no HMAC v1" note). Add HMAC signing before a webhook touches a real CRM — anyone who learns the URL can POST fake handoffs/emails.
+- **No audit log of admin mutations** (who changed a block / budget / origin / key, when). Pairs with M27 H4.
+- **M27 block-editing hardening** (H1–H3) — execute as part of this pass.
+- **Prompt-injection / system-block extraction** (old M12) — make an *explicit written decision*: for a pre-sales bot the blast radius is the customer's own configured FAQ/pricing (low), but the "accepted for 1.0" call should be deliberate, not unexamined.
+- Standard sweep: dependency/audit, body-size limits, secrets handling, error-message leakage, the cross-account 404 pattern's consistency.
+
+### Milestone 30: Performance + horizontal-scaling audit
+
+**Target Completion:** TBD
+**Status:** 🔵 Planned
+**Priority:** High — establishes the scaling story and an empirical baseline before real load.
+
+Not micro-optimization — establish the seams and *measure*. The conversation tier is already correctly stateless (state in MariaDB); two real blockers to horizontal scaling:
+- **System blocks live on local disk** (`data/chatbots/<slug>/`). The admin PUT writes to whichever node served it; other nodes serving `/chat` won't see the file. Horizontal scaling needs **shared/synced block storage (NFS / object store) or DB-backed blocks**. Design this seam now even if single-node ships for 1.0.
+- **Rate limiter is in-memory + per-process** (old M11). Clustering splits the bucket per worker (effective cap = N × configured). Needs **Redis** as the shared store — paired with clustering.
+- **Load/soak harness** (concurrent sessions, sustained chat, connection-pool saturation, p95 latency LLM-mocked vs real). This is the empirical backbone — 377 unit/integration tests give zero concurrency data. Build it once; reuse forever.
+
+Building the cluster itself stays below the line (M11) until traffic demands; this milestone *designs the seams + measures* so the later build isn't a repaint.
+
+### Milestone 31: Tested backup + restore (DR)
+
+**Target Completion:** TBD
+**Status:** 🔵 Planned
+**Priority:** High — config + every customer conversation live in one MariaDB.
+
+Pulls old M7 (`sw db backup/restore`) above the line. "Manual mysqldump is fine" holds until a restore is needed and the procedure turns out never to have been *rehearsed*. Scope: scripted backup, a **rehearsed** restore documented in the runbook, retention/rotation for the dumps, and the credential-handling decisions M7 flagged (storage path, filename convention, prune policy, overwrite semantics).
+
+### Milestone 32: Operability + observability
+
+**Target Completion:** TBD
+**Status:** 🔵 Planned
+**Priority:** High — we're soak-testing now; "the bot's slow/broken" needs an answer.
+
+- **Metrics**: request + error rates, upstream-LLM failure rate, budget-exhaustion events, rate-limit hits, p95 latency. `/health` is DB-only today (M24 deepens it; go a bit further).
+- **Alerting** on the LLM-provider-down case and sustained error spikes.
+- **Graceful LLM-down UX**: adapter throw → `502 model_error` today; a visitor's first impression shouldn't be a raw error. Add a per-chatbot configurable fallback message ("Sorry, I'm having trouble — email us at…") that turns an outage into a soft handoff.
+
+### Open question — API versioning (added 2026-06-09)
+
+The browser + admin API is now consumed by a *deployed* `site-walker-wp` plugin, on **unversioned** routes. Cheap now, painful later: decide before 1.0 whether to introduce a `/v1/…` prefix (or a written compatibility policy) so a future breaking change doesn't break installed plugins. Lean: settle the policy at least, even if we don't reshape routes.
+
+---
+
 ## ━━━━━━━━━━━━━━━━━━━━━━━━━━━ ▼ V1.0.0 RELEASE LINE ▼ ━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 ---
@@ -759,14 +839,14 @@ Below the line. Each item is paused until real customer signal or a concrete ope
 
 ### Operator + ops
 
-- **`sw db backup/restore/list/prune`** (M7 finish). Manual `mysqldump`/`mysql` is acceptable for first customer (confirmed 2026-05-24). Tooling lands when a second customer makes ad-hoc backups painful, or when the first customer asks about automated retention.
-- **Cluster mode + Redis-backed rate limiting** (M11, paired). Single-process is plenty for first-customer traffic — the workload is IO-bound (chat turns wait on upstream LLMs, not CPU). **Trigger:** a single instance can't keep up under real load, or zero-downtime deploys become necessary. Cluster mode and Redis land *together* — clustering breaks in-memory rate limits (each worker has its own bucket; effective cap = N × configured cap), so Redis is the prerequisite. Topology options when triggered: systemd socket activation + `app@.service` template (kernel `SO_REUSEPORT` does the load balancing), or PM2 cluster, or templated systemd services behind an nginx upstream block. Also absorbs: abuse heuristics (repeated-identical-message detection, prompt-injection-shaped payloads, suspiciously high token consumption per session), and any provider-registry caching that M17 proves necessary.
+- **`sw db backup/restore/list/prune`** (M7 finish). **→ pulled above the line as M31** (2026-06-09 gap review): a tested backup + rehearsed restore is now a 1.0 blocker, not a deferred nice-to-have. Manual `mysqldump`/`mysql` is the stopgap until then.
+- **Cluster mode + Redis-backed rate limiting** (M11, paired). **→ the scaling *seams* are designed above the line in M30** (perf/scaling audit) — shared/DB-backed block storage + the Redis rate-limit store — even though the cluster *build* stays here until traffic demands it. Single-process is plenty for first-customer traffic — the workload is IO-bound (chat turns wait on upstream LLMs, not CPU). **Trigger:** a single instance can't keep up under real load, or zero-downtime deploys become necessary. Cluster mode and Redis land *together* — clustering breaks in-memory rate limits (each worker has its own bucket; effective cap = N × configured cap), so Redis is the prerequisite. Topology options when triggered: systemd socket activation + `app@.service` template (kernel `SO_REUSEPORT` does the load balancing), or PM2 cluster, or templated systemd services behind an nginx upstream block. Also absorbs: abuse heuristics (repeated-identical-message detection, prompt-injection-shaped payloads, suspiciously high token consumption per session), and any provider-registry caching that M17 proves necessary.
 - **Friendlier CLI + boot error messages** (M15). Operator-experience polish. Wrap mysql2 error codes in human-readable messages with suggested next steps (duplicate origin, missing slug, `ECONNREFUSED` on `./bin/chat`). Boot-time consistency pass for invalid env, unreachable DB, missing GeoIP DB. **Trigger:** first self-hoster who isn't us writes to ask what an `ER_DUP_ENTRY` means.
 
 ### Safety + retention
 
-- **Prompt-injection / jailbreak handling** (M12). Pre-sales bot can't go off-script. Open question: where the bot bails to "I don't know, contact us" rather than guess. Needs a scoping pass before implementation — likely a combination of per-chatbot topic boundaries (operator-configured) and a generic refusal layer for instructions embedded in user messages that try to override system blocks. **Trigger:** first observed off-script reply in M22's conversation review, or first customer asks "how do you stop people jailbreaking it?"
-- **Conversation retention + PII** (M13). Retention period (how long do we keep sessions before purging?), export for offline review, redaction of obvious PII before display in the admin UI. M22 ships the browse surface but no policy. **Trigger:** first EU customer (GDPR), or first customer asks about data retention.
+- **Prompt-injection / jailbreak handling** (M12). **→ an explicit "accepted for 1.0?" decision is folded into the M29 security audit** (blast radius is the customer's own configured FAQ/pricing — low — but the call should be deliberate). Pre-sales bot can't go off-script. Open question: where the bot bails to "I don't know, contact us" rather than guess. Needs a scoping pass before implementation — likely a combination of per-chatbot topic boundaries (operator-configured) and a generic refusal layer for instructions embedded in user messages that try to override system blocks. **Trigger:** first observed off-script reply in M22's conversation review, or first customer asks "how do you stop people jailbreaking it?"
+- **Conversation retention + PII** (M13). **→ superseded by M28 (Data retention + GDPR), now the next build above the line** (2026-06-09 gap review): the trigger fired — a real EU-shop market makes this a launch blocker, not a deferred item. Retention window + purge, export, PII redaction, controller/processor stance.
 - **History trimming** (M9, likely superseded). Sliding-window vs summarisation. Current `0.6.0` chat path refuses with `413 context_overflow` when prompt + history busts the window; M20's budget-driven handoff bounds conversation length implicitly. **Trigger:** real M18 cost data shows conversations regularly bust context before budgets, or a customer reports the 413 in the wild.
 
 ### Content pipeline + features
