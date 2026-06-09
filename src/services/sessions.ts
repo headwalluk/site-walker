@@ -162,7 +162,7 @@ export async function listSessions(
     .leftJoin('messages as m', 'm.session_id', 's.id')
     .select<
       SessionWithMeta[]
-    >('s.id', 's.chatbot_id', 's.token', 's.summary', 's.created_at', 's.last_active_at', 's.is_admin_mode', { chatbot_slug: 'c.slug' })
+    >('s.id', 's.chatbot_id', 's.token', 's.summary', 's.created_at', 's.last_active_at', 's.is_admin_mode', 's.country_code', { chatbot_slug: 'c.slug' })
     .count<{ message_count: string | number }[]>({ message_count: 'm.id' })
     .groupBy(
       's.id',
@@ -172,6 +172,7 @@ export async function listSessions(
       's.created_at',
       's.last_active_at',
       's.is_admin_mode',
+      's.country_code',
       'c.slug',
     )
     .orderBy('s.last_active_at', 'desc')

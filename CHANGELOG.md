@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.22.1] - 2026-06-09
+
+Follow-on to 0.22.0 (M23.7): surface the captured visitor country in the CLI, for at-a-glance review.
+
+### Added
+- **`./bin/sw sessions list` gains a `country` column** (2-char ISO code, or `--` when NULL). `listSessions` now selects `s.country_code`. Pure display — no behaviour change.
+
+### Docs
+- **`dev-notes/00-project-tracker.md`** (M23.7) — tightened the admin-mode rationale: admin-mode sessions stay NULL not just because they bypass geo, but because they're minted **server-to-server** (the request's `req.ip` is the WP server's datacenter, not the admin's location), so capturing it would record something misleading. Confirmed live 2026-06-09 — public-path session captured the country; admin-mode stored NULL.
+
 ## [0.22.0] - 2026-06-09
 
 M23.7 interstitial — two small, independent additions the `site-walker-wp` plugin admin area needs, shipped together. Neither touches the chat path.

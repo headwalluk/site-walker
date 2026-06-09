@@ -1446,7 +1446,7 @@ sessions
       const slugW = Math.max(7, ...rows.map((r) => r.chatbot_slug.length));
       const idW = Math.max(2, ...rows.map((r) => String(r.id).length));
       console.log(
-        `${'id'.padStart(idW)}  ${'chatbot'.padEnd(slugW)}  token (prefix)     msgs  last_active           mode`,
+        `${'id'.padStart(idW)}  ${'chatbot'.padEnd(slugW)}  token (prefix)     msgs  last_active               country  mode`,
       );
       for (const r of rows) {
         const tokenPrefix = r.token.slice(0, 16) + '…';
@@ -1454,10 +1454,11 @@ sessions
           r.last_active_at instanceof Date
             ? r.last_active_at.toISOString()
             : String(r.last_active_at);
+        const country = (r.country_code ?? '--').padEnd(7);
         const mode = r.is_admin_mode ? '[admin]' : '';
         console.log(
           `${String(r.id).padStart(idW)}  ${r.chatbot_slug.padEnd(slugW)}  ${tokenPrefix}  ` +
-            `${String(r.message_count).padStart(4)}  ${lastActive}  ${mode}`,
+            `${String(r.message_count).padStart(4)}  ${lastActive}  ${country}  ${mode}`,
         );
       }
     } finally {
