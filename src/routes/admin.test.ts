@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import type { Knex } from 'knex';
@@ -1266,6 +1266,95 @@ test('admin: DELETE /admin/chatbots/{slug}/blocks/{name} removes the file', asyn
     headers: { authorization: `Bearer ${ctx.rawKey}` },
   });
   assert.equal(del2.statusCode, 404);
+});
+
+test('admin: GET /admin/chatbots/{slug}/blocks lists name + size_bytes + modified_at, sorted, reserved omitted', async (t) => {
+  const db = makeTestDb();
+  setProvisioningKey(VALID_PROVISIONING);
+  const ctx = await seedAdminContext(db);
+  const slug = uniqueSlug('chatbot');
+  await db('chatbots').insert({ account_id: ctx.account.id, slug, name: slug });
+
+  const fastify = await buildServer({ db, logger: false });
+  t.after(async () => {
+    setProvisioningKey(null);
+    await fastify.close();
+    await rm(path.join('data', 'chatbots', slug), { recursive: true, force: true });
+    await db('accounts').where({ id: ctx.account.id }).del();
+    await db.destroy();
+  });
+
+  // Write two blocks out of alphabetical order to prove the response is sorted.
+  const products = '# Products\n\nWidgets and gadgets.';
+  const overview = '# Overview';
+  await fastify.inject({
+    method: 'PUT',
+    url: `/admin/chatbots/${slug}/blocks/20-products`,
+    headers: { authorization: `Bearer ${ctx.rawKey}`, 'content-type': 'text/markdown' },
+    payload: products,
+  });
+  await fastify.inject({
+    method: 'PUT',
+    url: `/admin/chatbots/${slug}/blocks/10-overview`,
+    headers: { authorization: `Bearer ${ctx.rawKey}`, 'content-type': 'text/markdown' },
+    payload: overview,
+  });
+  // A reserved-name file placed directly on disk must be omitted from the list
+  // (PUT refuses HANDOFF_FINAL, so we write it straight to the directory).
+  await writeFile(
+    path.join('data', 'chatbots', slug, 'HANDOFF_FINAL.md'),
+    'should be hidden',
+    'utf8',
+  );
+
+  const res = await fastify.inject({
+    method: 'GET',
+    url: `/admin/chatbots/${slug}/blocks`,
+    headers: { authorization: `Bearer ${ctx.rawKey}` },
+  });
+  assert.equal(res.statusCode, 200);
+
+  const { blocks } = res.json() as {
+    blocks: Array<{ name: string; size_bytes: number; modified_at: string }>;
+  };
+  // HANDOFF_FINAL omitted, sorted ascending by name.
+  assert.deepEqual(
+    blocks.map((b) => b.name),
+    ['10-overview', '20-products'],
+  );
+  assert.equal(blocks[0].size_bytes, Buffer.byteLength(overview, 'utf8'));
+  assert.equal(blocks[1].size_bytes, Buffer.byteLength(products, 'utf8'));
+  // modified_at is a well-formed ISO 8601 UTC timestamp (round-trips exactly).
+  for (const b of blocks) {
+    assert.equal(typeof b.modified_at, 'string');
+    const parsed = new Date(b.modified_at);
+    assert.ok(!Number.isNaN(parsed.getTime()), `modified_at not parseable: ${b.modified_at}`);
+    assert.equal(parsed.toISOString(), b.modified_at);
+  }
+});
+
+test('admin: GET /admin/chatbots/{slug}/blocks returns empty array when no blocks directory exists', async (t) => {
+  const db = makeTestDb();
+  setProvisioningKey(VALID_PROVISIONING);
+  const ctx = await seedAdminContext(db);
+  const slug = uniqueSlug('chatbot');
+  await db('chatbots').insert({ account_id: ctx.account.id, slug, name: slug });
+
+  const fastify = await buildServer({ db, logger: false });
+  t.after(async () => {
+    setProvisioningKey(null);
+    await fastify.close();
+    await db('accounts').where({ id: ctx.account.id }).del();
+    await db.destroy();
+  });
+
+  const res = await fastify.inject({
+    method: 'GET',
+    url: `/admin/chatbots/${slug}/blocks`,
+    headers: { authorization: `Bearer ${ctx.rawKey}` },
+  });
+  assert.equal(res.statusCode, 200);
+  assert.deepEqual(res.json(), { blocks: [] });
 });
 
 // ---------------------------------------------------------------------------

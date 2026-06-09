@@ -820,8 +820,9 @@ const adminChatbotsPlugin: FastifyPluginAsync<AdminChatbotsPluginOpts> = async (
                   properties: {
                     name: { type: 'string' },
                     size_bytes: { type: 'integer' },
+                    modified_at: { type: 'string', format: 'date-time' },
                   },
-                  required: ['name', 'size_bytes'],
+                  required: ['name', 'size_bytes', 'modified_at'],
                 },
               },
             },
@@ -845,14 +846,16 @@ const adminChatbotsPlugin: FastifyPluginAsync<AdminChatbotsPluginOpts> = async (
         }
         throw err;
       }
-      const blocks: Array<{ name: string; size_bytes: number }> = [];
+      const blocks: Array<{ name: string; size_bytes: number; modified_at: string }> = [];
       for (const entry of entries) {
         if (!entry.isFile()) continue;
         if (path.extname(entry.name).toLowerCase() !== '.md') continue;
         const name = path.basename(entry.name, '.md');
         if (RESERVED_BLOCK_NAMES.has(name)) continue;
         const stats = await stat(path.join(dir, entry.name));
-        blocks.push({ name, size_bytes: stats.size });
+        // mtime = content-last-changed; reflects out-of-band edits too. Display
+        // only — never use as a concurrency/cache/authz token (settable + skewable).
+        blocks.push({ name, size_bytes: stats.size, modified_at: stats.mtime.toISOString() });
       }
       blocks.sort((a, b) => a.name.localeCompare(b.name));
       return reply.send({ blocks });

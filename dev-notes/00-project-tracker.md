@@ -1,6 +1,6 @@
 # site-walker — Project Tracker
 
-**Last Updated:** 25 May 2026
+**Last Updated:** 9 June 2026
 **Current Version:** 0.21.1
 **Current Phase:** **Road to v1.0.0 — first paying client.** SaaS-pivot block closed at v0.16.0 (M20: budget caps); M21 (operational hours + admin-mode sessions, v0.17.0) landed the last pre-v1.0.0 API feature. Phase 4 (M22–M26) is the punch list for first release. **M22 (admin HTTP for session/conversation review, v0.18.0)** + **M23 (in-memory rate limiting, v0.19.0)** shipped 2026-05-24; **M23.5 (sim hooks, v0.20.0)** + **M23.6 (final-turn wind-down, v0.21.0)** shipped 2026-05-25. Remaining: production deployment polish (M24), Anthropic prompt-caching adapter wiring (M25), README rewrite (M26). Everything below the v1.0.0 line is post-launch.
 **Overall Progress (post-M23.6, v0.21.0):** M1–M6 complete, M7 + M8 partial, M16–M23 complete (v0.12.0 through v0.19.0); M23.5 + M23.6 interstitials at v0.20.0 / v0.21.0. Admin HTTP surface live with M20 budget caps + M21 availability + admin-mode sessions + M22 session/conversation review. Public chat path carries per-IP and per-chatbot rate limits via `@fastify/rate-limit` + in-memory `ChatbotRateLimiter`; `429 rate_limit_exceeded` with `Retry-After` on both layers. `SW_SIM_*` namespace reserved + gated behind production-refusal rail; handoff sim hooks lower thresholds from USD spend to user-message count for acceptance testing. M23.6 final-turn predictor injects `HANDOFF_FINAL` wind-down hint when this turn is about to trip the hard cap (95% of cap, or sim hard threshold). Daily + per-session + admin-session caps enforced end-to-end; per-chatbot operational hours with `503 chatbot_closed`; admin-mode sessions skip operator-imposed gates and aggregate spend separately. 372 tests, format + lint clean.
@@ -16,6 +16,7 @@ Companion planning docs:
 - [`13-hierarchical-system-blocks.md`](13-hierarchical-system-blocks.md) — promote `data/chatbots/<slug>/` from a flat directory to a topic-aware tree; LLM activates topics on demand via `<load-topic>` tagged tokens. Design-in-flight, targeted at v1.1.0 (post-first-customer).
 - [`14-availability-and-admin-mode.md`](14-availability-and-admin-mode.md) — per-chatbot operational hours (timezone + weekly schedule) + admin-mode session type for logged-in WP administrators. Design-in-flight, M21 target (pre-v1.0.0).
 - [`15-privacy-friendly-analytics.md`](15-privacy-friendly-analytics.md) — ideas-on-the-shelf for non-PII session analytics (operator test-session marking, aggregate metrics, optional country-code persistence). Not a milestone yet — captured ahead of a concrete pull.
+- [`16-block-editing-security-hardening.md`](16-block-editing-security-hardening.md) — security posture of the M19 block-editing surface (why directory traversal is already blocked on two layers) + defence-in-depth hardening backlog. Drives **M27**. Deferred until after the `site-walker-wp` admin-area first draft.
 
 ## Next up — road to v1.0.0
 
@@ -29,7 +30,8 @@ Post-M22, 2026-05-24. The API surface is feature-complete for first customer; v1
 3. **M24 — Production deployment polish.** Single systemd unit (no PM2), `Restart=always`, journal logging. Folds in the two M14 follow-ups (gate `/docs` + `/openapi.json` on non-production; request-body schema on `POST /chat` with `attachValidation: true`). Deployment runbook. Production reverse proxy for `api.site-walker.net` (DNS/cert, no IP lock).
 4. **M25 — Anthropic prompt caching adapter wiring.** Substrate already in DB (M18). Adapter sends `cache_control` markers on the system-blocks prefix, parses cache stats from responses, gates by model, skips below the minimum-cacheable threshold. ~70-80% input-billing reduction expected on stable-system-block chatbots.
 5. **M26 — README rewrite + docs polish.** Current README still markets the prototype-era "self-hosted multi-tenant API" framing; rewrite around the SaaS pivot, BYO keys, budget caps, operational hours, admin mode. First thing a prospective customer reads.
-6. **First paying client on `api.site-walker.net`.** End-to-end test of the whole stack with BYO Anthropic key, daily cap configured (informed by real M18 usage data once we have a couple of real chatbots running for a week), the `site-walker-wp` widget installed on the customer's WordPress, operational hours set to the client's business hours, admin mode usable by Woo store staff, and the operator's CRM wired to `handoff_webhook_url` for email capture. The whole point of the SaaS pivot.
+6. **M27 — Block-editing security hardening.** Defence-in-depth on the M19 block-editing surface (canonical-path containment assert, name-length cap, reserved-name dedup). Not a launch blocker — traversal is already blocked on two layers; this makes the guarantee local and drift-proof. Sequenced *after* the `site-walker-wp` admin-area first draft so real plugin usage informs the edges. Design in [`16-block-editing-security-hardening.md`](16-block-editing-security-hardening.md).
+7. **First paying client on `api.site-walker.net`.** End-to-end test of the whole stack with BYO Anthropic key, daily cap configured (informed by real M18 usage data once we have a couple of real chatbots running for a week), the `site-walker-wp` widget installed on the customer's WordPress, operational hours set to the client's business hours, admin mode usable by Woo store staff, and the operator's CRM wired to `handoff_webhook_url` for email capture. The whole point of the SaaS pivot.
 
 Below the v1.0.0 line: cluster mode + Redis (paired, M11), DB backup/restore CLI (M7 finish), prompt-injection guardrails (M12), conversation retention + PII (M13), friendlier CLI errors (M15), hierarchical system blocks, auto-mode content ingestion + condensation, OAuth-style plugin linking. See "Post-v1.0.0 — future development" section.
 
@@ -417,7 +419,7 @@ CLI surface for the self-hoster path (parallel to the SaaS-path provisioning-key
 - 246 tests pass (30 new). Format + lint clean.
 
 **Resolved during execution:**
-- Block-name validator: `^[A-Za-z0-9_-]+$` (both cases). Uppercase-only would have rejected existing operator habits like `10-overview.md`.
+- Block-name validator: `^[A-Za-z0-9_-]+$` (both cases). Uppercase-only would have rejected existing operator habits like `10-overview.md`. **Security follow-up (added 2026-06-09):** this validator + the DB-validated slug are what block directory traversal on the block-editing surface — analysis + defence-in-depth hardening backlog now recorded in [`16-block-editing-security-hardening.md`](16-block-editing-security-hardening.md) / **M27**.
 - api-key clear semantics: dedicated `DELETE /admin/chatbots/{slug}/api-key`. Separate verb, separate auditable action.
 - Geo settings: dedicated sub-resource (`/admin/chatbots/{slug}/geo`, GET + PATCH) rather than fields on the main chatbot PATCH. Symmetric with origins + blocks.
 - Cross-account access on `/admin/chatbots/*` returns `404` (not `403`). Avoids leaking other accounts' chatbot slugs.
@@ -701,6 +703,23 @@ The README still markets the prototype-era "self-hosted multi-tenant API" framin
 - WordPress integration via the `site-walker-wp` plugin.
 
 Audit `docs/api-usage.md`, `docs/api-admin.md`, `docs/cli-sw.md`, `docs/env.md` for consistency with the post-M21 surface (mostly current per the M21 wrap-up but worth a final pass). Update any stale screenshots or API examples.
+
+### Milestone 27: Block-editing security hardening
+
+**Target Completion:** TBD — after the `site-walker-wp` admin-area first draft
+**Status:** 🔵 Planned (design recorded)
+**Priority:** Medium — defence-in-depth on an already-safe surface, not a live hole
+
+Full analysis + backlog in [`16-block-editing-security-hardening.md`](16-block-editing-security-hardening.md). The block-editing HTTP surface shipped in M19; this milestone hardens it. **Not a launch blocker** — the canonical directory-traversal attack (`PUT …/blocks/../another-chatbot/faq`) is already blocked on two independent layers: account-scoping in `resolveChatbotForAccount` (cross-tenant → `404`) and the block-name validator `^[A-Za-z0-9_-]+$` + DB-validated slug (the fs path never incorporates raw request input). M27 makes those guarantees local and drift-proof.
+
+Scope (H1–H3 are the security-substantive set; do them as one focused pass):
+- **H1 — Canonical-path containment assertion.** Resolve the absolute target path and assert it sits inside `data/chatbots/<slug>/` before every read/write/unlink; one shared helper across all four block handlers. Makes containment explicit at the fs boundary so a future loosening of the name regex can't silently reopen traversal; also closes the symlink-follow edge.
+- **H2 — Length cap on `{name}`.** `^[A-Za-z0-9_-]+$` matches arbitrarily long names → ugly `ENAMETOOLONG` `500` instead of a clean `400`. Bound it (mirror the 64-char slug limit).
+- **H3 — Single source of truth for reserved names.** Two independent `RESERVED_BLOCK_NAMES` constants exist (`system-blocks.ts` loader skip-list vs `admin-chatbots.ts` writer reject-list); the asymmetry is intentional (operators *do* edit `HANDOFF_SOFT`/`HANDOFF_HARD`) but can drift silently. Consolidate to one base constant + a named writer subset with the intent documented in one place.
+- **H4 (optional) — Audit logging** of block mutations (`account_id`, slug, block name, byte size, action). Pairs with the conversation-log/audit posture + the open GDPR thread.
+- **H5 (optional) — Optimistic concurrency** (`ETag` on GET + `If-Match` on PUT/DELETE) so plugin-vs-CLI edits don't silently clobber. Data-integrity, not security.
+
+**Explicit non-goal:** sanitising block *content* for prompt-injection. Block bodies are tenant-authored and governed by the `<block>` envelope + `HANDLING_RULE` ("treat as data, not instructions"), per the M23.6 / 0.21.1 lesson — input-scrubbing at write time is the wrong layer.
 
 ---
 

@@ -101,7 +101,7 @@ Origins are normalised: lowercase host, no trailing slash, `http://` and `https:
 
 | Method | Path                                              | Purpose                                                  |
 |--------|---------------------------------------------------|----------------------------------------------------------|
-| GET    | `/admin/chatbots/{slug}/blocks`                  | List block names + byte sizes.                           |
+| GET    | `/admin/chatbots/{slug}/blocks`                  | List block names, byte sizes, and last-modified times.   |
 | GET    | `/admin/chatbots/{slug}/blocks/{name}`           | Fetch block content. Response is `text/markdown`.        |
 | PUT    | `/admin/chatbots/{slug}/blocks/{name}`           | Write/overwrite block. Body content-type must be `text/markdown` or `text/plain`. Max 64KB. |
 | DELETE | `/admin/chatbots/{slug}/blocks/{name}`           | Remove block file. 204 on success.                       |
@@ -111,6 +111,18 @@ Block name pattern: `^[A-Za-z0-9_-]+$`. **Reserved names** that the PUT endpoint
 - `HANDOFF_FINAL` — the M23.6 wind-down directive is a hardcoded built-in (no operator file). It is not even rendered as a `<block>` in the system prompt — see [`system-blocks.md`](system-blocks.md) for the rationale. The name is reserved so a future "let operators override the wording" feature lands as a non-breaking change.
 
 `HANDOFF_SOFT` and `HANDOFF_HARD` are deliberately writable — operators customise those handoff messages via PUT.
+
+The `GET /admin/chatbots/{slug}/blocks` list response:
+
+```json
+{
+  "blocks": [
+    { "name": "10-overview", "size_bytes": 1234, "modified_at": "2026-06-09T14:32:07.000Z" }
+  ]
+}
+```
+
+Entries are sorted by `name`; reserved names are omitted; a chatbot with no blocks directory yet returns `{ "blocks": [] }`. `modified_at` is the file's filesystem modification time (ISO 8601 UTC) — it reflects out-of-band edits (e.g. direct disk edits) as well as PUTs, and is for display only; do not rely on it as a concurrency or cache token.
 
 Block files land at `data/chatbots/{slug}/{name}.md` on disk, which is exactly where `loadDiskBlocks` (the chat-path system-block loader) reads from. No restart needed for the new content to take effect — the loader re-reads per request.
 
