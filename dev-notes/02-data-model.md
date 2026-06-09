@@ -153,6 +153,11 @@ Indexes:
 - `token` UNIQUE
 - `(chatbot_id, last_active_at)` composite — supports `sw sessions list --chatbot <slug>` ordered by recency without a sort
 
+Additive columns since the M16 baseline above (additive migrations, not reflected in the table for brevity):
+- `terminated_at TIMESTAMP NULL`, `visitor_email VARCHAR(255) NULL`, `handoff_notified_at TIMESTAMP NULL` — M20 budget caps / handoff (`0005_budget_caps.js`).
+- `is_admin_mode BOOLEAN NOT NULL DEFAULT FALSE` — M21 admin-mode sessions (`0006_availability_and_admin_mode.js`).
+- `country_code CHAR(2) NULL` — visitor's ISO 3166-1 alpha-2 country, captured at session-mint for privacy-friendly analytics; the IP is **never** stored (`0007_sessions_country_code.js`, 2026-06-09). See [`15-privacy-friendly-analytics.md`](15-privacy-friendly-analytics.md).
+
 ---
 
 ## `messages`

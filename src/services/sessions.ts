@@ -29,6 +29,14 @@ export interface Session {
    * inject + webhook firing. Excluded from `getChatbotDailySpend`.
    */
   is_admin_mode: boolean;
+  /**
+   * Visitor's country (ISO 3166-1 alpha-2, upper-cased) captured at
+   * session-mint for privacy-friendly analytics. NULL when unresolved
+   * (private/loopback IP, unindexed range, no GeoIP DB). The IP itself is
+   * never stored — only this low-resolution code. See
+   * dev-notes/15-privacy-friendly-analytics.md.
+   */
+  country_code: string | null;
 }
 
 /**
@@ -92,13 +100,14 @@ function generateToken(): string {
 export async function createSession(
   db: Knex,
   chatbotId: number,
-  opts: { isAdminMode?: boolean } = {},
+  opts: { isAdminMode?: boolean; countryCode?: string | null } = {},
 ): Promise<Session> {
   const token = generateToken();
   const [id] = await db('sessions').insert({
     chatbot_id: chatbotId,
     token,
     is_admin_mode: opts.isAdminMode === true,
+    country_code: opts.countryCode ?? null,
   });
   const row = await db<Session>('sessions').where({ id }).first();
   if (!row) {
@@ -201,6 +210,8 @@ export interface ChatbotSessionRow {
   terminated_at: Date | null;
   visitor_email: string | null;
   is_admin_mode: boolean;
+  /** Visitor's ISO 3166-1 alpha-2 country captured at session-mint; null when unresolved. */
+  country_code: string | null;
   message_count: number;
   tokens_in: number;
   tokens_out: number;
@@ -232,6 +243,7 @@ type RawChatbotSessionRow = {
   terminated_at: Date | null;
   visitor_email: string | null;
   is_admin_mode: number | boolean;
+  country_code: string | null;
   message_count: string | number;
   tokens_in_sum: string | number | null;
   tokens_out_sum: string | number | null;
@@ -247,6 +259,7 @@ function normaliseChatbotSessionRow(r: RawChatbotSessionRow): ChatbotSessionRow 
     terminated_at: r.terminated_at,
     visitor_email: r.visitor_email,
     is_admin_mode: Boolean(r.is_admin_mode),
+    country_code: r.country_code,
     message_count: Number(r.message_count ?? 0),
     tokens_in: Number(r.tokens_in_sum ?? 0),
     tokens_out: Number(r.tokens_out_sum ?? 0),
@@ -290,6 +303,7 @@ export async function listSessionsForChatbot(
         's.terminated_at',
         's.visitor_email',
         's.is_admin_mode',
+        's.country_code',
       )
       .count({ message_count: 'm.id' })
       .sum({ tokens_in_sum: 'm.tokens_in' })
@@ -303,6 +317,7 @@ export async function listSessionsForChatbot(
         's.terminated_at',
         's.visitor_email',
         's.is_admin_mode',
+        's.country_code',
       )
       // Tie-break by id DESC so two sessions that share a `last_active_at`
       // value (DATETIME is 1-second resolution on MariaDB's default config)
@@ -340,6 +355,7 @@ export async function getSessionForChatbot(
       's.terminated_at',
       's.visitor_email',
       's.is_admin_mode',
+      's.country_code',
     )
     .count({ message_count: 'm.id' })
     .sum({ tokens_in_sum: 'm.tokens_in' })
@@ -353,6 +369,7 @@ export async function getSessionForChatbot(
       's.terminated_at',
       's.visitor_email',
       's.is_admin_mode',
+      's.country_code',
     )
     .first()) as RawChatbotSessionRow | undefined;
   if (!row) return null;

@@ -66,13 +66,17 @@ Visitor sends a `X-Test-Session: <secret>` header on `POST /sessions`; server on
 - **Footgun**: forgotten secret in a customer's hands could let them mark all their sessions as tests, hiding them from the operator. Mitigated by making the secret operator-only / WP-admin-gated.
 - **Cost**: similar to A; slightly more surface.
 
-### Option C: persist country code at session-mint
+### Option C: persist country code at session-mint — ✅ IMPLEMENTED 2026-06-09
 
-Already looked up for geo policy; just save it. Adds `sessions.country_code CHAR(2) NULL`. `sw sessions list` gains a country column; `--country GB` / `--country '!GB'` filters.
+Adds `sessions.country_code CHAR(2) NULL` (`0007_sessions_country_code.js`), populated at session-mint in `POST /sessions`. Captured for **every** session, not just geo-restricted chatbots: enforcement already resolves the country for `blocklist`/`allowlist` modes, and `allowall` (which short-circuits enforcement's lookup) gets one explicit `geoChecker.lookup(req.ip)`. NULL when unresolved (private/loopback IP, unindexed range, no GeoIP DB loaded). The IP itself is still never stored — only the 2-char code. Threaded through `createSession(db, chatbotId, { countryCode })`.
 
 - **Privacy footprint**: country alone is generally not PII per ICO guidance, but combined with timestamp + chatbot it gets closer to identifiable. Lower-risk than IP, higher than nothing.
 - **Operator value**: useful for "where's traffic actually coming from" and "who's the dev testing from the UK vs the customer's visitors in DE."
-- **Cost**: one column + the persist-on-mint line. Tiny.
+- **Cost**: one column + the persist-on-mint line. Tiny — `allowall` adds one in-memory mmdb lookup per mint (~microseconds).
+
+**Surfaced via the admin API (2026-06-09):** `country_code` is now returned per-row by `GET /admin/chatbots/{slug}/sessions` and `GET /admin/chatbots/{slug}/sessions/{sessionId}` (M22 review surface) — `ChatbotSessionRow` + `sessionItemSchema`.
+
+**Still on the shelf (not yet built):** the `sw sessions list` country column + `--country GB` / `--country '!GB'` filters, and any server-side filtering by country in the admin API. The GDPR sanity-check in the open question below still applies as the surface widens.
 
 ### Option D: User-Agent fingerprint hash
 

@@ -206,6 +206,7 @@ Session-list response shape:
       "terminated_at": null,
       "visitor_email": null,
       "is_admin_mode": false,
+      "country_code": "GB",
       "message_count": 8,
       "tokens_in": 4120,
       "tokens_out": 1830,
@@ -219,6 +220,7 @@ Session-list response shape:
       "terminated_at": "2026-05-22T09:14:02.000Z",
       "visitor_email": "jane@example.com",
       "is_admin_mode": false,
+      "country_code": null,
       "message_count": 14,
       "tokens_in": 9210,
       "tokens_out": 4502,
@@ -231,7 +233,7 @@ Session-list response shape:
 }
 ```
 
-`terminated_at` is set when the M20 hard-cap triggered (or another mechanism in the future closes a session). `visitor_email` is what the visitor volunteered via `POST /sessions/visitor-email` after the soft- or hard-handoff prompt — site admins may follow up with that contact off-chat. `is_admin_mode` flags sessions minted via `POST /admin/chatbots/{slug}/sessions` (M21).
+`terminated_at` is set when the M20 hard-cap triggered (or another mechanism in the future closes a session). `visitor_email` is what the visitor volunteered via `POST /sessions/visitor-email` after the soft- or hard-handoff prompt — site admins may follow up with that contact off-chat. `is_admin_mode` flags sessions minted via `POST /admin/chatbots/{slug}/sessions` (M21). `country_code` is the visitor's ISO 3166-1 alpha-2 country (e.g. `GB`, `US`) resolved from the originating IP at session-mint, or `null` when it couldn't be resolved (private/loopback IP, unindexed range, or no GeoIP database configured); the IP itself is never stored.
 
 Single-session GET returns the same row shape on its own (no envelope).
 
@@ -259,7 +261,7 @@ Messages response shape:
 
 Per-message token or cost columns are deliberately not exposed — the site-wide aggregated totals from the session list are sufficient for review (we don't do multi-request agentic tooling or mid-conversation model switching that would make per-message cost interesting).
 
-Future additions (post-v1.0.0) likely include filters like geo-IP country, customer/admin segment, date range, and `has_email` / `terminated` — the v1 surface keeps it to pagination only.
+Each row already carries the visitor's resolved `country_code`; *filtering* by it (along with customer/admin segment, date range, and `has_email` / `terminated`) is a likely post-v1.0.0 addition — the v1 surface keeps it to pagination only.
 
 #### Admin-mode sessions (M21)
 

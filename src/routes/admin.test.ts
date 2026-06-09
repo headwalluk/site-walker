@@ -710,6 +710,7 @@ test('admin: GET /admin/chatbots/{slug}/sessions returns paginated sessions with
   const [sA] = await db('sessions').insert({
     chatbot_id: chatbotId,
     token: 'a'.repeat(64),
+    country_code: 'GB',
   });
   await db('messages').insert({
     session_id: sA,
@@ -758,6 +759,7 @@ test('admin: GET /admin/chatbots/{slug}/sessions returns paginated sessions with
       visitor_email: string | null;
       terminated_at: string | null;
       is_admin_mode: boolean;
+      country_code: string | null;
     }>;
     page: number;
     page_size: number;
@@ -778,10 +780,18 @@ test('admin: GET /admin/chatbots/{slug}/sessions returns paginated sessions with
   assert.equal(withMessages.tokens_in, 80);
   assert.equal(withMessages.tokens_out, 40);
   assert.ok(Math.abs(withMessages.cost_usd_estimate - 0.001234) < 1e-9);
+  // Country code surfaces (captured at session-mint).
+  assert.equal(withMessages.country_code, 'GB');
   // The terminated session surfaces its terminated_at + visitor_email.
   const terminated = body.sessions.find((s) => s.visitor_email === 'visitor@example.com');
   assert.ok(terminated);
   assert.ok(terminated.terminated_at);
+  // A session minted without a resolved country reports null.
+  const emptyNoCountry = body.sessions.find(
+    (s) => s.message_count === 0 && s.visitor_email === null,
+  );
+  assert.ok(emptyNoCountry);
+  assert.equal(emptyNoCountry.country_code, null);
 });
 
 test('admin: GET /admin/chatbots/{slug}/sessions honours page + page_size', async (t) => {
@@ -867,6 +877,7 @@ test('admin: GET /admin/chatbots/{slug}/sessions/{sessionId} returns the session
   const [sessionId] = await db('sessions').insert({
     chatbot_id: chatbotId,
     token: 'a'.repeat(64),
+    country_code: 'US',
   });
   await db('messages').insert({
     session_id: sessionId,
@@ -892,6 +903,7 @@ test('admin: GET /admin/chatbots/{slug}/sessions/{sessionId} returns the session
   const body = res.json();
   assert.equal(body.id, sessionId);
   assert.equal(body.message_count, 1);
+  assert.equal(body.country_code, 'US');
   // Token never leaks.
   assert.equal(body.token, undefined);
 });

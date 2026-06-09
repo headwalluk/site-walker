@@ -300,6 +300,13 @@ export async function buildServer(opts: BuildServerOpts): Promise<FastifyInstanc
 
   await fastify.register(fastifySwagger, {
     openapi: {
+      // Emit OpenAPI 3.1 (not the @fastify/swagger default 3.0.x). Our nullable
+      // fields use the JSON-Schema `type: ['string', 'null']` form, which is the
+      // same schema fast-json-stringify uses to serialise null correctly. That
+      // form is invalid in 3.0 — Swagger UI renders it as "Unknown Type:
+      // null,string" — but valid in 3.1, where the UI renders it properly. 3.1
+      // lets us keep one schema for both serialisation and docs.
+      openapi: '3.1.0',
       info: {
         title: 'site-walker',
         description:
@@ -590,7 +597,14 @@ export async function buildServer(opts: BuildServerOpts): Promise<FastifyInstanc
         });
       }
 
-      const session = await createSession(db, chatbot.id);
+      // Capture the visitor's country (2-char ISO) for privacy-friendly
+      // analytics — the IP is never stored. enforceGeo already resolved it for
+      // geo-restricted chatbots; `allowall` short-circuits the lookup, so do it
+      // explicitly here. Unresolved / no GeoIP DB → null.
+      const countryCode =
+        geo.mode === 'allowall' ? (geoChecker ? geoChecker.lookup(req.ip) : null) : geo.country;
+
+      const session = await createSession(db, chatbot.id, { countryCode });
       return reply.status(201).send({
         session_token: session.token,
         welcome_message: chatbot.welcome_message ?? DEFAULT_WELCOME,

@@ -745,3 +745,73 @@ test('GET /messages: 403 geo_blocked when policy denies', async (t) => {
   assert.equal(res.statusCode, 403);
   assert.equal(res.json().error, 'geo_blocked');
 });
+
+// ----- country capture (privacy-friendly analytics; no IP stored) -----
+
+test('POST /sessions: captures the visitor country (allowall chatbot, explicit lookup)', async (t) => {
+  const db = makeTestDb();
+  const fastify = await buildServer({
+    db,
+    logger: false,
+    geoChecker: fakeGeoChecker({ '203.0.113.70': 'FR' }),
+  });
+  // No geo mode set → allowall, which short-circuits enforcement's lookup.
+  const { origin, account, providerName } = await setupChat(db);
+  t.after(() => cleanup(db, account, providerName, fastify));
+
+  const res = await fastify.inject({
+    method: 'POST',
+    url: '/sessions',
+    headers: { origin },
+    remoteAddress: '203.0.113.70',
+  });
+  assert.equal(res.statusCode, 201);
+  const row = await db('sessions')
+    .where({ token: res.json().session_token })
+    .first<{ country_code: string | null } | undefined>('country_code');
+  assert.equal(row?.country_code, 'FR');
+});
+
+test('POST /sessions: country is null when no GeoIP checker is loaded', async (t) => {
+  const db = makeTestDb();
+  const fastify = await buildServer({ db, logger: false }); // no geoChecker
+  const { origin, account, providerName } = await setupChat(db);
+  t.after(() => cleanup(db, account, providerName, fastify));
+
+  const res = await fastify.inject({
+    method: 'POST',
+    url: '/sessions',
+    headers: { origin },
+    remoteAddress: '203.0.113.71',
+  });
+  assert.equal(res.statusCode, 201);
+  const row = await db('sessions')
+    .where({ token: res.json().session_token })
+    .first<{ country_code: string | null } | undefined>('country_code');
+  assert.equal(row?.country_code, null);
+});
+
+test('POST /sessions: captures the country the geo check resolved (restricted chatbot)', async (t) => {
+  const db = makeTestDb();
+  const fastify = await buildServer({
+    db,
+    logger: false,
+    geoChecker: fakeGeoChecker({ '203.0.113.72': 'GB' }),
+  });
+  const { slug, origin, account, providerName } = await setupChat(db);
+  await setChatbotGeoMode(db, slug, 'allowlist');
+  await setChatbotGeoCountries(db, slug, ['GB']);
+  t.after(() => cleanup(db, account, providerName, fastify));
+
+  const res = await fastify.inject({
+    method: 'POST',
+    url: '/sessions',
+    headers: { origin },
+    remoteAddress: '203.0.113.72',
+  });
+  assert.equal(res.statusCode, 201);
+  const row = await db('sessions')
+    .where({ token: res.json().session_token })
+    .first<{ country_code: string | null } | undefined>('country_code');
+  assert.equal(row?.country_code, 'GB');
+});
